@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+curationpilot_poc.egg-info/PKG-INFO
+curationpilot_poc.egg-info/SOURCES.txt
+curationpilot_poc.egg-info/dependency_links.txt
+curationpilot_poc.egg-info/requires.txt
+curationpilot_poc.egg-info/top_level.txt
+pilot/__init__.py
+pilot/__main__.py
+pilot/audit.py
+pilot/browser.py
+pilot/cli.py
+pilot/models.py
+pilot/runner.py
+pilot/adapters/__init__.py
+pilot/adapters/base.py
+pilot/adapters/media_assets.py

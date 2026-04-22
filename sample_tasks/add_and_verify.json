@@ -1,0 +1,79 @@
+{
+  "name": "add_and_verify",
+  "description": "Navigate to Media Assets, add two new assets, verify them, then delete one (gated).",
+  "tasks": [
+    {
+      "task_id": "t1",
+      "adapter": "media_assets",
+      "action": "navigate_to_media_assets",
+      "params": {},
+      "depends_on": [],
+      "requires_approval_gate": false,
+      "expected_result": "Media Assets page is visible"
+    },
+    {
+      "task_id": "t2",
+      "adapter": "media_assets",
+      "action": "list_assets",
+      "params": {},
+      "depends_on": ["t1"],
+      "requires_approval_gate": false,
+      "expected_result": "Returns current assets"
+    },
+    {
+      "task_id": "t3",
+      "adapter": "media_assets",
+      "action": "add_asset",
+      "params": {
+        "asset_id": "A-2001",
+        "title": "Automated Asset One",
+        "asset_type": "video",
+        "description": "Created by CurationPilot POC"
+      },
+      "depends_on": ["t1"],
+      "requires_approval_gate": false,
+      "expected_result": "Asset A-2001 appears with success banner"
+    },
+    {
+      "task_id": "t4",
+      "adapter": "media_assets",
+      "action": "add_asset",
+      "params": {
+        "asset_id": "A-2002",
+        "title": "Automated Asset Two",
+        "asset_type": "image",
+        "description": "Second automated entry"
+      },
+      "depends_on": ["t3"],
+      "requires_approval_gate": false,
+      "expected_result": "Asset A-2002 appears with success banner"
+    },
+    {
+      "task_id": "t5",
+      "adapter": "media_assets",
+      "action": "verify_asset_exists",
+      "params": { "asset_id": "A-2001" },
+      "depends_on": ["t3"],
+      "requires_approval_gate": false,
+      "expected_result": "Row for A-2001 is visible"
+    },
+    {
+      "task_id": "t6",
+      "adapter": "media_assets",
+      "action": "verify_asset_exists",
+      "params": { "asset_id": "A-2002" },
+      "depends_on": ["t4"],
+      "requires_approval_gate": false,
+      "expected_result": "Row for A-2002 is visible"
+    },
+    {
+      "task_id": "t7",
+      "adapter": "media_assets",
+      "action": "delete_asset",
+      "params": { "asset_id": "A-2002" },
+      "depends_on": ["t6"],
+      "requires_approval_gate": true,
+      "expected_result": "Asset A-2002 is removed and banner confirms deletion"
+    }
+  ]
+}
