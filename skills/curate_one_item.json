@@ -1,0 +1,1211 @@
+{
+  "name": "curate_one_item",
+  "description": "Create layout+schedule for a content item",
+  "portal": "sample_portal",
+  "tags": [],
+  "version": 1,
+  "created_at": "2026-04-22T17:03:45.552446",
+  "updated_at": "2026-04-22T17:03:45.552449",
+  "base_url": "http://localhost:5173",
+  "params": [
+    {
+      "name": "input_layout_content_id",
+      "type": "string",
+      "description": "Value for step 3: fill_input_layout_content_id",
+      "example": "A-9001",
+      "required": true
+    },
+    {
+      "name": "input_layout_row",
+      "type": "string",
+      "description": "Value for step 4: fill_input_layout_row",
+      "example": "3",
+      "required": true
+    },
+    {
+      "name": "input_layout_position",
+      "type": "string",
+      "description": "Value for step 5: fill_input_layout_position",
+      "example": "2",
+      "required": true
+    },
+    {
+      "name": "input_schedule_content_id",
+      "type": "string",
+      "description": "Value for step 9: fill_input_schedule_content_id",
+      "example": "A-9001",
+      "required": true
+    },
+    {
+      "name": "input_schedule_start",
+      "type": "string",
+      "description": "Value for step 10: fill_input_schedule_start",
+      "example": "2026-05-01",
+      "required": true
+    },
+    {
+      "name": "input_schedule_end",
+      "type": "string",
+      "description": "Value for step 11: fill_input_schedule_end",
+      "example": "2026-05-31",
+      "required": true
+    },
+    {
+      "name": "input_thumb_content_id",
+      "type": "string",
+      "description": "Value for step 15: fill_input_thumb_content_id",
+      "example": "A-9001",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5173/dashboard",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:42.651096",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "nav-curation",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "link",
+        "accessible_name": "Curation",
+        "text": "Curation",
+        "placeholder": null,
+        "tag": "a",
+        "input_type": null,
+        "css_path": "a[data-testid='nav-curation']",
+        "xpath": "/html/body/div/div/aside/nav/ul/li[3]/a",
+        "ancestor_chain": [
+          {
+            "tag": "li",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "ul",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "nav",
+            "id": null,
+            "testId": null,
+            "role": "navigation",
+            "className": "sidebar-nav"
+          },
+          {
+            "tag": "aside",
+            "id": null,
+            "testId": "sidebar",
+            "role": null,
+            "className": "sidebar"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Main menu",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 150.0,
+          "width": 220.0,
+          "height": 39.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_nav_curation",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.189132",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 2,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5173/curation",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.261758",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 3,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-layout-content-id",
+        "element_id": "layout-content-id",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Content ID",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#layout-content-id",
+        "xpath": "/body/div/div/main/section/div[2]/div/form/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-layout",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          }
+        ],
+        "landmark": "panel-layout",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 186.0,
+          "width": 520.0,
+          "height": 37.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "A-9001",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_layout_content_id",
+      "param_binding": {
+        "name": "input_layout_content_id",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.342673",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 4,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-layout-row",
+        "element_id": "layout-row",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Row",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "number",
+        "css_path": "input#layout-row",
+        "xpath": "/div/div/main/section/div[2]/div/form/div[2]/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field-row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-layout",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          }
+        ],
+        "landmark": "panel-layout",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 256.0,
+          "width": 254.0,
+          "height": 37.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "3",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_layout_row",
+      "param_binding": {
+        "name": "input_layout_row",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.368598",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 5,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-layout-position",
+        "element_id": "layout-position",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Position",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "number",
+        "css_path": "input#layout-position",
+        "xpath": "/div/div/main/section/div[2]/div/form/div[2]/div[2]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field-row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-layout",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          }
+        ],
+        "landmark": "panel-layout",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.0,
+          "y": 256.0,
+          "width": 254.0,
+          "height": 37.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "2",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_layout_position",
+      "param_binding": {
+        "name": "input_layout_position",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.390089",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 6,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-save-layout",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Save Layout",
+        "text": "Save Layout",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-save-layout']",
+        "xpath": "/body/div/div/main/section/div[2]/div/form/div[3]/button",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "modal-actions"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-layout",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          }
+        ],
+        "landmark": "panel-layout",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 689.15625,
+          "y": 317.0,
+          "width": 107.84375,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_save_layout",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.391639",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 7,
+      "action": "submit",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Content ID Row Position Save Layout",
+        "text": "Content ID Row Position Save Layout",
+        "placeholder": null,
+        "tag": "form",
+        "input_type": null,
+        "css_path": "div[data-testid='panel-layout'] > form",
+        "xpath": "/html/body/div/div/main/section/div[2]/div/form",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-layout",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "panel-layout",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 165.0,
+          "width": 520.0,
+          "height": 186.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "submit_content_id_row_position_save_layout",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.392719",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 8,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "curation-tab-schedule",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "tab",
+        "accessible_name": "Schedule",
+        "text": "Schedule",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='curation-tab-schedule']",
+        "xpath": "/html/body/div/div/main/section/div[2]/button[2]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-tabs",
+            "role": "tablist",
+            "className": "curation-tabs"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 337.890625,
+          "y": 145.0,
+          "width": 90.390625,
+          "height": 38.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_curation_tab_schedule",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.824646",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 9,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-schedule-content-id",
+        "element_id": "schedule-content-id",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Content ID",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#schedule-content-id",
+        "xpath": "/body/div/div/main/section/div[3]/div/form/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-schedule",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          }
+        ],
+        "landmark": "panel-schedule",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 241.0,
+          "width": 520.0,
+          "height": 37.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "A-9001",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_schedule_content_id",
+      "param_binding": {
+        "name": "input_schedule_content_id",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.840841",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 10,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-schedule-start",
+        "element_id": "schedule-start",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Start date",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "date",
+        "css_path": "input#schedule-start",
+        "xpath": "/div/div/main/section/div[3]/div/form/div[2]/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field-row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-schedule",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          }
+        ],
+        "landmark": "panel-schedule",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 311.0,
+          "width": 254.0,
+          "height": 39.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "2026-05-01",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_schedule_start",
+      "param_binding": {
+        "name": "input_schedule_start",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.842111",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 11,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-schedule-end",
+        "element_id": "schedule-end",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "End date",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "date",
+        "css_path": "input#schedule-end",
+        "xpath": "/div/div/main/section/div[3]/div/form/div[2]/div[2]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field-row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-schedule",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          }
+        ],
+        "landmark": "panel-schedule",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.0,
+          "y": 311.0,
+          "width": 254.0,
+          "height": 39.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "2026-05-31",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_schedule_end",
+      "param_binding": {
+        "name": "input_schedule_end",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.848360",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 12,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-save-schedule",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Save Schedule",
+        "text": "Save Schedule",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-save-schedule']",
+        "xpath": "/body/div/div/main/section/div[3]/div/form/div[3]/button",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "modal-actions"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-schedule",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          }
+        ],
+        "landmark": "panel-schedule",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 672.8125,
+          "y": 374.0,
+          "width": 124.1875,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_save_schedule",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.861994",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 13,
+      "action": "submit",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Content ID Start date End date Save Schedule",
+        "text": "Content ID Start date End date Save Schedule",
+        "placeholder": null,
+        "tag": "form",
+        "input_type": null,
+        "css_path": "div[data-testid='panel-schedule'] > form",
+        "xpath": "/html/body/div/div/main/section/div[3]/div/form",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-schedule",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "panel-schedule",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 220.0,
+          "width": 520.0,
+          "height": 188.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "submit_content_id_start_date_end_date_save_schedule",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:43.862928",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 14,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "curation-tab-thumbnails",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "tab",
+        "accessible_name": "Thumbnails",
+        "text": "Thumbnails",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='curation-tab-thumbnails']",
+        "xpath": "/html/body/div/div/main/section/div[2]/button[3]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-tabs",
+            "role": "tablist",
+            "className": "curation-tabs"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 432.296875,
+          "y": 145.0,
+          "width": 104.375,
+          "height": 38.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_curation_tab_thumbnails",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:44.302122",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 15,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-thumb-content-id",
+        "element_id": "thumb-content-id",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Content ID",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#thumb-content-id",
+        "xpath": "/body/div/div/main/section/div[3]/div/form/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "field"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "curation-form"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "panel-thumbnails",
+            "role": null,
+            "className": "tab-panel"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "curation-body",
+            "role": null,
+            "className": "curation-body"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "page-curation",
+            "role": null,
+            "className": "page"
+          }
+        ],
+        "landmark": "panel-thumbnails",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 277.0,
+          "y": 241.0,
+          "width": 520.0,
+          "height": 37.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "A-9001",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_thumb_content_id",
+      "param_binding": {
+        "name": "input_thumb_content_id",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-22T17:03:44.720448",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "3fb094620841"
+}

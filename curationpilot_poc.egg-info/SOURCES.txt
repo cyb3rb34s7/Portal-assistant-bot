@@ -7,11 +7,15 @@ curationpilot_poc.egg-info/requires.txt
 curationpilot_poc.egg-info/top_level.txt
 pilot/__init__.py
 pilot/__main__.py
+pilot/annotate.py
 pilot/audit.py
 pilot/browser.py
 pilot/cli.py
 pilot/models.py
 pilot/runner.py
+pilot/skill_models.py
+pilot/skill_runner.py
+pilot/teach.py
 pilot/adapters/__init__.py
 pilot/adapters/base.py
 pilot/adapters/media_assets.py

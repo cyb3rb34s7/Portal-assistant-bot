@@ -1,80 +1,98 @@
 # CurationPilot POC
 
-A minimal, architecturally honest slice of the CurationPilot system:
-a small React portal, and a Python package that drives it via Playwright + CDP
-through the operator's real Chrome, with audit logging and a human gate.
+A local, supervised browser automation tool that **learns a portal task
+by watching an operator use the portal**, then **replays that task with
+new inputs** — with a four-level locator fallback that survives UI
+drift, and an audit trail for every action.
 
 ## What this proves
 
-- CDP connection to the operator's Chrome works end-to-end
-- MCP-ready adapter pattern holds up in real code
-- `ToolResult` contract flows cleanly through runner and audit log
-- Deterministic Level 1 locators drive a realistic page
-- Human approval gate actually pauses execution before an irreversible action
-- Every action is captured as JSONL + before/after screenshots
+- Silent, framework-agnostic DOM capture of clicks / fills / navigations
+  via a CDP-injected JS listener (works on React, Vue, Angular, plain HTML).
+- Rich element fingerprints (testid, id, aria, role, accessible name,
+  text, css path, xpath, landmark, bbox) for resilient replay.
+- Auto-annotation of traces into parameterised, versioned skills.
+- Four-level replay fallback (exact → semantic → fingerprint-match → human).
+- Portable skill JSON, down-convertible to Puppeteer Replay format.
+- Full audit artifacts per session: JSONL event log + before/after screenshots.
+
+## Three-phase workflow
+
+```
+  TEACH              ANNOTATE            REPLAY
+  -----              --------            ------
+  pilot teach   ->   pilot annotate  ->  pilot run-skill
+                     (auto or            (with new
+                      interactive)        parameters)
+```
+
+## Quick start
+
+**One-time setup:**
+
+```bash
+py -m venv .venv
+.venv/Scripts/python.exe -m pip install -e .
+cd sample_portal && npm install && cd ..
+```
+
+**Run a session (three terminals):**
+
+```bash
+# Terminal A — sample portal
+cd sample_portal && npm run dev
+
+# Terminal B — Chrome with CDP
+"/c/Program Files/Google/Chrome/Application/chrome.exe" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$USERPROFILE/.curationpilot-chrome-profile" \
+  http://localhost:5173
+
+# Terminal C — pilot
+.venv/Scripts/python.exe -m pilot doctor                # sanity-check CDP
+.venv/Scripts/python.exe -m pilot teach my_skill        # record; Ctrl+C to stop
+.venv/Scripts/python.exe -m pilot annotate <id> --auto  # save skill JSON
+.venv/Scripts/python.exe -m pilot run-skill skills/my_skill.json \
+  -p content_id=A-3001                                  # replay with new params
+```
+
+## Automated tests (no human driving needed)
+
+```bash
+.venv/Scripts/python.exe scripts/e2e_test.py          # full loop, verifies state
+.venv/Scripts/python.exe scripts/resilience_test.py   # drift test — L2 recovery
+```
 
 ## Layout
 
 ```
 curationpilot-poc/
-  sample_portal/       # React + Vite portal with a Media Assets page
-  pilot/               # Python package: adapters, runner, CLI
-  sample_tasks/        # Example task-list JSON files
-  scripts/             # Helpers to launch Chrome (CDP) and the portal
-  sessions/            # Per-run audit artifacts (gitignored)
+├── DOCS/
+│   ├── requirement.md    # Full product + architecture doc
+│   └── GUIDE.md          # Operator + developer runbook (start here)
+├── pilot/                # Python package (teach / annotate / skill_runner / audit)
+│   └── overlay/grabber.js
+├── sample_portal/        # React + Vite demo portal
+├── sample_tasks/         # Legacy hand-written manifest (reference only)
+├── scripts/              # Runner + E2E + resilience test scripts
+├── sessions/             # (gitignored) Per-run audit artifacts
+└── skills/               # Saved skills (JSON)
 ```
 
-## One-time setup
+## Full documentation
 
-```bash
-# Python
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-playwright install chromium    # only used to fetch browsers; runtime uses your Chrome
+See [DOCS/GUIDE.md](DOCS/GUIDE.md) for the complete feature reference,
+CLI options, skill file format, troubleshooting, and extension guide.
 
-# Portal
-cd sample_portal && npm install && cd ..
-```
+See [DOCS/requirement.md](DOCS/requirement.md) for the overall product
+vision, architecture decisions, and the broader roadmap beyond this
+POC (LangGraph workflow engine, AI fallback, MCP promotion, dashboard
+UI, multi-portal orchestration).
 
-## Run the POC
+## Status
 
-Three terminals.
+Teach → Annotate → Replay loop verified end-to-end on the sample portal.
+Drift resilience verified — L2 semantic fallback recovers when `test_id`,
+`id`, `css_path`, and `xpath` are all corrupted.
 
-**Terminal 1 — run the sample portal**
-
-```bash
-./scripts/serve_portal.sh
-# http://localhost:5173
-```
-
-**Terminal 2 — launch Chrome with CDP enabled**
-
-```bash
-./scripts/launch_chrome_cdp.sh
-```
-
-This opens a dedicated Chrome profile (isolated from your daily browser) and
-navigates to the portal. Leave the window open.
-
-**Terminal 3 — run the pilot**
-
-```bash
-source .venv/bin/activate
-python -m pilot doctor                  # sanity-check CDP connection
-python -m pilot run sample_tasks/add_and_verify.json
-```
-
-Watch Chrome as the pilot navigates to Media Assets, creates two assets,
-verifies them, and then pauses at a human gate before deleting one.
-Type `y` in the terminal to approve. After the run, inspect
-`sessions/<id>/audit_log.jsonl` and `sessions/<id>/screenshots/`.
-
-## What comes next (deferred, by design)
-
-- LangGraph in place of the simple runner (state + checkpointing)
-- Level 2 semantic fallback locators
-- Level 3 internal-LLM fallback with DOM distillation + confidence scoring
-- Level 4 manual takeover UI
-- Multi-page / multi-tab workflows
-- MCP server wrapper over the adapter methods
+See [DOCS/GUIDE.md §15](DOCS/GUIDE.md) for limitations and next steps.
