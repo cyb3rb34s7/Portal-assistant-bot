@@ -63,31 +63,91 @@ class TeachRecorder:
     # ---- Setup ---------------------------------------------------------
 
     def _inject(self) -> None:
-        """Attach the grabber script + the Python-callback binding."""
+        """Attach the grabber script + the Python-callback binding.
+
+        Binding attachment is the single most failure-prone step in teach.
+        We therefore:
+          1. Expose the binding on the context.
+          2. Add the grabber to `add_init_script` so every future page
+             (including reloads) gets it.
+          3. Reload the current page once so the pre-existing tab picks up
+             *both* the init script and the binding on a fresh frame. This
+             is the reliable way to attach to a CDP-connected Chrome tab
+             that existed before we connected.
+          4. Send a probe event from the page and confirm it round-trips
+             to Python. If it doesn't, fail loudly instead of letting the
+             operator record silently into the void.
+        """
         script = OVERLAY_PATH.read_text(encoding="utf-8")
         context = self.session.context
         page = self.session.page
 
+        self._probe_received = False
+
         # Expose Python callback as window.__pilotCapture
         def on_capture(source, payload_json: str) -> None:
+            # Intercept probe events before they hit the normal sink.
+            try:
+                if '"__init_probe"' in payload_json:
+                    self._probe_received = True
+                    return
+            except Exception:
+                pass
             self._on_event(payload_json)
 
         # Playwright's expose_binding on the context applies to all pages
+        # created after this call. A pre-existing page needs a reload to
+        # receive the binding routing.
         try:
             context.expose_binding("__pilotCapture", on_capture)
         except Exception:
             # Already bound in this context (previous invocation in same Chrome)
             pass
 
-        # Inject grabber into every future navigation
+        # Inject grabber into every future navigation + fresh frame load
         context.add_init_script(script)
 
-        # Inject immediately for the currently loaded page
+        # Reload the current page so both the init script and the binding
+        # attach cleanly. This is the fix for the "events captured client-
+        # side but never reach Python" failure mode.
         try:
-            page.evaluate(script)
+            page.reload(wait_until="domcontentloaded")
         except Exception as e:
             self.console.print(
-                f"[yellow]Could not inject on current page (continuing): {e}[/yellow]"
+                f"[yellow]Could not reload page (continuing): {e}[/yellow]"
+            )
+
+        # Binding round-trip probe. If the binding is not wired up for
+        # this page's JS context, this call will either raise or the
+        # probe event will never arrive. Either way, we surface it.
+        try:
+            page.evaluate(
+                "window.__pilotCapture && window.__pilotCapture("
+                "JSON.stringify({kind: '__init_probe', page_url: location.href}))"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to invoke __pilotCapture on the current page "
+                f"({page.url}). The teach binding is not attached. "
+                "Close all other Chrome tabs, ensure Chrome was launched "
+                "with --remote-debugging-port=9222, and retry."
+            ) from e
+
+        # Pump the event loop briefly so the probe can round-trip.
+        for _ in range(20):
+            if self._probe_received:
+                break
+            try:
+                page.wait_for_timeout(50)
+            except Exception:
+                time.sleep(0.05)
+
+        if not self._probe_received:
+            raise RuntimeError(
+                "Teach binding probe sent but not received by Python. "
+                "This usually means the Chrome tab was opened before the "
+                "CDP connection was established. Restart Chrome with the "
+                "portal URL and retry."
             )
 
     # ---- Event sink ----------------------------------------------------
@@ -179,9 +239,33 @@ class TeachRecorder:
             self._stop.set()
 
         prev = signal.signal(signal.SIGINT, _handler)
+        last_heartbeat = time.time()
+        last_event_count = 0
         try:
+            # Pump the Playwright event loop actively so binding callbacks
+            # (our captured events) are dispatched. A plain time.sleep()
+            # starves the sync_playwright event loop — symptom: events fire
+            # client-side and `__pilotCapture(...)` returns a Promise, but
+            # the Python callback never runs.
             while not self._stop.is_set():
-                time.sleep(0.25)
+                try:
+                    self.session.page.wait_for_timeout(200)
+                except Exception:
+                    # Page may have been closed or navigated; sleep briefly
+                    # and continue so the loop can still exit on Ctrl+C.
+                    time.sleep(0.2)
+
+                now = time.time()
+                if now - last_heartbeat >= 10.0:
+                    with self._lock:
+                        current = len(self._events)
+                    if current == last_event_count:
+                        self.console.print(
+                            f"[dim]... {current} events captured so far "
+                            f"(no new events in last 10s)[/dim]"
+                        )
+                    last_event_count = current
+                    last_heartbeat = now
         finally:
             signal.signal(signal.SIGINT, prev)
 

@@ -19,7 +19,7 @@
   if (window.__cp_grab_installed) return;
   window.__cp_grab_installed = true;
 
-  var DEBUG = false;
+  var DEBUG = !!window.__cp_debug;
   var INPUT_DEBOUNCE_MS = 400;
 
   // ---- Transport -----------------------------------------------------------
@@ -28,13 +28,22 @@
     try {
       var serialized = JSON.stringify(payload);
     } catch (e) {
+      if (DEBUG) console.warn("[cp] serialize failed", e, payload);
       return;
     }
     if (typeof window.__pilotCapture === "function") {
       try {
-        window.__pilotCapture(serialized);
+        // expose_binding returns a Promise; we don't await it here, but
+        // we do catch synchronous throws. Silent swallow is intentional
+        // for production, but surfaces when window.__cp_debug is true.
+        var ret = window.__pilotCapture(serialized);
+        if (ret && typeof ret.catch === "function") {
+          ret.catch(function (err) {
+            if (DEBUG) console.warn("[cp] capture promise rejected", err);
+          });
+        }
       } catch (e) {
-        if (DEBUG) console.warn("[cp] capture failed", e);
+        if (DEBUG) console.warn("[cp] capture threw", e);
       }
     } else {
       (window.__pilotBuffer = window.__pilotBuffer || []).push(serialized);
