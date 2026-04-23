@@ -16,6 +16,7 @@ import signal
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -56,6 +57,12 @@ class TeachRecorder:
         self._stop = threading.Event()
         self._events: list[TraceEvent] = []
         self._lock = threading.Lock()
+        # Raw JSON payloads from the grabber, drained by the main loop.
+        # The binding callback MUST NOT call Playwright methods (like
+        # page.screenshot) because that reenters the sync_playwright
+        # event loop and deadlocks. We just stash strings here and
+        # process them later from the pumping loop.
+        self._pending_payloads: deque[str] = deque()
 
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.shots_dir.mkdir(parents=True, exist_ok=True)
@@ -84,16 +91,20 @@ class TeachRecorder:
 
         self._probe_received = False
 
-        # Expose Python callback as window.__pilotCapture
+        # Expose Python callback as window.__pilotCapture.
+        #
+        # CRITICAL: this runs inside the Playwright event loop. It must
+        # NOT call any Playwright method (no page.screenshot, no evaluate,
+        # nothing) because sync_playwright reentrancy deadlocks. We only
+        # enqueue the raw payload; the main pumping loop processes it.
         def on_capture(source, payload_json: str) -> None:
-            # Intercept probe events before they hit the normal sink.
             try:
                 if '"__init_probe"' in payload_json:
                     self._probe_received = True
                     return
             except Exception:
                 pass
-            self._on_event(payload_json)
+            self._pending_payloads.append(payload_json)
 
         # Playwright's expose_binding on the context applies to all pages
         # created after this call. A pre-existing page needs a reload to
@@ -152,13 +163,32 @@ class TeachRecorder:
 
     # ---- Event sink ----------------------------------------------------
 
-    def _on_event(self, payload_json: str) -> None:
+    def _drain_pending(self) -> int:
+        """Process any queued raw payloads. Called from the main loop,
+        where it is safe to invoke Playwright methods (e.g. screenshots).
+
+        Returns the number of events processed this call.
+        """
+        processed = 0
+        while True:
+            try:
+                payload_json = self._pending_payloads.popleft()
+            except IndexError:
+                break
+            self._process_payload(payload_json)
+            processed += 1
+        return processed
+
+    def _process_payload(self, payload_json: str) -> None:
         try:
             raw = json.loads(payload_json)
         except Exception:
             return
         fp_raw = raw.get("fingerprint")
-        fp = ElementFingerprint.model_validate(fp_raw) if fp_raw else None
+        try:
+            fp = ElementFingerprint.model_validate(fp_raw) if fp_raw else None
+        except Exception:
+            fp = None
 
         ev = TraceEvent(
             ts=datetime.utcnow(),
@@ -170,8 +200,12 @@ class TeachRecorder:
             page_url=raw.get("page_url", ""),
         )
 
+        # Screenshot is safe here — we're on the main thread, outside
+        # the Playwright binding callback.
         if self.capture_screenshots and ev.kind in ("click", "submit", "file_selected"):
-            ev.screenshot_path = self._screenshot(f"{len(self._events):03d}_{ev.kind}")
+            ev.screenshot_path = self._screenshot(
+                f"{len(self._events):03d}_{ev.kind}"
+            )
 
         with self._lock:
             self._events.append(ev)
@@ -179,6 +213,10 @@ class TeachRecorder:
                 f.write(ev.model_dump_json() + "\n")
 
         self._render_live(ev)
+
+    # Backwards-compatible alias in case external callers used _on_event.
+    def _on_event(self, payload_json: str) -> None:
+        self._process_payload(payload_json)
 
     def _screenshot(self, label: str) -> Optional[str]:
         try:
@@ -243,10 +281,11 @@ class TeachRecorder:
         last_event_count = 0
         try:
             # Pump the Playwright event loop actively so binding callbacks
-            # (our captured events) are dispatched. A plain time.sleep()
-            # starves the sync_playwright event loop — symptom: events fire
-            # client-side and `__pilotCapture(...)` returns a Promise, but
-            # the Python callback never runs.
+            # enqueue payloads into self._pending_payloads, then drain that
+            # queue on the main thread where Playwright calls (screenshots,
+            # etc.) are safe. A plain time.sleep() starves the sync_playwright
+            # loop; calling Playwright from the binding callback deadlocks
+            # via sync-API reentrancy. This loop avoids both.
             while not self._stop.is_set():
                 try:
                     self.session.page.wait_for_timeout(200)
@@ -254,6 +293,14 @@ class TeachRecorder:
                     # Page may have been closed or navigated; sleep briefly
                     # and continue so the loop can still exit on Ctrl+C.
                     time.sleep(0.2)
+
+                # Drain any events captured while the loop was waiting.
+                try:
+                    self._drain_pending()
+                except Exception as e:
+                    self.console.print(
+                        f"[yellow]event drain error (continuing): {e}[/yellow]"
+                    )
 
                 now = time.time()
                 if now - last_heartbeat >= 10.0:
@@ -269,6 +316,11 @@ class TeachRecorder:
         finally:
             signal.signal(signal.SIGINT, prev)
 
+        # Final drain in case anything queued between last tick and stop.
+        try:
+            self._drain_pending()
+        except Exception:
+            pass
         self._finalize()
 
     def stop(self) -> None:
