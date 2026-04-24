@@ -403,14 +403,20 @@ independently.
 #### Week 1 — Agent backbone, no UI
 
 **Deliverables:**
+- [x] `pilot/agent/ai_client/` — AIClient Protocol + structured-output
+      helper + registry + Bedrock / OpenAI / Groq adapters + custom_org
+      skeleton (already landed before week 1 started)
 - [ ] JSON-RPC event protocol documented in `DOCS/PROTOCOL.md`
 - [ ] `pilot/agent/intake.py` — extracts entities from goal + attachments
 - [ ] `pilot/agent/planner.py` — maps goal + entities -> plan
 - [ ] `pilot/agent/clarify.py` — generates minimal disambiguating questions
+- [ ] `pilot/agent/orchestrator.py` — hand-written state machine
 - [ ] `pilot/agent/server.py` — stdio JSON-RPC loop wrapping the above
 - [ ] CLI entry: `pilot agent do "goal" --attach file.pptx` that prints
       events as JSONL
 - [ ] Portal context file for the sample portal (hand-authored)
+- [ ] Per-stage model eval harness: run each stage's prompt against
+      candidate models, pick empirical defaults
 - [ ] Prompt-test harness: sample goals + expected plans, run as CI
 
 **Exit gate:** operator can type a goal on the CLI, see clarify questions,
@@ -787,12 +793,174 @@ rearrange at will.
 
 ---
 
-## 11. Open Questions
+## 11. Tech Stack & Framework Decisions
+
+This section captures the load-bearing technology choices and the
+reasoning behind them. The overall posture is: **prefer thin, boring,
+owned code over trendy frameworks, especially for pieces that need to
+be auditable and stable for years.**
+
+### 11.1 Adopt
+
+| Concern | Choice | Rationale |
+|---|---|---|
+| LLM provider abstraction | Hand-owned `AIClient` Protocol + per-provider adapters | Custom org LLM has a non-standard format; a neutral owned interface is cleaner than a dependency that has to support dozens of providers |
+| Structured LLM outputs | JSON Schema in prompt + Pydantic validation + bounded retry | Works across every adapter including ones with non-standard formats; no framework dependency |
+| Prompt templates | Jinja2 files in `pilot/agent/prompts/` | Version-controlled, diffable |
+| LLM retries / backoff | `tenacity` | Unremarkable, minimal |
+| Agent orchestrator | Hand-written ~200 LOC state machine | Our flow (intake → clarify → plan → approve → execute → report) is linear with one checkpoint loop; frameworks impose more structure than we need |
+| JSON-RPC server (Python) | stdlib asyncio + stdin/stdout, line-delimited JSON | Protocol is the spec; no framework required |
+| Observability | `logfire` (optional), session trace | Every LLM call carries latency + usage from the AIClient layer |
+| Electron shell | Electron 30+ | Standard desktop app platform |
+| UI framework | React + TypeScript + Tailwind + shadcn/ui | Boring, widely-used, works in Electron |
+| Streaming chat UI | Vercel AI SDK (`ai` + `@ai-sdk/react`) | Best-in-class streaming primitives in React; no reason to roll our own |
+| State management (UI) | Zustand | Small, fast, no Redux ceremony |
+| IPC renderer↔main | Electron's `ipcRenderer` + contextBridge | Built-in; vanilla |
+
+### 11.2 Explicitly reject
+
+| Not using | Why |
+|---|---|
+| **LiteLLM** | Historical vulnerability surface in the proxy component + large dependency tree + doesn't cleanly handle custom-format LLMs; our three-adapter approach gives full audit trail of what's sent where |
+| **OpenAI Agents SDK, LangGraph, CrewAI, Agno** | All assume LLM-in-the-execution-loop; our executor is the deterministic `runner.py` and stays that way. Frameworks would force glue code to un-frame them |
+| **A2A (Google Agent2Agent protocol)** | Solves inter-agent discovery across vendors — a problem we don't have in v1 |
+| **MCP (Model Context Protocol)** | Worth tracking for v2 (could expose our pilot runner as an MCP server so Claude Desktop / Cursor can trigger portal workflows) but not a v1 foundation |
+| **LangChain** | Huge surface area, frequent breakage, not needed when our LLM use is 5-6 well-specified calls |
+| **`instructor`** | Wraps specific providers; doesn't mesh cleanly with custom-format org LLM. We use a provider-agnostic structured-output helper instead |
+
+### 11.3 The `AIClient` layer in detail
+
+All LLM access goes through one Protocol:
+
+```python
+# pilot/agent/ai_client/base.py
+class AIClient(Protocol):
+    name: str                 # "bedrock", "groq", "openai", "custom_org"
+    default_model: str | None
+
+    async def complete(
+        self, messages, *, model=None, temperature=0.0,
+        max_tokens=None, tools=None, stop=None, timeout_s=None,
+    ) -> Completion: ...
+
+    async def stream(...) -> AsyncIterator[StreamChunk]: ...
+
+    async def close(self) -> None: ...
+```
+
+Supporting types:
+- `Message(role, content, name, tool_call_id, tool_calls)`
+- `ToolDef(name, description, parameters_schema)`
+- `ToolCall(id, name, arguments)`
+- `Completion(text, tool_calls, finish_reason, model, usage, latency_ms, provider, raw)`
+- `StreamChunk(text_delta | tool_call | done, finish_reason, usage)`
+- `Usage(prompt_tokens, completion_tokens, total_tokens)`
+
+**Structured outputs** are provider-agnostic:
+
+```python
+# pilot/agent/ai_client/structured.py
+async def complete_structured(
+    client: AIClient,
+    messages: list[Message],
+    *,
+    response_model: type[BaseModel],
+    model: str | None = None,
+    temperature: float = 0.0,
+    max_retries: int = 2,
+) -> BaseModel:
+    # 1. Inject JSON Schema into system prompt
+    # 2. Call client.complete()
+    # 3. Extract JSON blob (tolerates code fences and prose)
+    # 4. Validate via Pydantic
+    # 5. On failure: append bad response + correction instruction,
+    #    retry up to max_retries times
+    ...
+```
+
+This helper is the ONLY way the rest of the agent asks for structured
+LLM output. No adapter needs its own structured-output implementation.
+
+### 11.4 Adapter modules
+
+Located in `pilot/agent/ai_client/adapters/`. Each adapter registers
+itself at import time via `register_client(name, factory)`. Adapters
+are loaded lazily by the registry, so a missing provider SDK only
+breaks that adapter, not the whole agent.
+
+v1 ships with:
+
+- **bedrock.py** — AWS Bedrock via the Converse / ConverseStream APIs
+  (unified chat interface across all Bedrock-hosted model families:
+  Claude, Llama, Nova, Mistral). Requires `boto3`.
+- **openai.py** — Official `openai` async SDK. Works against
+  api.openai.com or any OpenAI-compatible endpoint (`OPENAI_BASE_URL`).
+  Requires `openai`.
+- **groq.py** — Official `groq` async SDK (OpenAI-compatible shape,
+  shares the `_openai_compat.py` translation helpers with the OpenAI
+  adapter). Requires `groq`.
+- **custom_org.py** — Template / skeleton for your organisation's
+  internal LLM. No third-party deps. Registration is commented out
+  until the real client is dropped in; once `register_client("custom_org", _factory)`
+  is enabled, `get_client("custom_org")` works.
+
+Shared translation helpers for OpenAI-compatible APIs live in
+`adapters/_openai_compat.py` (messages → OpenAI format, tools → OpenAI
+format, response → `Completion`, stream → `AsyncIterator[StreamChunk]`).
+
+### 11.5 Per-stage model routing
+
+Different pipeline stages benefit from different models. The config
+surface exposes this directly so swapping is a config change, not a
+code change:
+
+```yaml
+# ~/.curationpilot/config.yaml
+ai:
+  default_client: custom_org
+  stages:
+    intake:     { client: groq,       model: llama-3.3-70b-versatile }
+    planner:    { client: bedrock,    model: anthropic.claude-sonnet-4-20250929-v1:0 }
+    clarify:    { client: custom_org, model: mycompany-v2 }
+    reporter:   { client: groq,       model: llama-3.3-70b-versatile }
+    repair:     { client: bedrock,    model: anthropic.claude-sonnet-4-20250929-v1:0 }
+```
+
+Rule of thumb: planner and repair (v2) get the smartest model; intake,
+clarify, and reporter can use a faster/cheaper one. Week 1 includes a
+side-by-side eval of each stage's prompt across candidate models so the
+defaults are empirical, not guessed.
+
+### 11.6 Security posture
+
+Owning the client layer removes a non-trivial security surface:
+
+- No runtime behavior changes from silent upstream updates
+- No surprise telemetry
+- Full audit trail of exactly what is sent to which endpoint
+- Per-provider auth and timeout policy under our control
+- Org security review happens on our code once, not on a third-party
+  library every update
+
+For an enterprise product that handles session cookies, PII in form
+fields, and possibly regulated data, this is the right posture.
+
+### 11.7 Risk to monitor
+
+If the custom org LLM is meaningfully weaker than frontier models on
+structured output and reasoning, planner quality suffers. Mitigation:
+the per-stage router in §11.5 lets us route the planner to Bedrock
+Claude while using the org model for intake / clarify / reporter.
+Measurement is part of the week 1 eval.
+
+---
+
+## 12. Open Questions
 
 These are flagged for discussion during week 1 before lockin.
 
-1. **LLM provider.** OpenAI, Anthropic, or local (Ollama)? Should the
-   app support swapping providers per-task?
+1. **Default LLM provider.** Custom org LLM, Bedrock, or Groq? Per-stage
+   override is already supported; this is only about the ``default_client``.
 2. **Portal context authoring.** Who writes the portal context file —
    the operator themselves, or a power user / admin? Do we need an
    in-app authoring wizard in v1?
@@ -810,9 +978,9 @@ These are flagged for discussion during week 1 before lockin.
 
 ---
 
-## 12. Appendix
+## 13. Appendix
 
-### 12.1 Directory layout at v1
+### 13.1 Directory layout at v1
 
 ```
 Portal-assistant-bot/
@@ -830,12 +998,25 @@ Portal-assistant-bot/
       clarify.py
       annotate_llm.py
       reporter.py
+      orchestrator.py              <-- hand-written state machine
       server.py                    <-- JSON-RPC stdio loop
       prompts/
         intake.jinja
         planner.jinja
         clarify.jinja
         reporter.jinja
+      ai_client/                   <-- provider abstraction
+        __init__.py
+        base.py                    <-- AIClient Protocol + types
+        registry.py                <-- get_client / register_client
+        structured.py              <-- complete_structured helper
+        adapters/
+          __init__.py
+          _openai_compat.py        <-- shared translation for OAI-compat
+          bedrock.py
+          openai.py
+          groq.py
+          custom_org.py            <-- skeleton for org LLM
   app/                             <-- new in v1
     package.json
     electron/
@@ -867,7 +1048,7 @@ Portal-assistant-bot/
     requirement.md
 ```
 
-### 12.2 Terminology
+### 13.2 Terminology
 
 - **Skill** — a recorded + annotated portal workflow, parameterised,
   stored as YAML/JSON in `skills/`.
@@ -881,8 +1062,13 @@ Portal-assistant-bot/
   not call LLMs. Byte-for-byte reproducible.
 - **Agent** — the new `pilot/agent/` module that wraps LLM calls and
   exposes a JSON-RPC interface.
+- **AIClient** — Protocol in `pilot.agent.ai_client.base` that every
+  provider adapter implements. The agent orchestrator only talks to
+  `AIClient`, never to a vendor SDK directly.
+- **Adapter** — concrete implementation of `AIClient` for one provider
+  (Bedrock, Groq, OpenAI, or the organisation's internal LLM).
 
-### 12.3 Related documents
+### 13.3 Related documents
 
 - `DOCS/requirement.md` — original product requirements
 - `DOCS/GUIDE.md` — operator guide for teach / annotate / replay
