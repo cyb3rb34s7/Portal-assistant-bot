@@ -115,6 +115,9 @@ def run_agent_cli(
     client: str,
     cdp_port: int,
     timeout_s: int,
+    *,
+    llm_intake: bool = False,
+    extra_args: list[str] | None = None,
 ) -> tuple[int, str]:
     cmd = [
         sys.executable,
@@ -128,8 +131,11 @@ def run_agent_cli(
         "--auto-approve",
         "--cdp-endpoint", f"http://localhost:{cdp_port}",
         "--target-url", "localhost:5173",
-        "--no-llm-intake",
     ]
+    if not llm_intake:
+        cmd.append("--no-llm-intake")
+    if extra_args:
+        cmd.extend(extra_args)
     print(f"\n>>> {' '.join(cmd)}\n", flush=True)
     proc = subprocess.run(
         cmd,
@@ -160,6 +166,17 @@ def main() -> int:
         default="/tmp/curationpilot-e2e-profile",
     )
     p.add_argument("--timeout", type=int, default=240)
+    p.add_argument(
+        "--llm-intake",
+        action="store_true",
+        help="Use the LLM intake stage (drop --no-llm-intake).",
+    )
+    p.add_argument(
+        "--extra-cli-arg",
+        action="append",
+        default=[],
+        help="Extra args appended to the agent CLI invocation (repeatable).",
+    )
     args = p.parse_args()
 
     csv_path = (REPO / args.csv).resolve()
@@ -173,6 +190,8 @@ def main() -> int:
 
         rc, log = run_agent_cli(
             args.goal, csv_path, args.client, args.cdp_port, args.timeout,
+            llm_intake=args.llm_intake,
+            extra_args=args.extra_cli_arg,
         )
         # Print the agent CLI output regardless of outcome.
         print("=" * 70)

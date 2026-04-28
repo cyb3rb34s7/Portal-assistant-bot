@@ -204,6 +204,17 @@ against both the mock client and live Groq.**
   through real Chromium over CDP, and ended in the expected portal
   state (`<layout> — N slots — "<comment>"` visible in the Applied
   list).
+- Phase 6 (hostile/operator-grade testing): 11 PASS / 1 PASS-with-
+  caveat / 1 model-quality finding across 13 sub-tests covering
+  carousel E2E, real intake-LLM, malformed CSV (missing column / 2
+  rows for 4 slots / duplicates / quoted fields), missing image on
+  disk, deliberate locator drift, hallucinated-id-in-goal,
+  contradictory goal, pre-existing portal state, mid-run cancel,
+  clarification quality bench, and 3-layout stress. Found and fixed
+  two real bugs along the way: planner hallucinating file paths from
+  goal-only references (tightened system prompt), and inconsistent
+  carousel comment param name across skills (renamed
+  carousel_comment -> layout_comment for cross-skill consistency).
 
 Approach (held throughout):
 - Pydantic schemas for every LLM input/output and every JSON-RPC payload.

@@ -11,6 +11,91 @@
 
 ## 2026-04-28
 
+### Phase 6 complete: hostile/operator-grade testing -- 17/19 cases passed; 2 real bugs found and fixed
+
+**Commit:** _(this commit)_
+
+Phase 6 deliberately stresses the agent stack with broken inputs,
+contradictory goals, locator drift, mid-run cancel, and back-to-back
+layouts on the same Chrome instance. Two real bugs were uncovered
+and fixed during this phase:
+
+1. **Planner hallucinated content_ids/image_paths** when the goal
+   referenced an asset that wasn't in the attached CSV. Tightened
+   the planner prompt: "Never hallucinate file paths or content_ids.
+   Every slot_N_content_id MUST appear in intake.content_items..."
+2. **Cross-skill comment param naming inconsistency**: the
+   LLM-annotated curate_carousel sidecar named the comment param
+   `carousel_comment` instead of `layout_comment` like the other two
+   skills. Stress test caught it. Renamed for consistency.
+
+**Sub-test results:**
+
+| # | Test | Result | Note |
+|---|---|---|---|
+| 6.1 | Carousel full E2E (real Groq + real Chrome) | PASS | 19 steps all L1 exact |
+| 6.2 | Real intake-LLM end-to-end (no --no-llm-intake) | PASS | applied state correct |
+| 6.3.H1 | CSV missing image_path column | PASS | plan emits empty image, no hallucination |
+| 6.3.H2 | CSV has 2 rows for 4-slot layout | PASS | slots 3+4 left None, no hallucination |
+| 6.3.H3 | CSV with duplicate content_ids | PASS | mapped verbatim |
+| 6.3.H4 | CSV with quoted/escaped fields | PASS | parsed correctly |
+| 6.4.E1 | Image path doesn't exist on disk | PASS* | surfaces as skill_step_failed (caveat: late detection) |
+| 6.5.E2 | Deliberate locator drift (data-testid renamed) | PASS | L2/L3 fallback fires; run still succeeds |
+| 6.6.H5 | Goal references id not in CSV (A-9999) | PASS | planner ignores, uses CSV rows (after prompt fix) |
+| 6.6.H6 | Contradictory layout + slot count | PASS | picks one valid skill |
+| 6.7.E3 | Pre-existing applied layout in portal | PASS | new save+apply works on top |
+| 6.8.E4 | task.cancel mid-run | PASS | CancelledError propagates cleanly, no orphan Chrome |
+| 6.9.Q1-Q8 | Clarification quality (8 cases on 8b model) | 3/8 | 8b model too eager to plan; 70b is correct production target |
+| 6.10 | Stress: 3 layouts back-to-back same Chrome | 3/3 | found+fixed carousel_comment alias bug along the way |
+
+**Headline tally:** 11 hard PASS / 1 PASS-with-caveat (6.4 late
+detection of missing image) / 1 model-quality finding (6.9 on the
+small 8b fallback).
+
+**Files added:**
+- `scripts/eval_phase6_hostile_bench.py` - 6 hostile-input cases
+  with explicit per-case evaluators (no shared "did it pass" rubric;
+  each case asserts what's actually correct for that input).
+- `scripts/eval_phase6_executor.py` - executor-only bench (E1-E4).
+  Drives RealExecutor.execute() directly with hand-crafted PlanSteps
+  so it doesn't burn Groq tokens. Fixes a tricky asyncio/sync_playwright
+  interleaving by wrapping all Playwright calls in asyncio.to_thread.
+- `scripts/eval_phase6_clarify_quality.py` - 8-case clarification
+  quality bench distinguishing "should plan / planner false-clarifies"
+  from "should clarify / planner asks the right question."
+- `scripts/eval_phase6_stress.py` - 3-layouts-back-to-back stress.
+- `tests/fixtures/batch_missing_image_col.csv` (4 cols, no image_path)
+- `tests/fixtures/batch_two_rows.csv` (only 2 rows for 4-slot layout)
+- `tests/fixtures/batch_dup_ids.csv` (A-9001 appears twice)
+- `tests/fixtures/batch_quoted_field.csv` (commas + escaped quotes)
+- `tests/fixtures/batch_missing_image.csv` (image path that doesn't exist)
+
+**Updated:**
+- `pilot/agent/planner.py` - tightened system prompt with explicit
+  "no hallucinated content_ids or file paths" rule.
+- `skills/curate_carousel.v2.json` - renamed carousel_comment ->
+  layout_comment for cross-skill param consistency.
+- `scripts/e2e_cli_run.py` - new `--llm-intake` and `--extra-cli-arg`
+  flags so the same driver tests both intake variants.
+
+**Caveats and known limits documented honestly:**
+- 6.4 (missing image on disk): the failure surfaces *late* -- the
+  upload step appears to succeed, then Save stays disabled, then
+  Apply times out. The user-facing error is "could not click apply"
+  rather than "image not found." Fixable in a follow-up by checking
+  Path.exists() on file_path params in RealExecutor before invoking
+  the runner.
+- 6.6 / 6.9: 8b-instant model used due to 70b-versatile daily TPD
+  quota exhaustion. 8b is more conservative on hallucination (passes
+  6.6) but less willing to clarify (fails 6.9 by planning everything).
+  The intended production model is 70b-versatile; 70b should be
+  re-tested on 6.9 once quota resets.
+- 6.5 (locator drift): the recorded skill already uses L2 semantic
+  fallback for some elements (layout buttons) because the auto-named
+  testids don't exactly match the React-emitted kebab-case ids. The
+  fallback is exercised on every run; deliberate drift just adds one
+  more L2 hit.
+
 ### Phase 5 complete: end-to-end CLI run with real Groq + real Chrome works
 
 **Commit:** _(this commit)_

@@ -189,6 +189,14 @@ Strict rules:
   attached files cannot supply. Example clarify-worthy: "curate this
   CSV" without specifying which layout. Example NOT clarify-worthy:
   "use the featured-row layout" — that's already specified.
+- **Never hallucinate file paths or content_ids.** Every slot_N_content_id
+  value MUST appear in `intake.content_items` (or in a CSV row of
+  `intake.csv_attachments`). Every slot_N_image_file_path value MUST
+  come from a CSV row's image_path column or be an attached file. If
+  the operator's goal mentions a content_id that does NOT appear in
+  the attached CSV, you MUST clarify ("X-9999 was not in the attached
+  CSV; please confirm the source") rather than inventing a path that
+  follows the naming pattern.
 - For multi-item goals, emit one plan_step per skill invocation
   (typically one).
 """

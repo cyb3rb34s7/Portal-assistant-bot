@@ -90,7 +90,7 @@
       "default_hint": "A-9005.png"
     },
     {
-      "name": "carousel_comment",
+      "name": "layout_comment",
       "semantic": "An optional comment to be included with the carousel layout",
       "required": true,
       "type": "string",
@@ -145,6 +145,6 @@
     "slot_4_image_file_path": "slot_4_image_input",
     "slot_5_content_id": "slot_5_content_select",
     "slot_5_image_file_path": "slot_5_image_input",
-    "carousel_comment": "input_comment"
+    "layout_comment": "input_comment"
   }
 }
