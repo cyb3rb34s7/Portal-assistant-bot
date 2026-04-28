@@ -10,3 +10,5 @@ sessions/
 .vscode/
 .idea/
 tests/artifacts/
+sessions/
+/tmp/curationpilot-teach-profile/

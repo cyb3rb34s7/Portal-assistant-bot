@@ -54,7 +54,9 @@ class AuditLogger:
         )
         path = self.screenshots_dir / f"{ts}_{safe_label}.png"
         try:
-            page.screenshot(path=str(path), full_page=False)
+            # 5s cap so a slow font/network state can't stall the run.
+            # The recorder + replay loop call this on every step.
+            page.screenshot(path=str(path), full_page=False, timeout=5000)
         except Exception as e:
             self.log("error", f"screenshot failed: {e}", data={"label": label})
             return ""

@@ -311,7 +311,28 @@ def _make_orchestrator(args: argparse.Namespace) -> Orchestrator:
     )
     ev_q: asyncio.Queue = asyncio.Queue()
     cmd_q: asyncio.Queue = asyncio.Queue()
-    return Orchestrator(client=client, config=config, ev_out=ev_q, cmd_in=cmd_q)
+
+    executor = None
+    if args.executor == "real":
+        # Imported lazily so `intake` / `plan` subcommands don't
+        # incur the cost of importing Playwright when they don't
+        # actually drive a browser.
+        from pilot.agent.executor_real import RealExecutor, RealExecutorConfig
+
+        executor = RealExecutor(
+            RealExecutorConfig(
+                skills_dir=Path(args.skills_dir),
+                sessions_dir=Path(args.sessions_dir),
+                cdp_endpoint=args.cdp_endpoint,
+                target_url_substring=args.target_url,
+            )
+        )
+    # else: leave as None -> Orchestrator uses FakeExecutor for dry-runs
+
+    return Orchestrator(
+        client=client, config=config, ev_out=ev_q, cmd_in=cmd_q,
+        executor=executor,
+    )
 
 
 async def _cmd_do(args: argparse.Namespace) -> int:
@@ -389,6 +410,22 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-llm-intake", action="store_true")
     p.add_argument("--auto-approve", action="store_true",
                    help="bypass plan approval (test only)")
+    p.add_argument(
+        "--executor",
+        choices=["fake", "real"],
+        default="fake",
+        help="step executor: fake (smoke / dry-run) or real (drives Chrome over CDP)",
+    )
+    p.add_argument(
+        "--cdp-endpoint",
+        default="http://localhost:9222",
+        help="CDP endpoint when --executor real",
+    )
+    p.add_argument(
+        "--target-url",
+        default=None,
+        help="optional substring of the page URL to attach to",
+    )
 
 
 def main() -> int:
