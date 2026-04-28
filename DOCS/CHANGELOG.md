@@ -11,6 +11,42 @@
 
 ## 2026-04-28
 
+### Architectural decision AD-002: v1 ships as web app, v2 wraps in Electron
+
+**Commit:** _(this commit, docs only)_
+
+**Files changed:**
+- `DOCS/PRODUCT_PLAN.md` — added §3.4 "UI delivery strategy — v1 Web,
+  v2 Electron"; updated §3.1 topology diagrams (separate v1 web vs v2
+  Electron pictures); updated §3.2 process model table for both
+  versions; rewrote §6.1 scope and §6.3 Week 3 + Week 4 to target a
+  React web app instead of Electron, plus a new V2 phase for the
+  Electron wrap; revised §11 (Adopt / Reject) to reflect the v1=Web
+  / v2=Electron stack split, the `HostBridge` seam, FastAPI web
+  server, native WebSocket; explicitly rejected Next.js, xstate,
+  socket.io, Vercel AI SDK for v1, and Electron in v1.
+- `DOCS/CONTEXT.md` — added §8 "Architectural decisions log" with
+  AD-002 (this decision) and AD-001 (the AIClient/no-framework
+  decision from 2026-04-24, captured retrospectively); updated §5
+  "Next up" to reflect the Week 3 = web app and Week 4 = polish +
+  Electron-readiness audit, with a separate v2 phase.
+- `DOCS/CHANGELOG.md` — this entry.
+
+**Why.** Operator (user) raised the concern that Electron development
+is harder to maintain and the long-term support story is uncertain.
+The realisation that "Electron's renderer is just our React app
+hosted in Chromium" means whatever we write for v1's browser ships
+into v2's Electron renderer unchanged — provided we put the desktop-
+vs-web seam behind a single `HostBridge` interface from day one.
+
+**Effect on Week 1 (just shipped).** None. The schemas, intake,
+planner, clarify, orchestrator, server (stdio), CLI, and tests are
+all delivery-channel-agnostic. The web app is a new sibling of the
+existing stdio JSON-RPC surface; both wrap the same `Orchestrator`.
+
+**No code changes in this commit.** Code work for AD-002 starts in
+the next commit (Week 3 scaffold + `web_server.py`).
+
 ### Week 1 v1 agent build complete (Checkpoints A + B + C)
 
 **Commit:** _(this commit)_

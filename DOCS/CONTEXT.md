@@ -192,11 +192,24 @@ After Week 1 ships:
 **Week 2** — intelligent-skill metadata pass during `annotate`, plan-
 preview UX in CLI, mid-loop pause hardening, dogfood on real workflows.
 
-**Week 3** — Electron shell (chat + plan + trace pane), spawns Chromium
-with CDP via button, JSON-RPC over stdio bridges agent ↔ renderer.
+**Week 3** — **React web app shell** (`curationpilot-app/`): React 18 +
+TS strict + Vite 5 + Tailwind v4 + shadcn/ui, talks to a new
+`pilot/agent/web_server.py` (FastAPI wrapper around the existing
+Orchestrator) over WebSocket + REST. **HostBridge interface** in
+`src/host/bridge.ts` with `bridge.web.ts` (v1 impl) and
+`bridge.electron.ts` (v2 stub) so v2 is a drop-in port. See
+`DOCS/PRODUCT_PLAN.md` §3.4 for the full decision.
 
-**Week 4** — Reporter LLM, session history, crash recovery, signed
-installer for Windows + macOS notarisation.
+**Week 4** — Markdown report viewer in the web app, session history,
+crash-recovery polish, dogfood, **Electron-readiness audit** (every
+browser-only API must go through `HostBridge`). v1 ships as
+`pip install curationpilot` + `pilot serve` opens a browser tab — no
+installer.
+
+**v2 (after v1 dogfood)** — Electron wrap. Same React renderer, fill in
+`bridge.electron.ts`, electron-builder, code signing, macOS
+notarisation. **No changes** to React, Python agent, schemas, or
+protocol — the §3.4 split is exactly so this is a port not a rewrite.
 
 V2 deferred features list lives in `DOCS/PRODUCT_PLAN.md` §7.
 
@@ -375,3 +388,66 @@ detached `setsid` shell, or kill specific PIDs from `ps`. Avoid broad
   short-lived.
 - Test scripts that consume secrets read them from env vars only and
   redact them from any captured output.
+
+---
+
+## 8. Architectural decisions log `[append-only]`
+
+> Each entry: date, decision title, what changed, why, alternatives
+> considered, where it lives in `DOCS/PRODUCT_PLAN.md`. Newest at the top.
+> Never delete; supersede with a new entry that explicitly references
+> the prior one.
+
+### AD-002 — v1 ships as a web app; v2 wraps it in Electron (2026-04-28)
+
+**Decision.** Build v1's operator UI as a standalone **React 18 + TS +
+Vite 5 + TailwindCSS v4 + shadcn/ui** SPA running in the operator's
+regular browser, talking to a new local `pilot/agent/web_server.py`
+(FastAPI). Electron is **deferred to v2** as an additive wrap of the
+same React code; v2 only adds a `bridge.electron.ts` impl + Electron
+main process + electron-builder.
+
+**Why.**
+- Electron's renderer *is* a Chromium-hosted React app, so anything
+  written for v1's browser ships into v2 unchanged.
+- v1 ships sooner — no electron-builder / signing / notarisation /
+  auto-update infra on the critical path.
+- Faster dev loop in browser (HMR, native devtools, no IPC ceremony).
+- The desktop-only capability we actually need (driving Chromium over
+  CDP) already lives in the **Python agent**, not in Electron. The
+  browser UI just renders agent events.
+
+**The seam: `HostBridge`.** Single interface in
+`curationpilot-app/src/host/bridge.ts` with two implementations
+(`bridge.web.ts` for v1, `bridge.electron.ts` for v2). All
+browser-vs-Electron-sensitive capabilities (file picker, folder
+picker, launch portal, sessions list, event subscription, command
+submission) route through it. The React app must never call `fetch`
+or `window.X` directly for those concerns.
+
+**Alternatives considered.**
+- *Build Electron from day one.* Rejected — pushes ship date, bakes in
+  build infrastructure cost before we've validated the agent UX.
+- *Tauri instead of Electron in v2.* Open option; Tauri also takes a
+  React renderer unchanged, so this decision doesn't preclude it.
+- *Next.js for the operator UI.* Rejected — no SSR / RSC / file-routing
+  benefit for a single-window WebSocket-driven SPA; complicates the v2
+  Electron port.
+
+**Lives in.** `DOCS/PRODUCT_PLAN.md` §3.1, §3.2, §3.4, §6.3 (Week 3 +
+Week 4 + V2), §11.1, §11.2.
+
+### AD-001 — Hand-owned `AIClient` Protocol; no LiteLLM, no agent framework (2026-04-24)
+
+**Decision.** All LLM access goes through a hand-written `AIClient`
+Protocol with per-provider adapters (Bedrock, OpenAI, Groq, custom
+org). Structured outputs use a provider-agnostic helper (JSON Schema
+in prompt + Pydantic validation + bounded retry). The agent
+orchestrator is a hand-written state machine.
+
+**Why.** Custom org LLM has a non-standard wire format that doesn't
+mesh with LiteLLM or `instructor`; agent frameworks (LangGraph,
+OpenAI Agents SDK, CrewAI, Agno) all assume LLM-in-the-execution-loop,
+but our executor is the deterministic runner and stays that way.
+
+**Lives in.** `DOCS/PRODUCT_PLAN.md` §11.

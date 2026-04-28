@@ -59,9 +59,12 @@ conversational feel of modern agentic apps.
 
 ### 3.1 High-level topology
 
+**v1 (web app + local agent — see §3.4):**
+
 ```
 +-------------------------------------------------------------------+
-|  ELECTRON DESKTOP APP                                             |
+|  WEB BROWSER (operator's normal browser)                          |
+|  React + Vite + Tailwind v4 SPA at http://localhost:5174          |
 |                                                                   |
 |  +----------------------------+  +-----------------------------+  |
 |  | Chat / Plan Pane (React)   |  | Live Trace Pane             |  |
@@ -73,15 +76,11 @@ conversational feel of modern agentic apps.
 |  +----------------------------+  +-----------------------------+  |
 |             |                              |                      |
 |             +-------------+----------------+                      |
-|                           | IPC                                   |
-|             +-------------v----------------+                      |
-|             | Main Process (Node.js)       |                      |
-|             |  - spawns Python agent       |                      |
-|             |  - spawns Chromium + CDP     |                      |
-|             |  - positions Chromium window |                      |
-|             +-------------+----------------+                      |
+|                           | HostBridge (bridge.web.ts)            |
+|                           |  - WebSocket /events                  |
+|                           |  - REST /tasks /commands /sessions    |
 +---------------------------|---------------------------------------+
-                            | stdio JSON-RPC (events + commands)
+                            | over loopback (FastAPI on :5174)      |
                             v
 +-------------------------------------------------------------------+
 |  PYTHON AGENT  (pilot/ + new agent/)                              |
@@ -104,20 +103,46 @@ conversational feel of modern agentic apps.
                  +-----------------------+
 ```
 
+**v2 (Electron, deferred — same React + Python, plus Electron shell):**
+
+```
++-------------------------------------------------------------------+
+|  ELECTRON DESKTOP APP                                             |
+|  Renderer = same React + Vite bundle as v1                        |
+|             |                                                     |
+|             | HostBridge (bridge.electron.ts)  IPC contextBridge  |
+|             v                                                     |
+|     Main Process (Node.js)                                        |
+|       - spawns Python agent (stdio JSON-RPC)                      |
+|       - spawns Chromium + CDP                                     |
+|       - native dialogs + window positioning                       |
++---------------------------|---------------------------------------+
+                            | stdio JSON-RPC (same protocol as v1)
+                            v
+                  (same Python agent + Chromium as v1)
+```
+
 ### 3.2 Process model
+
+**v1 (web):**
 
 | Process | Language | Role |
 |---|---|---|
-| Electron main | Node.js | Window management, spawns children, IPC bridge |
-| Electron renderer | React + TypeScript | UI (chat, plan, trace, report) |
-| Python agent | Python 3.11 | All LLM calls + deterministic runner |
-| Chromium | Native | The portal browser, user-visible |
+| Operator browser tab | — | Hosts the React SPA at `http://localhost:5174` |
+| Python agent + web server | Python 3.11 | All LLM calls + orchestrator + FastAPI HTTP/WS server + deterministic runner |
+| Chromium (portal) | Native | Spawned by the agent on demand; portal is user-visible |
 
-Four processes, three protocol boundaries:
+Three processes, two protocol boundaries:
 
-- **Renderer <-> Main**: Electron IPC (structured objects)
-- **Main <-> Agent**: stdio JSON-RPC (line-delimited JSON)
-- **Agent <-> Chromium**: Chrome DevTools Protocol
+- **Browser ↔ Agent**: HTTP + WebSocket on loopback (NDJSON over WS for events; same payload shapes as the stdio protocol)
+- **Agent ↔ Chromium**: Chrome DevTools Protocol
+
+**v2 (Electron — deferred):**
+
+Adds an Electron main + renderer pair. The renderer process is the same
+React bundle from v1; the main process replaces the loopback HTTP/WS
+with stdio JSON-RPC to the Python agent and adds native dialogs +
+window positioning. See §3.4.
 
 The agent is the same `pilot/` package that runs today. The new `agent/`
 module adds the LLM wrappers and the JSON-RPC server loop. The existing
@@ -138,6 +163,106 @@ snap the Chromium window to the right half of the screen.
 
 **v2 (deferred): BrowserView embedding.** Only if user feedback demands
 a single-window experience. The risk-reward does not justify it for v1.
+
+### 3.4 UI delivery strategy — v1 Web, v2 Electron `[2026-04-28 decision]`
+
+**Decision.** Ship v1 as a **standalone React + TypeScript + Vite +
+TailwindCSS v4 web app** running in the operator's regular browser.
+Defer Electron packaging to v2. The same React codebase is the v2
+Electron renderer with **zero source changes**, gated behind an explicit
+`HostBridge` interface.
+
+**Why this split:**
+
+1. Electron's renderer is just Chromium running our React app. Whatever
+   we write in v1 ships into v2 as the renderer untouched.
+2. v1 ships sooner — no electron-builder, code-signing, notarisation,
+   auto-update infrastructure on the critical path.
+3. Faster dev loop in browser (HMR, native devtools, no main↔renderer
+   IPC ceremony for every feature).
+4. The desktop-only capability we actually need — driving Chromium over
+   CDP — already lives in the Python agent. The browser UI just renders
+   the agent's events; it doesn't drive the portal directly.
+
+**The seam: `HostBridge`.** The React app must never call
+`fetch`/`window.X`/`File`/`localStorage` directly for anything that
+could be desktop-versus-web sensitive. Instead, every such capability
+goes through a `HostBridge` interface with two implementations:
+
+| `HostBridge` method | v1 (web) impl | v2 (Electron) impl |
+|---|---|---|
+| `submitTask(goal, attachments)` | `POST /tasks` to local Python agent server | IPC to Node main → Python child stdin |
+| `subscribeEvents(taskId)` | WebSocket `/events?task=...` | IPC event channel |
+| `sendCommand(cmd)` | `POST /commands` | IPC channel |
+| `pickFiles(kinds)` | `<input type=file multiple>` | `dialog.showOpenDialog` (real paths) |
+| `pickFolder()` | folder upload (zipped) or "desktop only" | `dialog.showOpenDialog({properties:['openDirectory']})` |
+| `launchPortal(url)` | call `POST /actions/launch-portal` (Python spawns Chrome) | IPC to Node, Node spawns Chrome |
+| `getSessionsList()` | `GET /sessions` (Python is filesystem owner) | same, or direct fs |
+| `openReport(sessionId)` | new browser tab to `/reports/...` | `shell.openPath` |
+
+The Python agent is the filesystem and CDP owner in **both** versions.
+This means v1 and v2 share a single backend; only the host-shell layer
+differs.
+
+**Stack lock-in (v1):**
+
+- React 18 + TypeScript (strict mode)
+- Vite 5 (fast HMR, same bundler used inside v2 Electron renderer)
+- TailwindCSS v4 (CSS-first config, oxide engine)
+- shadcn/ui components (copy-paste, no runtime dep)
+- TanStack Router *or* React Router 7 (SPA routing)
+- Zustand for client state (one in-flight task at a time)
+- TanStack Query for REST resources (sessions list, reports)
+- Native `WebSocket` for the event stream (no socket.io)
+- Vitest + Playwright for tests
+
+**Explicitly rejected:**
+
+- **Next.js** — we don't need SSR / RSC / file routing for a single-
+  window operator UI; adds weight that buys nothing.
+- **State machines (xstate)** — orchestrator state lives on the Python
+  side already; the UI just renders typed events.
+- **socket.io** — native `WebSocket` is fine for one stream.
+
+**Backend addition for v1:** `pilot/agent/web_server.py` — a thin
+FastAPI/uvicorn wrapper around the **same** `Orchestrator` the stdio
+JSON-RPC server uses. Endpoints:
+
+- `POST /tasks` → creates a task, returns `task_id`
+- `WS /events?task=<id>` → streams `AgentEvent`s as NDJSON over WebSocket
+- `POST /commands` → takes any `HostCommand` payload
+- `GET /sessions` → list past sessions
+- `GET /reports/<session_id>` → serves the report markdown + assets
+
+**Repository layout addition:**
+
+```
+curationpilot-app/                       # v1 React web app, future v2 renderer
+  package.json
+  vite.config.ts
+  tailwind.config.ts
+  index.html
+  src/
+    main.tsx
+    App.tsx
+    routes/                              # Home, Task, Sessions
+    features/                            # goal-input, plan-review,
+                                         # clarify, step-trace, report
+    host/
+      bridge.ts                          # the HostBridge interface
+      bridge.web.ts                      # v1 impl (WebSocket + fetch)
+      bridge.electron.ts                 # v2 impl (stub for now)
+      index.ts                           # picks impl via build flag
+    protocol/                            # mirrors pilot/agent/schemas/protocol.py
+    state/                               # zustand store
+    components/                          # shadcn/ui generated
+    lib/
+```
+
+**v2 migration cost (estimated).** Adding Electron in v2 means: new
+`curationpilot-app/electron/` directory with `main.ts` + `preload.ts`,
+filling in `bridge.electron.ts`, wiring electron-builder, signing /
+notarising. **No changes to React code, Python agent, or schemas.**
 
 ---
 
@@ -383,9 +508,13 @@ independently.
 - Execution via existing deterministic runner
 - Basic mid-loop pause on step failure with {retry, skip, abort} options
 - Post-run report (LLM-generated from trace + screenshots)
-- Electron desktop shell: chat pane + live trace pane
-- "Launch portal browser" button spawning Chromium with CDP
+- **Web app shell** (React + TS + Vite + Tailwind v4): chat pane + live
+  trace pane (runs in operator's regular browser; v2 wraps the same
+  code in Electron)
+- "Launch portal browser" action — Python agent spawns Chromium with CDP
 - Session history (list past runs, reopen their reports)
+- `HostBridge` interface in place from day one so v2 Electron port is
+  drop-in
 
 ### 6.2 Scope (out — deferred to v2)
 
@@ -397,6 +526,8 @@ independently.
 - Window embedding / single-window experience
 - Multi-user / team features
 - Skill authoring UI (v1: operators still use the CLI to teach)
+- **Electron packaging + signed installers** (deferred to v2 per
+  §3.4 decision; v1 ships as a web app + local Python agent)
 
 ### 6.3 V1 execution plan (4 weeks)
 
@@ -442,41 +573,68 @@ deterministic runner. No UI yet.
 end-to-end in CLI with intelligent-skill metadata driving the planner's
 decisions.
 
-#### Week 3 — Electron shell
+#### Week 3 — React web app shell `[v1=Web, v2=Electron — see §3.4]`
 
 **Deliverables:**
-- [ ] Electron app scaffold (TypeScript + React)
-- [ ] Main process spawns Python agent subprocess, bridges JSON-RPC
-      over stdio to renderer via IPC
-- [ ] Main process "Launch portal browser" action spawns Chromium
-      with CDP; window positioning on Windows + macOS
-- [ ] Chat pane: message history, input box, file attach via drag/drop
-- [ ] Clarify question UI: renders `clarify.ask` events as option
-      buttons (multi-select, with custom-answer escape hatch)
-- [ ] Plan preview UI: structured render of `plan.proposed`, with
-      destructive steps in red; Approve / Reject buttons
-- [ ] Live trace pane: step list, current step highlight, screenshot
-      thumbnails per step
-- [ ] Mid-loop pause UI: modal with the suggestion list from
-      `step.failed`, buttons wired to `pause.resolve`
+- [ ] `curationpilot-app/` scaffold: React 18 + TS strict + Vite 5 +
+      Tailwind v4 + shadcn/ui + TanStack Router + Zustand +
+      TanStack Query
+- [ ] `pilot/agent/web_server.py` — FastAPI wrapper around the existing
+      `Orchestrator`: `POST /tasks`, `WS /events`, `POST /commands`,
+      `GET /sessions`, `GET /reports/...`
+- [ ] `src/host/bridge.ts` interface + `bridge.web.ts` impl (WebSocket
+      event subscription, REST commands, `<input type=file>` for
+      attachments). `bridge.electron.ts` stub for v2.
+- [ ] `src/protocol/` types — TypeScript mirror of
+      `pilot/agent/schemas/protocol.py` (single source: a small
+      `scripts/gen_ts_from_pydantic.py` keeps them in sync)
+- [ ] Goal input screen: textarea + drag/drop file attach + portal
+      selector + submit
+- [ ] Live task screen: event stream renderer with feature components
+      for clarify, plan-review, step-trace, pause-resolver, report
+- [ ] Session history screen: list past sessions, link to report
+- [ ] Vitest unit tests for protocol parsing + bridge mock
 
-**Exit gate:** operator can run the same week 2 workflow entirely from
-the Electron app. No terminal needed.
+**Exit gate:** operator opens the web app at `http://localhost:5174`,
+types a goal, runs the same Week 2 workflow end-to-end through plan
+approval, step trace, optional pause resolution, and report view —
+without touching the terminal.
 
-#### Week 4 — Reporter + polish + dogfood
+#### Week 4 — Reporter polish + dogfood + Electron-readiness `[v1=Web]`
 
 **Deliverables:**
-- [ ] `pilot/agent/reporter.py` — reads trace + screenshots,
-      produces narrative markdown report
-- [ ] Report view in Electron app (render markdown, expand screenshots)
-- [ ] Session history view: list of past runs with status + timestamp
-- [ ] Crash recovery: if agent dies mid-run, app reconnects to the
-      most recent session and shows state
+- [x] `pilot/agent/reporter.py` — already shipped Week 1
+- [ ] Markdown report viewer in the web app (render `report.md` +
+      lazy-loaded screenshot thumbs)
+- [ ] Session history page polish: filters, status badges, durations
+- [ ] Crash recovery: web app polls `/sessions` on reconnect; if a task
+      was mid-run it offers "rejoin" linking to its event stream
 - [ ] Dogfood on 3-5 real workflows; triage every failure
-- [ ] v1 release: signed installer for Windows, notarised for macOS
+- [ ] **Electron-readiness audit** — tag every place the web app uses
+      a browser-only API not behind `HostBridge`, and either route it
+      through `HostBridge` or document it as a "desktop-only in v2"
+      enhancement
+- [ ] v1 release: deploy Python agent as `pip install`-able package +
+      web app as static `dist/` served by the agent on `:5174`. No
+      installer; operator runs `pilot serve` and opens a browser
 
 **Exit gate:** three external operators complete their real workflows
-without intervention from the dev team.
+in their browsers without intervention from the dev team. Electron-
+readiness audit shows zero `HostBridge` violations.
+
+#### V2 — Electron wrap (after v1 dogfood)
+
+**Deliverables (estimated):**
+- [ ] `curationpilot-app/electron/main.ts` + `preload.ts`
+- [ ] `bridge.electron.ts` filled in (IPC channels mirror REST/WS)
+- [ ] electron-builder configured for Windows + macOS
+- [ ] Code signing + macOS notarisation
+- [ ] Auto-update channel
+- [ ] Native window positioning for the Chromium child
+
+**Zero changes** to: React components, Python agent, schemas, protocol,
+skill format, portal context format. The whole point of §3.4 is that
+v2 is an additive port, not a rewrite.
 
 ### 6.4 V1 risks and mitigations
 
@@ -811,11 +969,17 @@ be auditable and stable for years.**
 | Agent orchestrator | Hand-written ~200 LOC state machine | Our flow (intake → clarify → plan → approve → execute → report) is linear with one checkpoint loop; frameworks impose more structure than we need |
 | JSON-RPC server (Python) | stdlib asyncio + stdin/stdout, line-delimited JSON | Protocol is the spec; no framework required |
 | Observability | `logfire` (optional), session trace | Every LLM call carries latency + usage from the AIClient layer |
-| Electron shell | Electron 30+ | Standard desktop app platform |
-| UI framework | React + TypeScript + Tailwind + shadcn/ui | Boring, widely-used, works in Electron |
-| Streaming chat UI | Vercel AI SDK (`ai` + `@ai-sdk/react`) | Best-in-class streaming primitives in React; no reason to roll our own |
+| Desktop shell (v1) | **Web browser** — see §3.4 | v1 ships as a web app + local Python agent; no Electron build/sign infra needed to ship |
+| Desktop shell (v2) | Electron 30+ | Wraps the same React renderer in v2 with `bridge.electron.ts` filling in `HostBridge` |
+| UI framework | React 18 + TypeScript (strict) + TailwindCSS v4 + shadcn/ui | Boring, widely-used, ports cleanly into Electron renderer |
+| Build tool | Vite 5 | Fast HMR, same bundler used inside v2 Electron renderer |
+| Routing | TanStack Router *or* React Router 7 | SPA routing; either works. Pick one in scaffold |
+| Host capability seam | Custom `HostBridge` interface (§3.4) with `bridge.web.ts` (v1) and `bridge.electron.ts` (v2 stub) | Single chokepoint for browser-vs-Electron differences; v2 port is drop-in |
+| Web API server (v1) | FastAPI + uvicorn wrapping the existing `Orchestrator` | Same orchestrator the stdio JSON-RPC server uses; no logic duplication |
+| Streaming events | Native `WebSocket` (no socket.io) | One stream, NDJSON, mirror of the stdio protocol |
 | State management (UI) | Zustand | Small, fast, no Redux ceremony |
-| IPC renderer↔main | Electron's `ipcRenderer` + contextBridge | Built-in; vanilla |
+| Server cache (UI) | TanStack Query | REST resources (sessions list, reports) |
+| IPC renderer↔main (v2) | Electron's `ipcRenderer` + contextBridge | Built-in; vanilla |
 
 ### 11.2 Explicitly reject
 
@@ -827,6 +991,11 @@ be auditable and stable for years.**
 | **MCP (Model Context Protocol)** | Worth tracking for v2 (could expose our pilot runner as an MCP server so Claude Desktop / Cursor can trigger portal workflows) but not a v1 foundation |
 | **LangChain** | Huge surface area, frequent breakage, not needed when our LLM use is 5-6 well-specified calls |
 | **`instructor`** | Wraps specific providers; doesn't mesh cleanly with custom-format org LLM. We use a provider-agnostic structured-output helper instead |
+| **Next.js (for the operator app)** | We don't need SSR / RSC / file routing for a single-window operator UI; adds weight that buys nothing and would complicate the v2 Electron port |
+| **xstate** | Orchestrator state lives on the Python side; the UI just renders typed events. A second state machine in the renderer would duplicate work |
+| **socket.io** | Native `WebSocket` is fine for one event stream; socket.io's reconnection and rooms features are unused |
+| **Vercel AI SDK** (`ai` + `@ai-sdk/react`) | Initially considered for chat streaming, but our streaming surface is structured agent events (clarify, plan, step), not free-text token streams. A typed WebSocket renderer fits better |
+| **Electron in v1** | See §3.4. Defers builder/signing/notarisation infrastructure off v1's critical path. v2 wraps the same React code |
 
 ### 11.3 The `AIClient` layer in detail
 
