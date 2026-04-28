@@ -53,6 +53,9 @@ def load_skill_library(skills_dir: Path) -> list[SkillFile]:
     for p in sorted(skills_dir.iterdir()):
         if p.suffix.lower() not in (".json", ".yaml", ".yml"):
             continue
+        # Skip the v2 sidecars; they're merged onto their primary below.
+        if p.name.endswith(".v2.json"):
+            continue
         try:
             text = p.read_text(encoding="utf-8")
             if p.suffix.lower() == ".json":
@@ -69,11 +72,59 @@ def load_skill_library(skills_dir: Path) -> list[SkillFile]:
                 data["id"] = p.stem
             if "name" not in data:
                 data["name"] = data["id"]
+
+            # Merge a `<stem>.v2.json` sidecar if present. The sidecar
+            # carries LLM-annotated metadata: better param names,
+            # description, preconditions, destructive_actions,
+            # success_assertions. The original v1 file is left intact;
+            # this lets us throw away a bad annotate pass without
+            # losing the recording.
+            sidecar = p.with_suffix(".v2.json")
+            if sidecar.exists():
+                try:
+                    side = json.loads(sidecar.read_text(encoding="utf-8"))
+                    # The sidecar's `parameters` REPLACES the v1 params
+                    # (semantic names live there). Other fields merge.
+                    if "parameters" in side:
+                        data["parameters"] = side["parameters"]
+                        # Drop v1 `params` so upgrade_v1_to_v2 doesn't
+                        # re-derive them and clobber the LLM names.
+                        data.pop("params", None)
+                    for k in (
+                        "description", "preconditions",
+                        "destructive_actions", "success_assertions",
+                    ):
+                        if k in side:
+                            data[k] = side[k]
+                    if "param_alias_map" in side:
+                        # Stash the alias map on the dict; SkillFile
+                        # doesn't have a field for it, so we keep it as
+                        # an "extra" the executor reads via
+                        # _alias_map_for(skill_id) helper below.
+                        _ALIAS_MAPS[data["id"]] = side["param_alias_map"]
+                except Exception as e:  # noqa: BLE001
+                    print(
+                        f"[planner] sidecar merge failed for {sidecar.name}: {e}",
+                        flush=True,
+                    )
+
             skill = upgrade_v1_to_v2(data)
             out.append(skill)
         except Exception as e:  # noqa: BLE001 - intentional broad catch
             print(f"[planner] skill load failed for {p.name}: {e}", flush=True)
     return out
+
+
+# Alias map: semantic_param_name -> v1 binding name. Populated from
+# `.v2.json` sidecars during load_skill_library. Lives at module scope
+# because SkillFile is a Pydantic model we don't want to extend just to
+# carry implementation detail; the RealExecutor reads from here.
+_ALIAS_MAPS: dict[str, dict[str, str]] = {}
+
+
+def alias_map_for(skill_id: str) -> dict[str, str]:
+    """Return the semantic->v1-binding alias map for a skill, or {}."""
+    return _ALIAS_MAPS.get(skill_id, {})
 
 
 # ---------------------------------------------------------------------------
@@ -118,12 +169,28 @@ Strict rules:
 - Use only skills that appear in the catalog; do NOT invent skill ids.
 - Use only parameter names that appear in the chosen skill's parameters.
 - Every parameter you set must have a `param_sources` entry explaining
-  where the value came from ("pptx asset id", "user-provided",
-  "portal_context default", etc.).
+  where the value came from ("csv col content_id row 1", "operator
+  goal", "portal_context default", etc.).
 - Do not ask redundant clarify questions; questions must each eliminate
   ambiguity that you could not resolve from the context alone.
-- Prefer plan over clarify when the data supports a confident decision.
-- For multi-item goals, emit one plan_step per item.
+- **Prefer plan over clarify whenever the data supports a confident
+  decision.** Specifically:
+  * If the operator's goal QUOTES a string (e.g. comment 'Spring drop'),
+    that string IS the value. Do not ask the operator to confirm it.
+  * If the operator names a layout that exists in the portal context
+    (grid-2x2, featured-row, carousel), USE that layout.
+  * If a CSV is attached and the skill expects per-slot content_id and
+    image_path, MAP csv row N's content_id and image_path to slot N's
+    parameters in order. `intake.csv_attachments[*].rows` gives you the
+    rows as {header: value} dicts.
+  * If the operator uses an absolute or repo-relative path that exists
+    in the CSV's image_path column, USE that path verbatim.
+- Clarify ONLY when the goal genuinely lacks information that the
+  attached files cannot supply. Example clarify-worthy: "curate this
+  CSV" without specifying which layout. Example NOT clarify-worthy:
+  "use the featured-row layout" — that's already specified.
+- For multi-item goals, emit one plan_step per skill invocation
+  (typically one).
 """
 
 

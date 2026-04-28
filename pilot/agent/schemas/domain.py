@@ -47,12 +47,28 @@ class FileResolution(BaseModel):
     matched_kind: str | None = None  # "thumbnail" | "asset" | ...
 
 
+class CsvAttachment(BaseModel):
+    """Structured contents of an attached CSV file."""
+
+    path: str
+    headers: list[str] = Field(default_factory=list)
+    rows: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Each row as a {header: value} dict. Capped at ~100 rows.",
+    )
+
+
 class IntakeEntities(BaseModel):
     """Top-level intake stage result."""
 
     content_items: list[ContentItem] = Field(default_factory=list)
     dates: list[DateExtraction] = Field(default_factory=list)
     files_resolved: list[FileResolution] = Field(default_factory=list)
+    csv_attachments: list[CsvAttachment] = Field(
+        default_factory=list,
+        description="Structured per-CSV row-level data so the planner can map "
+        "row 1 to slot 1, etc., without guessing.",
+    )
     raw_text_excerpts: list[str] = Field(
         default_factory=list,
         description="Up to N short snippets the LLM retained for grounding.",

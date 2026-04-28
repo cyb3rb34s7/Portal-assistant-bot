@@ -39,6 +39,7 @@ from pilot.agent.ai_client import AIClient, Message, complete_structured
 from pilot.agent.ai_client.structured import StructuredOutputError
 from pilot.agent.schemas.domain import (
     ContentItem,
+    CsvAttachment,
     DateExtraction,
     FileResolution,
     IntakeEntities,
@@ -144,6 +145,7 @@ class _PrepassFinding(BaseModel):
     iso_dates: list[str] = Field(default_factory=list)
     csv_headers: list[str] = Field(default_factory=list)
     csv_sample_rows: list[list[str]] = Field(default_factory=list)
+    csv_attachments: list[CsvAttachment] = Field(default_factory=list)
     folder_files: list[str] = Field(default_factory=list)
     pptx_text: str = ""
     plain_text: str = ""
@@ -170,6 +172,13 @@ def _prepass(attachments: list[Attachment]) -> _PrepassFinding:
             header, rows = _read_csv_summary(path)
             f.csv_headers.extend(header)
             f.csv_sample_rows.extend(rows)
+            row_dicts = [
+                {h: (r[i] if i < len(r) else "") for i, h in enumerate(header)}
+                for r in rows
+            ]
+            f.csv_attachments.append(
+                CsvAttachment(path=str(path), headers=list(header), rows=row_dicts)
+            )
             text_blob += "\n" + ",".join(header)
             for row in rows:
                 text_blob += "\n" + ",".join(row)
@@ -216,9 +225,40 @@ def _match_thumbnails(asset_ids: list[str], folder_files: list[str]) -> list[Fil
 
 
 def _build_baseline_entities(prepass: _PrepassFinding) -> IntakeEntities:
-    items = [
-        ContentItem(id=aid, raw_source="attachment-prepass") for aid in prepass.asset_ids
-    ]
+    # Index CSV rows by their content_id-shaped column (any column whose
+    # values look like A-NNNN). This lets us enrich ContentItems with
+    # title / image_path / release_date / category / etc. without the
+    # planner having to dig through raw_text_excerpts.
+    csv_by_id: dict[str, dict[str, str]] = {}
+    for csv_att in prepass.csv_attachments:
+        id_col = None
+        for h in csv_att.headers:
+            if h.lower() in ("content_id", "id", "asset_id"):
+                id_col = h
+                break
+        if id_col is None:
+            continue
+        for row in csv_att.rows:
+            cid = row.get(id_col, "").strip()
+            if cid and cid not in csv_by_id:
+                csv_by_id[cid] = row
+
+    items: list[ContentItem] = []
+    for aid in prepass.asset_ids:
+        csv_row = csv_by_id.get(aid, {})
+        items.append(
+            ContentItem(
+                id=aid,
+                title=csv_row.get("title") or None,
+                thumbnail_path=csv_row.get("image_path") or None,
+                raw_source="attachment-prepass",
+                extra={
+                    k: v for k, v in csv_row.items()
+                    if k not in ("content_id", "id", "asset_id", "title", "image_path")
+                    and v
+                },
+            )
+        )
     files = _match_thumbnails(prepass.asset_ids, prepass.folder_files)
 
     # Tag matched thumbnails back onto items
@@ -254,6 +294,7 @@ def _build_baseline_entities(prepass: _PrepassFinding) -> IntakeEntities:
         content_items=items,
         dates=dates,
         files_resolved=files,
+        csv_attachments=prepass.csv_attachments,
         raw_text_excerpts=raw_excerpts,
         warnings=warnings,
     )

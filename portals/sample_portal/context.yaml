@@ -1,6 +1,6 @@
-# Portal context file for the sample (test) portal shipped in
-# sample_portal/. Used by the agent's planner stage to ground its
-# reasoning about goals expressed in natural language.
+# Portal context file for the sample portal shipped in sample_portal/.
+# Used by the agent's planner stage to ground its reasoning about goals
+# expressed in natural language.
 #
 # Schema: pilot/agent/schemas/portal_context.py :: PortalContext
 
@@ -11,77 +11,72 @@ name: "CurationPilot Sample Portal"
 base_url: "http://localhost:5173"
 
 glossary:
-  - term: "release"
+  - term: "content"
     meaning: >
-      A bundle of content items scheduled to go live together on a
-      specific date. Operators commonly receive one PPT per release.
-    aliases: ["batch", "drop"]
+      A piece of media tracked by a stable identifier of the form
+      A-NNNN. Operators receive a CSV listing 4-5 contents per drop,
+      each with title, image_path, category, and release_date.
+    aliases: ["asset", "item"]
 
-  - term: "curation"
+  - term: "layout"
     meaning: >
-      The act of placing one or more content items into layout slots,
-      scheduling their go-live dates, and optionally attaching
-      thumbnails. The primary user workflow for this portal.
+      One of three pre-built arrangements of content slots:
+      grid-2x2 (4 slots), featured-row (4 slots), carousel (5 slots).
+      The operator picks one layout per curation session.
+    aliases: ["template"]
 
   - term: "slot"
     meaning: >
-      A position in the layout grid identified by a (row, position)
-      pair. Both are 1-indexed.
+      A position in the chosen layout. Slots are 1-indexed. Each slot
+      holds one content (picked from the dropdown of uploaded contents)
+      and one image (uploaded from disk).
     aliases: ["position"]
 
-  - term: "asset"
+  - term: "curation"
     meaning: >
-      A piece of content (video, image, audio) tracked by a stable
-      identifier of the form A-NNNN.
-    aliases: ["item", "content item"]
+      The end-to-end workflow: upload CSV, pick layout, fill slots
+      with contents+images, comment, save, apply.
 
 page_map:
-  - path: "/dashboard"
-    role: "home"
-    notes: "Default landing page after login."
+  - path: "/upload"
+    role: "intake"
+    notes: >
+      CSV upload tab. Requires columns: content_id, title, image_path,
+      category, release_date. Renders the parsed table for visual
+      confirmation. Must run before /curation.
 
   - path: "/curation"
     role: "primary_workflow"
-    sub_tabs: ["layout", "schedule", "thumbnails"]
     notes: >
-      Three-tab workflow. The Layout tab places an asset in a grid slot;
-      Schedule sets start/end dates; Thumbnails attaches an image.
-
-  - path: "/media-assets"
-    role: "asset_library"
-    notes: "Browse and create assets. Save and Delete are available."
+      Single-screen workflow. (1) pick a layout from three options;
+      (2) fill each slot with a content (dropdown sourced from the
+      uploaded CSV); (3) upload each slot's image; (4) write a
+      comment; (5) save; (6) apply.
 
 field_conventions:
   - field: "content_id"
     format: "A-NNNN"
     examples: ["A-9001", "A-9042", "A-7777"]
 
-  - field: "schedule_start"
+  - field: "release_date"
     format: "YYYY-MM-DD"
     timezone: "UTC"
 
-  - field: "schedule_end"
-    format: "YYYY-MM-DD"
-    timezone: "UTC"
+  - field: "layout_id"
+    format: "one of: grid-2x2, featured-row, carousel"
+    examples: ["grid-2x2", "featured-row", "carousel"]
 
-  - field: "layout_row"
-    format: "1-indexed positive integer"
-    examples: ["1", "2", "3"]
-
-  - field: "layout_position"
-    format: "1-indexed positive integer"
-    examples: ["1", "2", "3"]
+  - field: "image_path"
+    format: "absolute or repo-relative path to a PNG / JPG"
+    examples: ["tests/fixtures/images/A-9001.png"]
 
 destructive_actions:
-  - "publish"
-  - "delete"
-  - "save_layout"     # mutates portal state, but reversible
+  - "save_layout"   # writes a saved draft to local storage
+  - "apply_layout"  # commits the saved draft to the applied list
 
 session:
-  login_url: ""           # sample portal has no auth
+  login_url: ""
   session_duration_minutes: null
   sso_provider: "none"
   notes: >
-    Sample portal has no authentication; this section is filled in
-    only to validate the schema is exercised end-to-end. Real portals
-    should populate login_url, sso_provider, and session_duration_minutes.
+    Sample portal has no authentication.

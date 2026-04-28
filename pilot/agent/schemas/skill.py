@@ -35,7 +35,7 @@ class SkillParameter(BaseModel):
         "(e.g. 'PPT slide table column Asset ID' or 'user-provided').",
     )
     default_hint: str | None = None
-    type: Literal["string", "number", "boolean", "date"] = "string"
+    type: Literal["string", "number", "boolean", "date", "file_path"] = "string"
 
 
 class SuccessAssertion(BaseModel):
@@ -104,7 +104,9 @@ class SkillFile(BaseModel):
 
 _V1_TYPE_MAP = {"string": "string", "number": "number", "boolean": "boolean",
                 "date": "date", "int": "number", "integer": "number",
-                "float": "number", "bool": "boolean"}
+                "float": "number", "bool": "boolean",
+                "file_path": "file_path", "filepath": "file_path",
+                "path": "file_path"}
 
 
 def _migrate_v1_params(legacy_params: list[dict[str, Any]]) -> list[dict[str, Any]]:

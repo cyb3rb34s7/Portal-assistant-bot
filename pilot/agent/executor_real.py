@@ -48,6 +48,7 @@ from pilot.skill_models import Skill
 from pilot.skill_runner import SkillRunner
 
 from pilot.agent.orchestrator import StepExecutor, StepResult
+from pilot.agent.planner import alias_map_for
 from pilot.agent.schemas.domain import PlanStep
 from pilot.agent.schemas.skill import SkillFile
 
@@ -105,10 +106,28 @@ class RealExecutor(StepExecutor):
             {"test_id": skill.id, "screenshot_path": None},
         )
 
+        # Translate semantic param names (what the planner emitted)
+        # back to v1 binding names (what the recorded trace uses) via
+        # the alias map populated from the .v2.json sidecar. If no
+        # sidecar exists, we pass params through unchanged (the v1
+        # name *is* the canonical name in that case).
+        runtime_params = self._translate_params(skill.id, step.params)
+
         # Run the synchronous SkillRunner in a worker thread.
         return await asyncio.to_thread(
-            self._run_skill_sync, v1_skill, step.params
+            self._run_skill_sync, v1_skill, runtime_params
         )
+
+    def _translate_params(
+        self, skill_id: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        alias = alias_map_for(skill_id)
+        if not alias:
+            return dict(params)
+        out: dict[str, Any] = {}
+        for k, v in params.items():
+            out[alias.get(k, k)] = v
+        return out
 
     # ---- Helpers --------------------------------------------------------
 
