@@ -11,6 +11,39 @@
 
 ## 2026-04-28
 
+### Phase 5 complete: end-to-end CLI run with real Groq + real Chrome works
+
+**Commit:** _(this commit)_
+
+A single natural-language CLI prompt now drives the full pipeline:
+intake -> Groq planner picks correct skill from 3-skill library ->
+auto-approved plan -> real Chrome over CDP replays the recorded
+trace via `pilot.skill_runner` -> portal ends in the expected state.
+Verified for both `featured-row` and `grid-2x2` layouts with
+different operator-supplied comments.
+
+**Files added:**
+- `skills/curate_featured_row.json` (renamed from curate_layout) +
+  `.v2.json` sidecar
+- `skills/curate_grid_2x2.json` + `.v2.json` sidecar
+- `skills/curate_carousel.json` + `.v2.json` sidecar (5 slots)
+- `scripts/e2e_cli_run.py` — Phase 5 driver: launches headless
+  Chromium with CDP at :9222, resets portal localStorage, invokes
+  the agent CLI, asserts the `applied-layouts` list contains the
+  layout the goal asked for.
+
+**Updated:**
+- `DOCS/CONTEXT.md` §3 with Phase 1-5 outcomes.
+
+**Bench scores (5-case planner eval, 2026-04-28):** 5/5.
+- P1 (featured-row): plan + correct skill + correct slot params.
+- P2 (grid-2x2): plan + correct skill + correct slot params.
+- P3 (carousel): plan + correct skill (5-slot variant).
+- C1 (no layout specified): clarify -- "Which layout would you
+  like to use for curation?"
+- C2 (no CSV attached): clarify -- precise questions about layout +
+  upload, no hallucinated content_ids.
+
 ### Architectural decision AD-002: v1 ships as web app, v2 wraps in Electron
 
 **Commit:** _(this commit, docs only)_

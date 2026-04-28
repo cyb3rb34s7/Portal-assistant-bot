@@ -1,0 +1,150 @@
+{
+  "description": "Curate a carousel layout from a CSV of contents, allowing for the selection of specific content and images for each slot, and including an optional comment.",
+  "parameters": [
+    {
+      "name": "content_csv_file_path",
+      "semantic": "The file path to the CSV file containing the content information",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "CSV file uploaded by the operator",
+      "default_hint": "batch.csv"
+    },
+    {
+      "name": "slot_1_content_id",
+      "semantic": "The ID of the content to be displayed in slot 1",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column content_id, row 1",
+      "default_hint": "A-9001"
+    },
+    {
+      "name": "slot_1_image_file_path",
+      "semantic": "The file path to the image to be displayed in slot 1",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "Image file uploaded by the operator",
+      "default_hint": "A-9001.png"
+    },
+    {
+      "name": "slot_2_content_id",
+      "semantic": "The ID of the content to be displayed in slot 2",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column content_id, row 2",
+      "default_hint": "A-9002"
+    },
+    {
+      "name": "slot_2_image_file_path",
+      "semantic": "The file path to the image to be displayed in slot 2",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "Image file uploaded by the operator",
+      "default_hint": "A-9002.png"
+    },
+    {
+      "name": "slot_3_content_id",
+      "semantic": "The ID of the content to be displayed in slot 3",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column content_id, row 3",
+      "default_hint": "A-9003"
+    },
+    {
+      "name": "slot_3_image_file_path",
+      "semantic": "The file path to the image to be displayed in slot 3",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "Image file uploaded by the operator",
+      "default_hint": "A-9003.png"
+    },
+    {
+      "name": "slot_4_content_id",
+      "semantic": "The ID of the content to be displayed in slot 4",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column content_id, row 4",
+      "default_hint": "A-9004"
+    },
+    {
+      "name": "slot_4_image_file_path",
+      "semantic": "The file path to the image to be displayed in slot 4",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "Image file uploaded by the operator",
+      "default_hint": "A-9004.png"
+    },
+    {
+      "name": "slot_5_content_id",
+      "semantic": "The ID of the content to be displayed in slot 5",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column content_id, row 5",
+      "default_hint": "A-9005"
+    },
+    {
+      "name": "slot_5_image_file_path",
+      "semantic": "The file path to the image to be displayed in slot 5",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "Image file uploaded by the operator",
+      "default_hint": "A-9005.png"
+    },
+    {
+      "name": "carousel_comment",
+      "semantic": "An optional comment to be included with the carousel layout",
+      "required": true,
+      "type": "string",
+      "source_hint": "Operator-provided comment",
+      "default_hint": "Carousel teach"
+    }
+  ],
+  "preconditions": [
+    "The user is logged in to the sample_portal",
+    "The user has the necessary permissions to curate a carousel layout"
+  ],
+  "destructive_actions": [
+    {
+      "step": 17,
+      "kind": "btn",
+      "reversible": true,
+      "confirm_prompt": null
+    },
+    {
+      "step": 18,
+      "kind": "btn",
+      "reversible": true,
+      "confirm_prompt": null
+    }
+  ],
+  "success_assertions": [
+    {
+      "type": "text_visible",
+      "text": "A carousel layout has been successfully curated",
+      "scope": "page"
+    },
+    {
+      "type": "text_visible",
+      "text": "The carousel layout includes the selected content and images",
+      "scope": "page"
+    },
+    {
+      "type": "text_visible",
+      "text": "The carousel layout has been saved and applied",
+      "scope": "page"
+    }
+  ],
+  "param_alias_map": {
+    "content_csv_file_path": "input_csv_file",
+    "slot_1_content_id": "slot_1_content_select",
+    "slot_1_image_file_path": "slot_1_image_input",
+    "slot_2_content_id": "slot_2_content_select",
+    "slot_2_image_file_path": "slot_2_image_input",
+    "slot_3_content_id": "slot_3_content_select",
+    "slot_3_image_file_path": "slot_3_image_input",
+    "slot_4_content_id": "slot_4_content_select",
+    "slot_4_image_file_path": "slot_4_image_input",
+    "slot_5_content_id": "slot_5_content_select",
+    "slot_5_image_file_path": "slot_5_image_input",
+    "carousel_comment": "input_comment"
+  }
+}

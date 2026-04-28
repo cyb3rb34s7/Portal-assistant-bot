@@ -177,6 +177,34 @@ against both the mock client and live Groq.**
   PASS — all 7 v1 parameters extracted correctly from a single
   natural-language sentence including dates.
 
+**Phase 1-5 (curation workflow E2E proof, 2026-04-28):**
+- Phase 1: Sample portal rebuilt with Upload + Curation tabs, 3
+  layouts (grid-2x2 4 slots, featured-row 4, carousel 5), CSV-driven
+  contents and per-slot image upload. All 3 layouts driven end-to-end
+  via Playwright operator simulator.
+- Phase 2: `pilot/agent/executor_real.py` wires the orchestrator to
+  the existing `pilot.skill_runner`. CLI `--executor real` flag.
+- Phase 3: `scripts/teach_workflow.py` records 3 skills
+  (curate_featured_row, curate_grid_2x2, curate_carousel) end-to-end
+  via headless Chromium with CDP, runs auto-annotate, and replays
+  the recorded skill back against the portal — replay green at all
+  L1 exact locators (with two L2 semantic fallbacks where react
+  re-rendered the testid).
+- Phase 4: `pilot/agent/annotate_llm.py` uses Groq to enrich each v1
+  skill into a `.v2.json` sidecar with semantic param names, source
+  hints, file-path types, descriptions, preconditions, destructive
+  flags. Planner cold-start eval bench (5 cases) scored 5/5: 3
+  layouts produce correct plans against fresh CSVs with the right
+  skill picked from the 3-skill library; 2 ambiguous goals ("no
+  layout specified", "no CSV attached") correctly emit precise
+  clarify questions.
+- Phase 5: End-to-end CLI run via `pilot.agent.cli do "..." --client
+  groq --executor real --auto-approve`. Both `featured-row` and
+  `grid-2x2` natural-language goals planned correctly, replayed
+  through real Chromium over CDP, and ended in the expected portal
+  state (`<layout> — N slots — "<comment>"` visible in the Applied
+  list).
+
 Approach (held throughout):
 - Pydantic schemas for every LLM input/output and every JSON-RPC payload.
 - Mock AIClient for unit tests; real Groq for integration tests, gated

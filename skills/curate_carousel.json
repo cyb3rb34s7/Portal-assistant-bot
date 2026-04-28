@@ -1,11 +1,11 @@
 {
-  "name": "curate_layout",
-  "description": "Curate a featured-row layout from a CSV of contents",
+  "name": "curate_carousel",
+  "description": "Curate a carousel layout from a CSV of contents",
   "portal": "sample_portal",
   "tags": [],
   "version": 1,
-  "created_at": "2026-04-28T05:29:53.938299",
-  "updated_at": "2026-04-28T05:29:53.938301",
+  "created_at": "2026-04-28T05:42:47.857938",
+  "updated_at": "2026-04-28T05:42:47.857942",
   "base_url": "http://localhost:5173",
   "params": [
     {
@@ -72,10 +72,24 @@
       "required": true
     },
     {
+      "name": "slot_5_content_select",
+      "type": "string",
+      "description": "Value for step 14: fill_slot_5_content_select",
+      "example": "A-9005",
+      "required": true
+    },
+    {
+      "name": "slot_5_image_input",
+      "type": "file_path",
+      "description": "Value for step 15: upload_slot_5_image_input",
+      "example": "A-9005.png",
+      "required": true
+    },
+    {
       "name": "input_comment",
       "type": "string",
-      "description": "Value for step 14: fill_input_comment",
-      "example": "Replay verification",
+      "description": "Value for step 16: fill_input_comment",
+      "example": "Carousel teach",
       "required": true
     }
   ],
@@ -93,7 +107,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.331357",
+      "captured_at": "2026-04-28T05:42:47.171959",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -170,8 +184,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.333016",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953333028_002_click.png",
+      "captured_at": "2026-04-28T05:42:47.173971",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247173985_002_click.png",
       "auto_post_observed": null
     },
     {
@@ -252,8 +266,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.387608",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953387624_004_file_selected.png",
+      "captured_at": "2026-04-28T05:42:47.241337",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247241355_004_file_selected.png",
       "auto_post_observed": null
     },
     {
@@ -329,8 +343,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.449109",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953449134_005_click.png",
+      "captured_at": "2026-04-28T05:42:47.322213",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247322238_005_click.png",
       "auto_post_observed": null
     },
     {
@@ -346,7 +360,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.498447",
+      "captured_at": "2026-04-28T05:42:47.371723",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -359,18 +373,18 @@
         "name": null,
         "aria_label": null,
         "role": null,
-        "accessible_name": "Featured Row",
-        "text": "Featured Row",
+        "accessible_name": "Carousel",
+        "text": "Carousel",
         "placeholder": null,
         "tag": "strong",
         "input_type": null,
-        "css_path": "button[data-testid='layout-option-featured-row'] > strong",
-        "xpath": "/html/body/div/div/main/section/div/div/button[2]/strong",
+        "css_path": "button[data-testid='layout-option-carousel'] > strong",
+        "xpath": "/html/body/div/div/main/section/div/div/button[3]/strong",
         "ancestor_chain": [
           {
             "tag": "button",
             "id": null,
-            "testId": "layout-option-featured-row",
+            "testId": "layout-option-carousel",
             "role": "button",
             "className": "layout-option "
           },
@@ -406,9 +420,9 @@
         "landmark": "Curation",
         "nth_of_role": null,
         "bbox": {
-          "x": 451.0,
-          "y": 166.0,
-          "width": 109.234375,
+          "x": 299.0,
+          "y": 241.0,
+          "width": 68.84375,
           "height": 16.0
         },
         "frame_path": [],
@@ -418,13 +432,13 @@
       "value": null,
       "file_path": null,
       "wait_ms": null,
-      "semantic_label": "click_featured_row",
+      "semantic_label": "click_carousel",
       "param_binding": null,
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.499073",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953499093_007_click.png",
+      "captured_at": "2026-04-28T05:42:47.372461",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247372475_007_click.png",
       "auto_post_observed": null
     },
     {
@@ -437,7 +451,7 @@
         "aria_label": null,
         "role": "combobox",
         "accessible_name": "Content",
-        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "text": "\u2014 pick content \u2014 A-9001 \u2014 Spring Drop One A-9002 \u2014 Spring Drop Two A-9003 \u2014 Editorial Pick A-9004 \u2014 Trending Now A-9005 \u2014 New Arrival",
         "placeholder": null,
         "tag": "select",
         "input_type": null,
@@ -454,7 +468,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -505,7 +519,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.566161",
+      "captured_at": "2026-04-28T05:42:47.437974",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -536,7 +550,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -587,8 +601,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.567116",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953567134_009_file_selected.png",
+      "captured_at": "2026-04-28T05:42:47.438962",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247438983_009_file_selected.png",
       "auto_post_observed": null
     },
     {
@@ -601,7 +615,7 @@
         "aria_label": null,
         "role": "combobox",
         "accessible_name": "Content",
-        "text": "— pick content — A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "text": "\u2014 pick content \u2014 A-9002 \u2014 Spring Drop Two A-9003 \u2014 Editorial Pick A-9004 \u2014 Trending Now A-9005 \u2014 New Arrival",
         "placeholder": null,
         "tag": "select",
         "input_type": null,
@@ -618,7 +632,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -669,7 +683,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.616099",
+      "captured_at": "2026-04-28T05:42:47.485791",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -700,7 +714,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -751,8 +765,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.616702",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953616716_011_file_selected.png",
+      "captured_at": "2026-04-28T05:42:47.486498",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247486512_011_file_selected.png",
       "auto_post_observed": null
     },
     {
@@ -765,7 +779,7 @@
         "aria_label": null,
         "role": "combobox",
         "accessible_name": "Content",
-        "text": "— pick content — A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "text": "\u2014 pick content \u2014 A-9003 \u2014 Editorial Pick A-9004 \u2014 Trending Now A-9005 \u2014 New Arrival",
         "placeholder": null,
         "tag": "select",
         "input_type": null,
@@ -782,7 +796,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -833,7 +847,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.682510",
+      "captured_at": "2026-04-28T05:42:47.553676",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -864,7 +878,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -915,8 +929,8 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.683438",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953683451_013_file_selected.png",
+      "captured_at": "2026-04-28T05:42:47.554291",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247554305_013_file_selected.png",
       "auto_post_observed": null
     },
     {
@@ -929,7 +943,7 @@
         "aria_label": null,
         "role": "combobox",
         "accessible_name": "Content",
-        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "text": "\u2014 pick content \u2014 A-9004 \u2014 Trending Now A-9005 \u2014 New Arrival",
         "placeholder": null,
         "tag": "select",
         "input_type": null,
@@ -946,7 +960,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -997,7 +1011,7 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.732688",
+      "captured_at": "2026-04-28T05:42:47.603257",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -1028,7 +1042,7 @@
           {
             "tag": "div",
             "id": null,
-            "testId": "slots-featured-row",
+            "testId": "slots-carousel",
             "role": null,
             "className": "slots-grid"
           },
@@ -1079,12 +1093,176 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.733302",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953733316_015_file_selected.png",
+      "captured_at": "2026-04-28T05:42:47.603867",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247603879_015_file_selected.png",
       "auto_post_observed": null
     },
     {
       "index": 14,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-5-content-select",
+        "element_id": "slot-5-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "\u2014 pick content \u2014 A-9005 \u2014 New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-5-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[5]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-5",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-carousel",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 1258.0,
+          "width": 401.0,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": "A-9005",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_5_content_select",
+      "param_binding": {
+        "name": "slot_5_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T05:42:47.668768",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 15,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "slot-5-image-input",
+        "element_id": "slot-5-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-5-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[5]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-5",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-carousel",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 1321.0,
+          "width": 401.0,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false
+      },
+      "url": null,
+      "value": null,
+      "file_path": "A-9005.png",
+      "wait_ms": null,
+      "semantic_label": "upload_slot_5_image_input",
+      "param_binding": {
+        "name": "slot_5_image_input",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T05:42:47.669459",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247669472_017_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 16,
       "action": "change",
       "fingerprint": {
         "test_id": "input-comment",
@@ -1148,7 +1326,7 @@
         "in_shadow_root": false
       },
       "url": null,
-      "value": "Replay verification",
+      "value": "Carousel teach",
       "file_path": null,
       "wait_ms": null,
       "semantic_label": "fill_input_comment",
@@ -1161,12 +1339,12 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.799773",
+      "captured_at": "2026-04-28T05:42:47.719230",
       "screenshot_path": null,
       "auto_post_observed": null
     },
     {
-      "index": 15,
+      "index": 17,
       "action": "click",
       "fingerprint": {
         "test_id": "btn-save-layout",
@@ -1238,12 +1416,12 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.800746",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953800762_017_click.png",
+      "captured_at": "2026-04-28T05:42:47.719879",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247719892_019_click.png",
       "auto_post_observed": null
     },
     {
-      "index": 16,
+      "index": 18,
       "action": "click",
       "fingerprint": {
         "test_id": "btn-apply-layout",
@@ -1315,10 +1493,10 @@
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
-      "captured_at": "2026-04-28T05:29:53.849433",
-      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a8e34baad561/screenshots/20260428T052953849452_018_click.png",
+      "captured_at": "2026-04-28T05:42:47.787243",
+      "screenshot_path": "/project/workspace/Portal-assistant-bot/sessions/a40e03378b07/screenshots/20260428T054247787269_020_click.png",
       "auto_post_observed": null
     }
   ],
-  "source_session_id": "a8e34baad561"
+  "source_session_id": "a40e03378b07"
 }

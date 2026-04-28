@@ -51,7 +51,7 @@ CASES: list[Case] = [
         ),
         attachments=["tests/fixtures/batch.csv"],
         expect_plan=True,
-        expect_skill_id="curate_layout",
+        expect_skill_id="curate_featured_row",
         expect_params_subset={"slot_1_content_id": "A-9001"},
     ),
     Case(
@@ -62,7 +62,7 @@ CASES: list[Case] = [
         ),
         attachments=["tests/fixtures/batch.csv"],
         expect_plan=True,
-        expect_skill_id="curate_layout",
+        expect_skill_id="curate_grid_2x2",
     ),
     Case(
         name="P3-carousel-five-slots",
@@ -72,7 +72,7 @@ CASES: list[Case] = [
         ),
         attachments=["tests/fixtures/batch.csv"],
         expect_plan=True,
-        expect_skill_id="curate_layout",
+        expect_skill_id="curate_carousel",
     ),
     Case(
         name="C1-no-layout-specified",
