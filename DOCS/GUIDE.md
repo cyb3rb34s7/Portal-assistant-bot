@@ -91,23 +91,40 @@ Disk footprint for a single session run is ~1 MB (screenshots + JSONL).
 From the project root:
 
 ```bash
-# Python side
+# Python side — the [groq] extra installs the Groq SDK; swap for
+# .[openai], .[bedrock], or .[all-llm] depending on your provider.
 py -m venv .venv
 .venv/Scripts/python.exe -m pip install --upgrade pip
-.venv/Scripts/python.exe -m pip install -e .
+.venv/Scripts/python.exe -m pip install -e .[groq]
 
 # Sample portal side
 cd sample_portal && npm install && cd ..
+
+# LLM credentials — copy the template then fill in your real keys
+cp .env.example .env
+# edit .env, set GROQ_API_KEY=... (and optionally other providers)
 ```
+
+`.env` is gitignored. Pilot loads it automatically at every package
+import via `python-dotenv` (see `pilot/__init__.py`); shell vars
+still take precedence over `.env` values. **Never commit `.env`.**
 
 Verify:
 
 ```bash
 # Should show the pilot CLI commands
 .venv/Scripts/python.exe -m pilot --help
+
+# Should pass in ~1s if your key works
+.venv/Scripts/python.exe -m pytest tests/agent/test_groq_live.py -v
 ```
 
-Expected output includes: `run`, `doctor`, `teach`, `annotate`, `run-skill`.
+The pytest line skips cleanly if `GROQ_API_KEY` is unset; if it's
+set but the key is invalid, you'll see a 401 from Groq. Either way
+diagnostic.
+
+Expected `pilot --help` output includes: `run`, `doctor`, `teach`,
+`annotate`, `run-skill`.
 
 ---
 
@@ -646,16 +663,36 @@ Expected final output:
 
 ### CDP connection refused
 
-Symptom: `pilot doctor` prints `CDP connect failed`.
+Symptom: `pilot doctor` prints `CDP connect failed`, or
+`ECONNREFUSED ::1:9222` specifically.
 
 Likely causes:
 
-1. Chrome was not launched with `--remote-debugging-port=9222`.
-2. The flag was passed but a regular Chrome profile was already
-   running — it ignores the flag to avoid conflicts. Use a dedicated
-   `--user-data-dir` as shown in the setup.
-3. Corporate Chrome policy blocks the flag. Check with your IT team;
+1. **Windows IPv6 vs IPv4 mismatch** (most common — fixed by default
+   in this repo). On Windows, `localhost` resolves to `::1` (IPv6)
+   first; Chrome's `--remote-debugging-port` binds to IPv4 only.
+   `pilot/browser.py` defaults to `http://127.0.0.1:9222` to avoid
+   this. If you've overridden the endpoint in `--cdp` or env, make
+   sure it uses 127.0.0.1, not localhost.
+2. **An existing Chrome process owns the profile.** Chrome ignores
+   `--remote-debugging-port` if a Chrome process is already running
+   with the requested user-data-dir. `taskkill /F /IM chrome.exe`
+   first, then relaunch with the flag.
+3. **cmd vs bash quoting.** `--user-data-dir="$USERPROFILE/..."`
+   works in bash; in cmd it leaves the literal string `$USERPROFILE`
+   as the dir name. Use `%USERPROFILE%\...` in cmd instead.
+4. **Corporate Chrome policy blocks the flag.** Check with IT;
    you may need the flag allowed on operator machines.
+
+Sanity check Chrome is actually listening before invoking pilot:
+
+```cmd
+curl http://127.0.0.1:9222/json/version
+```
+
+That should return JSON with `Browser`, `webSocketDebuggerUrl`, etc.
+If it returns nothing or an error, Chrome isn't bound — relaunch
+per (2) and (3) above.
 
 ### No events captured during teach
 
@@ -827,36 +864,71 @@ curationpilot-poc/
 
 ## 14. Quick command cheat sheet
 
-```bash
-# --- Setup (once) ---
-py -m venv .venv
-.venv/Scripts/python.exe -m pip install -e .
-cd sample_portal && npm install && cd ..
+### One-time setup
 
-# --- Session start (two terminals, left running) ---
-cd sample_portal && npm run dev                        # Terminal A
+```bash
+py -m venv .venv
+.venv/Scripts/python.exe -m pip install -e .[groq]   # or .[openai], .[bedrock], .[all-llm]
+cd sample_portal && npm install && cd ..
+cp .env.example .env                                 # then fill in your keys
+```
+
+### Session start (cmd — common case on Windows)
+
+```cmd
+:: Terminal A — sample portal
+cd sample_portal
+npm run dev
+
+:: Terminal B — Chrome with CDP. NOTE %USERPROFILE% (cmd) not $USERPROFILE (bash)
+taskkill /F /IM chrome.exe 2>nul
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\.curationpilot-chrome-profile" --no-first-run --no-default-browser-check http://localhost:5173/upload
+
+:: Verify CDP is actually up before running pilot
+curl http://127.0.0.1:9222/json/version
+```
+
+### Session start (Git Bash)
+
+```bash
+# Terminal A
+cd sample_portal && npm run dev
+
+# Terminal B
 "/c/Program Files/Google/Chrome/Application/chrome.exe" \
   --remote-debugging-port=9222 \
   --user-data-dir="$USERPROFILE/.curationpilot-chrome-profile" \
-  http://localhost:5173                                # Terminal B
+  --no-first-run --no-default-browser-check \
+  http://localhost:5173/upload
+```
 
-# --- Sanity check ---
-.venv/Scripts/python.exe -m pilot doctor
+### Daily teach -> annotate -> replay loop (cmd)
 
-# --- Record a skill ---
-.venv/Scripts/python.exe -m pilot teach my_skill
-# (use the portal in Chrome; Ctrl+C when done)
+```cmd
+py -m pilot doctor
+py -m pilot teach my_skill
+:: <use the portal in Chrome; Ctrl+C in this terminal when done>
 
-# --- Turn the trace into a skill (auto mode) ---
-.venv/Scripts/python.exe -m pilot annotate <session-id> --auto
+py -m pilot annotate <SESSION_ID> --auto --name my_skill
+py scripts\annotate_skill_llm.py --skill skills\my_skill.json --client groq
 
-# --- Replay with new parameters ---
-.venv/Scripts/python.exe -m pilot run-skill skills/my_skill.json \
-  -p content_id=A-3001 -p start_date=2026-06-01
+:: Inspect the resulting v1 + v2 skill side by side
+py scripts\inspect_skill.py skills\my_skill.json
 
-# --- Run the bundled end-to-end and resilience tests ---
-.venv/Scripts/python.exe scripts/e2e_test.py
-.venv/Scripts/python.exe scripts/resilience_test.py
+:: Reset portal state between replays (clears localStorage via CDP)
+py scripts\reset_portal.py
+
+:: Replay via natural-language goal (wrapper handles cmd quoting)
+scripts\replay_nl.cmd "Curate batch.csv into featured-row, comment 'demo'" tests\fixtures\batch.csv
+```
+
+### Bundled tests
+
+```bash
+.venv/Scripts/python.exe scripts/e2e_test.py             # original loop
+.venv/Scripts/python.exe scripts/resilience_test.py      # L2 fallback under drift
+.venv/Scripts/python.exe scripts/operator_test_suite.py  # 13 scenario portal E2E
+.venv/Scripts/python.exe -m pytest tests/agent/ -v       # mock + Groq-live unit/integration
 ```
 
 ---

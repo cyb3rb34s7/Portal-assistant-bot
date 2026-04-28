@@ -158,7 +158,10 @@ class RealExecutor(StepExecutor):
             )
 
         # Run on the dedicated worker thread so we can reuse the
-        # BrowserSession across steps.
+        # BrowserSession across steps. ``skill_path`` is resolved
+        # *here* (where we have the v2 SkillFile with its ``id`` field)
+        # and threaded through, because the v1 Skill loaded from disk
+        # does not carry the id and the worker can't re-resolve it.
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._pool,
@@ -166,6 +169,7 @@ class RealExecutor(StepExecutor):
             v1_skill,
             runtime_params,
             skill.base_url,
+            skill_path,
         )
 
     def close(self) -> None:
@@ -271,6 +275,7 @@ class RealExecutor(StepExecutor):
         skill: Skill,
         params: dict[str, Any],
         default_base_url: str | None,
+        skill_path: Path | None = None,
     ) -> StepResult:
         start = time.time()
         try:
@@ -338,8 +343,10 @@ class RealExecutor(StepExecutor):
 
         # Write persistence targets back to the skill JSON file. Done
         # only after all sub-steps complete so a single mid-skill crash
-        # doesn't leave the JSON half-written.
-        skill_path = self._locate_skill_file(skill.id)
+        # doesn't leave the JSON half-written. ``skill_path`` was
+        # resolved by the caller (execute()) where the v2 SkillFile.id
+        # is available; we accept it as a parameter so this worker
+        # method doesn't need to know about v2 vs v1 schema.
         if persist_targets and skill_path is not None:
             persisted_count = self._persist_alternates_to_skill(
                 skill_path, persist_targets

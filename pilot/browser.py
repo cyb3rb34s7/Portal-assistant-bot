@@ -19,7 +19,12 @@ from playwright.sync_api import (
 )
 
 
-DEFAULT_CDP_ENDPOINT = "http://localhost:9222"
+DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:9222"
+"""Use the IPv4 loopback address explicitly. On Windows, ``localhost``
+resolves to ``::1`` first; Chrome's ``--remote-debugging-port`` binds
+to ``127.0.0.1`` only, so a Playwright ``connect_over_cdp`` against
+localhost gets ``ECONNREFUSED ::1:9222``. Hardcoding 127.0.0.1 is
+correct on every OS and matches the actual address Chrome listens on."""
 
 
 @dataclass

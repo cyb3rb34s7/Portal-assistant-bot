@@ -1,0 +1,3361 @@
+{
+  "name": "my_curation",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "created_at": "2026-04-28T17:56:45.310003",
+  "updated_at": "2026-04-28T17:56:45.310007",
+  "base_url": null,
+  "params": [
+    {
+      "name": "input_csv_file",
+      "type": "file_path",
+      "description": "Value for step 3: upload_input_csv_file",
+      "example": "batch.csv",
+      "required": true
+    },
+    {
+      "name": "slot_1_content_select",
+      "type": "string",
+      "description": "Value for step 10: fill_slot_1_content_select",
+      "example": "A-9002",
+      "required": true
+    },
+    {
+      "name": "slot_2_content_select",
+      "type": "string",
+      "description": "Value for step 13: fill_slot_2_content_select",
+      "example": "A-9004",
+      "required": true
+    },
+    {
+      "name": "slot_3_content_select",
+      "type": "string",
+      "description": "Value for step 16: fill_slot_3_content_select",
+      "example": "A-9003",
+      "required": true
+    },
+    {
+      "name": "slot_1_image_input",
+      "type": "file_path",
+      "description": "Value for step 19: upload_slot_1_image_input",
+      "example": "A-9001.png",
+      "required": true
+    },
+    {
+      "name": "slot_2_image_input",
+      "type": "file_path",
+      "description": "Value for step 21: upload_slot_2_image_input",
+      "example": "A-9002.png",
+      "required": true
+    },
+    {
+      "name": "slot_4_content_select",
+      "type": "string",
+      "description": "Value for step 31: fill_slot_4_content_select",
+      "example": "A-9004",
+      "required": true
+    },
+    {
+      "name": "slot_3_image_input",
+      "type": "file_path",
+      "description": "Value for step 37: upload_slot_3_image_input",
+      "example": "A-9004.png",
+      "required": true
+    },
+    {
+      "name": "slot_4_image_input",
+      "type": "file_path",
+      "description": "Value for step 39: upload_slot_4_image_input",
+      "example": "A-9005.png",
+      "required": true
+    },
+    {
+      "name": "input_comment",
+      "type": "string",
+      "description": "Value for step 40: fill_input_comment",
+      "example": "Not a layout ",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5173/upload",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:52:42.667960",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "click",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Choose CSV",
+        "text": "Choose CSV",
+        "placeholder": null,
+        "tag": "label",
+        "input_type": null,
+        "css_path": "div[data-testid='csv-upload-card'] > label",
+        "xpath": "/html/body/div/div/main/section/div[1]/label",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 109.0,
+          "width": 102.90625,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_choose_csv",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:53:19.320100",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175319320132_001_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 2,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "input-csv-file",
+        "element_id": "csv-input",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Choose CSV",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#csv-input",
+        "xpath": "/html/body/div/div/main/section/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 0.0,
+          "height": 0.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_input_csv_file",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:53:19.412018",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175319412035_002_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 3,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "input-csv-file",
+        "element_id": "csv-input",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Choose CSV",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#csv-input",
+        "xpath": "/html/body/div/div/main/section/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 0.0,
+          "height": 0.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": "batch.csv",
+      "wait_ms": null,
+      "semantic_label": "upload_input_csv_file",
+      "param_binding": {
+        "name": "input_csv_file",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:03.941777",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175403941797_003_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 4,
+      "action": "click",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": "root",
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Sample Portal Upload Curation Upload Contents Upload a CSV with columns: content_id, title, image_path, category, releas",
+        "text": "Sample Portal Upload Curation Upload Contents Upload a CSV with columns: content_id, title, image_path, category, release_date. Choose CSV batch.csv Uploaded Contents (5) Content ID Title Image Path C",
+        "placeholder": null,
+        "tag": "div",
+        "input_type": null,
+        "css_path": "div#root",
+        "xpath": "/html/body/div",
+        "ancestor_chain": [
+          {
+            "tag": "body",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "html",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": null,
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 1080.0,
+          "height": 1785.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_sample_portal_upload_curation_upload_contents_upload_a",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:08.509247",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175408509265_004_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 5,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "nav-curation",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "link",
+        "accessible_name": "Curation",
+        "text": "Curation",
+        "placeholder": null,
+        "tag": "a",
+        "input_type": null,
+        "css_path": "a[data-testid='nav-curation']",
+        "xpath": "/html/body/div/div/aside/nav/ul/li[2]/a",
+        "ancestor_chain": [
+          {
+            "tag": "li",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "ul",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "nav",
+            "id": null,
+            "testId": null,
+            "role": "navigation",
+            "className": "sidebar-nav"
+          },
+          {
+            "tag": "aside",
+            "id": null,
+            "testId": "sidebar",
+            "role": null,
+            "className": "sidebar"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Main menu",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 111.0,
+          "width": 220.0,
+          "height": 39.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_nav_curation",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:14.067167",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175414067228_005_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 6,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5173/curation",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:14.122458",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 7,
+      "action": "click",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "4 slots",
+        "text": "4 slots",
+        "placeholder": null,
+        "tag": "span",
+        "input_type": null,
+        "css_path": "button[data-testid='layout-option-featured-row'] > span",
+        "xpath": "/html/body/div/div/main/section/div/div/button[2]/span",
+        "ancestor_chain": [
+          {
+            "tag": "button",
+            "id": null,
+            "testId": "layout-option-featured-row",
+            "role": "button",
+            "className": "layout-option "
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "layout-options"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-picker",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 451.0,
+          "y": 174.0,
+          "width": 37.578125,
+          "height": 15.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_4_slots",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:23.364817",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175423364835_007_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 8,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slots-featured-row",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Slot 1 Content — pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trend",
+        "text": "Slot 1 Content — pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival Image Slot 2 Content — pick content — A-9001 — Spri",
+        "placeholder": null,
+        "tag": "div",
+        "input_type": null,
+        "css_path": "div[data-testid='slots-featured-row']",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 292.0,
+          "width": 742.0,
+          "height": 370.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slots_featured_row",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:24.843846",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175424843865_008_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 9,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_1_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:25.909213",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175425909235_009_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 10,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9002",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_1_content_select",
+      "param_binding": {
+        "name": "slot_1_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:26.790522",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 11,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_1_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:26.796970",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175426796985_011_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 12,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_2_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:27.260238",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175427260257_012_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 13,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9004",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_2_content_select",
+      "param_binding": {
+        "name": "slot_2_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:27.919155",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 14,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_2_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:27.919994",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175427920005_014_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 15,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-3-content-select",
+        "element_id": "slot-3-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-3-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_3_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:28.394460",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175428394481_015_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 16,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-3-content-select",
+        "element_id": "slot-3-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-3-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9003",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_3_content_select",
+      "param_binding": {
+        "name": "slot_3_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:29.286030",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 17,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-3-content-select",
+        "element_id": "slot-3-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9003 — Editorial Pick A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-3-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_3_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:29.286943",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175429286958_017_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 18,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-1-image-input",
+        "element_id": "slot-1-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-1-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_1_image_input",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:44.051897",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175444051916_018_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 19,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "slot-1-image-input",
+        "element_id": "slot-1-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-1-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": "A-9001.png",
+      "wait_ms": null,
+      "semantic_label": "upload_slot_1_image_input",
+      "param_binding": {
+        "name": "slot_1_image_input",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:49.005932",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175449005961_019_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 20,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-2-image-input",
+        "element_id": "slot-2-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-2-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_2_image_input",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:50.085675",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175450085695_020_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 21,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "slot-2-image-input",
+        "element_id": "slot-2-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-2-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": "A-9002.png",
+      "wait_ms": null,
+      "semantic_label": "upload_slot_2_image_input",
+      "param_binding": {
+        "name": "slot_2_image_input",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:51.380313",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175451380337_021_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 22,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_1_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:53.488934",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175453488958_022_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 23,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9001",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_1_content_select",
+      "param_binding": {
+        "name": "slot_1_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:54.175273",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 24,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-1-content-select",
+        "element_id": "slot-1-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9001 — Spring Drop One A-9002 — Spring Drop Two A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-1-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-1",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_1_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:54.176149",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175454176161_024_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 25,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9002 — Spring Drop Two A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_2_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:54.643127",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175454643146_025_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 26,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9002 — Spring Drop Two A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9002",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_2_content_select",
+      "param_binding": {
+        "name": "slot_2_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:55.501280",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 27,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-2-content-select",
+        "element_id": "slot-2-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9002 — Spring Drop Two A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-2-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-2",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 543.328125,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_2_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:55.502096",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175455502108_027_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 28,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-3-content-select",
+        "element_id": "slot-3-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-3-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_3_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:55.956527",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175455956548_028_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 29,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-3-content-select",
+        "element_id": "slot-3-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9003 — Editorial Pick A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-3-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 358.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_3_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:57.061029",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175457061048_029_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 30,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_4_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:58.340851",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175458340871_030_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 31,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9004",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_4_content_select",
+      "param_binding": {
+        "name": "slot_4_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:59.202714",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 32,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_4_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:54:59.203573",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175459203583_032_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 33,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_4_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:00.063747",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175500063776_033_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 34,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "A-9005",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_slot_4_content_select",
+      "param_binding": {
+        "name": "slot_4_content_select",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:00.750615",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 35,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-4-content-select",
+        "element_id": "slot-4-content",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Content",
+        "text": "— pick content — A-9004 — Trending Now A-9005 — New Arrival",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#slot-4-content",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 573.0,
+          "width": 213.328125,
+          "height": 31.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_4_content_select",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:00.751494",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175500751505_035_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 36,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-3-image-input",
+        "element_id": "slot-3-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-3-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_3_image_input",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:02.646187",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175502646211_036_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 37,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "slot-3-image-input",
+        "element_id": "slot-3-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-3-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[3]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-3",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 794.65625,
+          "y": 423.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": "A-9004.png",
+      "wait_ms": null,
+      "semantic_label": "upload_slot_3_image_input",
+      "param_binding": {
+        "name": "slot_3_image_input",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:04.546597",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175504546620_037_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 38,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "slot-4-image-input",
+        "element_id": "slot-4-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-4-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 638.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_slot_4_image_input",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:06.840410",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175506840431_038_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 39,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "slot-4-image-input",
+        "element_id": "slot-4-image",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Image",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#slot-4-image",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[1]/div[4]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slot-4",
+            "role": null,
+            "className": "slot-card"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "slots-featured-row",
+            "role": null,
+            "className": "slots-grid"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 292.0,
+          "y": 638.0,
+          "width": 213.328125,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": "A-9005.png",
+      "wait_ms": null,
+      "semantic_label": "upload_slot_4_image_input",
+      "param_binding": {
+        "name": "slot_4_image_input",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:08.107598",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175508107625_039_file_selected.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 40,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-comment",
+        "element_id": "comment-input",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Comment",
+        "text": null,
+        "placeholder": "e.g. Spring drop hero row",
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#comment-input",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[2]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "comment-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 345.625,
+          "y": 726.0,
+          "width": 675.375,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": "Not a layout ",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_comment",
+      "param_binding": {
+        "name": "input_comment",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:14.869250",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 41,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-save-layout",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Save Layout",
+        "text": "Save Layout",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-save-layout']",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[3]/button[1]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "action-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 772.0,
+          "width": 105.84375,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_save_layout",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:16.514282",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175516514302_041_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 42,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-apply-layout",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Apply Layout",
+        "text": "Apply Layout",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-apply-layout']",
+        "xpath": "/html/body/div/div/main/section/div[2]/div[3]/button[2]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "action-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "layout-editor",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "curation-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Curation",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 356.703125,
+          "y": 772.0,
+          "width": 110.953125,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": []
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_apply_layout",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-04-28T17:55:32.055538",
+      "screenshot_path": "sessions\\06b754d34a2b\\screenshots\\20260428T175532055559_042_click.png",
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "06b754d34a2b"
+}

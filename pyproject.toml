@@ -8,7 +8,17 @@ dependencies = [
   "pydantic>=2.8.0",
   "typer>=0.12.0",
   "rich>=13.7.0",
+  "python-dotenv>=1.0.0",
+  "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+# LLM provider SDKs — install only the ones you need.
+# `pip install -e .[groq]` for Groq-only, etc.
+groq = ["groq>=0.11.0"]
+openai = ["openai>=1.0.0"]
+bedrock = ["boto3>=1.35.0"]
+all-llm = ["groq>=0.11.0", "openai>=1.0.0", "boto3>=1.35.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

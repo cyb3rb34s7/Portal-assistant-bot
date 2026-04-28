@@ -1,5 +1,5 @@
 content_id,title,image_path,category,release_date
-A-9001,Spring Drop One,tests/fixtures/images/A-9001.png,featured,2026-05-01
-A-9001,Spring Drop One Dup,tests/fixtures/images/A-9001.png,featured,2026-05-01
-A-9003,Editorial Pick,tests/fixtures/images/A-9003.png,editorial,2026-05-03
-A-9004,Trending Now,tests/fixtures/images/A-9004.png,trending,2026-05-04
+A-56001,Spring Drop One,tests/fixtures/images/A-9001.png,featured,2026-05-01
+A-5401,Spring Drop One Dup,tests/fixtures/images/A-9001.png,featured,2026-05-01
+A-2103,Editorial Pick,tests/fixtures/images/A-9003.png,editorial,2026-05-03
+A-34204,Trending Now,tests/fixtures/images/A-9004.png,trending,2026-05-04

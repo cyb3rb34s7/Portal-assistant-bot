@@ -12,3 +12,13 @@ sessions/
 tests/artifacts/
 sessions/
 /tmp/curationpilot-teach-profile/
+
+# Local environment / secrets — never commit. .env.example shows
+# the expected keys; .env is for your real values.
+.env
+.env.*
+!.env.example
+
+# The portal uses npm; if pnpm is run by accident it produces this
+# lock file. Don't track it — package-lock.json is the source of truth.
+sample_portal/pnpm-lock.yaml

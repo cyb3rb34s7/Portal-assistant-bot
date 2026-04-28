@@ -9,6 +9,173 @@
 
 ---
 
+## 2026-04-29
+
+### dotenv + CDP IPv4 + tooling polish + executor `skill.id` fix; first end-to-end live operator demo against Groq
+
+**Commit:** _(this commit)_
+
+Today was an operator-driven session: install + verify Groq, record a
+real skill in Chrome, annotate-LLM-enrich it, replay the same skill
+twice from natural-language goals, then deliberately try to break it.
+Two real bugs surfaced (one mine from the self-heal commit, one
+operator-environment) and got fixed. Several architectural decisions
+about how to evolve the system were locked in.
+
+**Plumbing**
+
+- `python-dotenv` wired into `pilot/__init__.py`. A `.env` at the repo
+  root is loaded at every pilot import; shell vars still win
+  (`override=False`). No external API key needs to be exported per
+  shell anymore.
+- `.env.example` committed as the canonical key/var template.
+  `.env` is gitignored (`.env`, `.env.*`, with `!.env.example`
+  whitelisted). `sample_portal/pnpm-lock.yaml` is gitignored too —
+  the portal uses npm; pnpm-lock files are accidental.
+- `pyproject.toml` declares `python-dotenv` and `pyyaml` as core
+  dependencies plus optional `[groq]`, `[openai]`, `[bedrock]`,
+  `[all-llm]` extras. `pip install -e .[groq]` now does what most
+  users want.
+
+**CDP default flipped to IPv4 — fixes silent ECONNREFUSED on Windows**
+
+`pilot/browser.py::DEFAULT_CDP_ENDPOINT` changed from
+`http://localhost:9222` to `http://127.0.0.1:9222`. Chrome's
+`--remote-debugging-port` binds to 127.0.0.1 only; on Windows
+`localhost` resolves to `::1` (IPv6) first, so Playwright's
+`connect_over_cdp` failed with `ECONNREFUSED ::1:9222`. The new
+default is correct on every OS and matches the address Chrome
+actually listens on.
+
+**Executor bug fix (P-009)**
+
+After a successful replay, the agent printed
+``agent_internal_error: AttributeError: 'Skill' object has no
+attribute 'id'`` even though all 17 sub-steps had reported `ok`.
+Root cause: in the self-heal commit's `_run_skill_sync` worker
+function, I called `skill.id` to resolve the skill JSON path for
+the heal write-back — but `skill` in that scope is the v1
+`pilot.skill_models.Skill` (no id field), not the v2
+`pilot.agent.schemas.skill.SkillFile`. Fix: resolve `skill_path`
+in `execute()` (where the v2 SkillFile is in scope) and thread it
+into `_run_skill_sync` as a parameter. ~6 LOC, zero behaviour
+change. See `DOCS/CONTEXT.md` §6 P-009 for the lesson.
+
+**New operator helper scripts**
+
+- `scripts/inspect_skill.py <path>` — pretty-prints a skill JSON
+  and its `.v2.json` sidecar (params, alias map, destructive
+  actions, success assertions). Replaces a long `python -c "..."`
+  one-liner that was awkward to paste in cmd.
+- `scripts/replay_nl.cmd "<goal>" <attachment>` — wraps the agent
+  CLI for natural-language replay. Lets cmd users skip multi-arg
+  quoting headaches: `scripts\replay_nl.cmd "Curate ..." tests\fixtures\batch.csv`.
+- `scripts/reset_portal.py` — one-line portal state reset. Connects
+  to the same Chrome via CDP, clears `localStorage`, navigates back
+  to `/upload`. Replaces the F12 console paste between replays.
+
+**End-to-end operator-driven demo (verified live)**
+
+Recorded `my_curation` (43 raw events -> 17 step skill, 10 v1 params)
+using `featured-row` against `batch.csv`. Annotated with `--auto`,
+then enriched via `scripts/annotate_skill_llm.py --client groq` ->
+v2 sidecar with semantic param names, source hints, file-path
+types, alias map, two destructive_actions (`save` reversible,
+`apply` irreversible), and success assertions.
+
+Replayed twice from natural-language goals. Both ran end-to-end:
+
+- 17/17 sub-steps succeeded
+- 14 hit at L1 exact, 2 at **L2 semantic** (`upload_input_csv_file`
+  and `click_grid_2x2` — testid matched at semantic role+name fall-
+  back, not exact testid). **L2 fired in production for the first
+  time without operator awareness — exactly the design intent.**
+- Save banner + Apply banner verified in the Chrome window
+- Applied layouts list grew by one entry per replay
+
+**Live trick-test exposed a planning gap (P-010)**
+
+Operator deliberately replayed asking for `carousel` layout (5
+slots) against a 4-row CSV. Planner picked `curate_carousel` and
+emitted a plan that was missing `slot_5_content_id` and
+`slot_5_image_file_path`. SkillRunner raised `SkillExecutionError`
+at execute time, not plan time. Operator only had retry/skip/abort
+options, none of them right for a missing-input scenario.
+
+This exposes a real gap: the planner's deterministic post-validation
+checks "unknown params" but not "missing required params." Documented
+as P-010 with the design fix (planner-side coverage check + executor
+pre-flight check) for the next iteration. See architectural decision
+log entries AD-005 and AD-006 below.
+
+**Architectural decisions captured (see CONTEXT.md §8)**
+
+- **AD-003 — Local secrets via `.env` + python-dotenv.** No
+  per-shell `export`. `.env` gitignored, `.env.example` committed.
+- **AD-004 — Skills are recordings, not inferences.** The planner
+  shall not attempt to drive a flow it has not been taught. When
+  the operator's goal references a layout / variant for which no
+  skill exists, the planner emits `clarify`, not a "closest-match"
+  plan. Portal context (`portals/<id>/context.yaml`) is the right
+  place for schema-level facts (e.g. "carousel = 5 slots") that
+  don't depend on any one recording.
+- **AD-005 — Planning-time coverage validation (NEXT).** Before
+  emitting `decision="plan"`, the planner shall confirm every
+  `required: true` parameter on the chosen skill has a value in
+  `cs.params`. Missing required params -> emit clarify, not plan.
+  Defense-in-depth pre-flight check at the executor catches anything
+  the planner missed and surfaces it as `error_kind=missing_required_params`
+  with a structured `missing_params` list, not a stack-trace crash.
+- **AD-006 — Layout-as-parameter is a real gap; loop-aware skills
+  are the right long-term fix.** Today, three layouts = three
+  recordings, which doesn't match the operator's "one form,
+  layout is a dropdown" mental model. Three escalating fixes:
+  Option 1 (portal-context routing -> picks the right recorded
+  skill per layout, ~30 LOC, ships now), Option 2 (loop-aware
+  skills via annotate-LLM pattern detection -> single recording
+  generalizes across slot counts, real architectural extension),
+  Option 3 (multi-demonstration merge -> rejected as a halfway
+  house). Replay stays deterministic in all cases — the LLM
+  enters at annotate time only.
+
+**Files added**
+
+- `.env.example` — environment template
+- `scripts/inspect_skill.py` — skill JSON + sidecar pretty-printer
+- `scripts/replay_nl.cmd` — agent-CLI wrapper for cmd
+- `scripts/reset_portal.py` — portal state reset via CDP
+- `skills/my_curation.json` + `skills/my_curation.v2.json` — the
+  operator-recorded skill from today's demo (kept as a reference)
+
+**Files updated**
+
+- `pilot/__init__.py` — `_load_dotenv_if_available` walks parents
+  for the first `.env` or `pyproject.toml`, loads with override=False
+- `pilot/browser.py` — `DEFAULT_CDP_ENDPOINT` -> `http://127.0.0.1:9222`
+- `pilot/agent/executor_real.py` — `skill_path` is resolved in
+  `execute()` and threaded through `_run_skill_sync(skill_path=...)`;
+  no more `skill.id` on the v1 Skill object
+- `.gitignore` — `.env`, `.env.*`, `!.env.example`,
+  `sample_portal/pnpm-lock.yaml`
+- `pyproject.toml` — core deps + optional LLM provider extras
+- `tests/fixtures/batch_dup_ids.csv` — operator edited fixture
+  during the trick-test demo (now also tests dup-id handling
+  more aggressively)
+
+**Verified**
+
+- All 9 unit + integration tests still PASS in 0.96s
+  (`tests/agent/test_smoke_single_item.py`,
+  `test_integration_multi_item.py`, `test_locator_repair.py`)
+- `tests/agent/test_groq_live.py` PASS in 1.21s — first
+  confirmed Groq round-trip in this repo with key from `.env`
+- 13/13 operator E2E (`scripts/operator_test_suite.py`) still PASS
+- Live operator demo: record -> annotate -> enrich -> replay
+  twice -> success. One trick-test deliberately broke the planner;
+  failure was diagnosable, not silent.
+
+---
+
 ## 2026-04-28
 
 ### Self-heal: L3 locator-repair landed; full code-review bug-fix sweep + new operator E2E suite

@@ -222,6 +222,56 @@ Approach (held throughout):
   behind `GROQ_API_KEY`.
 - Hand-written orchestrator (~430 LOC). No agent framework.
 
+### Local operator demo against Groq + plumbing polish (2026-04-29)
+
+First end-to-end run of the rebuilt agent against a live LLM,
+driven by the operator (not by an automated harness). Recorded a
+fresh skill (`my_curation`, 17 steps) using `featured-row` against
+`batch.csv`, annotated with `--auto`, enriched via Groq's
+`annotate_skill_llm.py` (got semantic param names, alias map,
+destructive flags, success assertions), then replayed twice from
+natural-language goals — both **end-to-end success** with 14 of 17
+sub-steps at L1 exact and **2 at L2 semantic fallback** (the first
+production L2 hits without operator awareness — exactly the design
+intent).
+
+Two bugs found and fixed live:
+
+- **P-009** — `'Skill' object has no attribute 'id'`. The self-heal
+  commit's `_run_skill_sync` worker used `skill.id` for write-back
+  path resolution, but `skill` in that scope is the v1
+  `pilot.skill_models.Skill` (no id field). Fix: resolve
+  `skill_path` in `execute()` (where the v2 SkillFile is in scope)
+  and pass it to the worker. ~6 LOC.
+- **P-010** — Planner picks a 5-slot skill (carousel) when CSV has
+  4 rows and crashes at execute time with a missing-required-param
+  error. Planner's deterministic post-validation checks "unknown
+  params" but NOT "missing required params". Architectural fix
+  designed (AD-005); not yet implemented.
+
+Plumbing improvements landed:
+
+- `python-dotenv` wired into pilot package import; `.env`
+  gitignored, `.env.example` committed
+- `DEFAULT_CDP_ENDPOINT` flipped from `localhost:9222` to
+  `127.0.0.1:9222` (Chrome's CDP binds to IPv4 only; Windows
+  resolves localhost to `::1` first)
+- `pyproject.toml` declares `python-dotenv` + `pyyaml` core, with
+  `[groq]` / `[openai]` / `[bedrock]` / `[all-llm]` extras
+- New helper scripts: `scripts/inspect_skill.py`,
+  `scripts/replay_nl.cmd`, `scripts/reset_portal.py` — cmd-friendly
+  one-liners for the teach/annotate/replay cycle
+
+**Architectural decisions captured today** — see §8 for full text:
+
+- **AD-003** — Local secrets via dotenv
+- **AD-004** — Skills are recordings, not inferences (the planner
+  shall not "guess" parameters for a flow it has never been taught)
+- **AD-005** — Planning-time coverage validation (next-up work)
+- **AD-006** — Layout-as-parameter as a real gap; loop-aware skills
+  are the right long-term fix; portal-context routing is the
+  shippable interim
+
 ### Code-review bug-fix sweep + L3 self-heal (2026-04-28)
 
 Architecture review of the agent layer surfaced 11 issues; **9 fixed
@@ -264,6 +314,28 @@ E2E. Working tree clean before commit.
 
 ## 5. Next up `[live]`
 
+**Immediate next work (sized small, ship-this-week)**:
+
+1. **AD-005 — planner coverage validation.** Extend
+   `pilot/agent/planner.py::_validate_planner_output` to check
+   every `required: true` parameter on the chosen skill has a
+   value in `cs.params`. Missing -> demote plan to clarify.
+   Add a defense-in-depth pre-flight in `executor_real.py::execute`
+   that returns `error_kind=missing_required_params` with the
+   missing list before the runner is invoked. ~40 LOC. Closes
+   P-010 cleanly.
+2. **AD-006 — Option 1: portal-context routing.** Extend
+   `portals/<id>/context.yaml` with a `flows[*].by_layout` map and
+   teach the planner to route layout -> skill from it instead of
+   guessing. ~30 LOC + YAML. Lets the operator say "carousel" and
+   the planner picks `curate_carousel` deterministically.
+3. **Real-portal smoke test of self-heal write-back.** Take an
+   existing skill, corrupt one step's testid + element_id +
+   css_path + xpath, replay, assert L3 fired with high confidence
+   AND the alternate fingerprint was persisted to the skill JSON
+   AND the second replay hits L1. Promotes the manual heal demo
+   into automated regression.
+
 After Week 1 ships:
 
 **Week 2** — intelligent-skill metadata pass during `annotate`, plan-
@@ -297,6 +369,76 @@ V2 deferred features list lives in `DOCS/PRODUCT_PLAN.md` §7.
 > **Rule.** When a non-trivial bug is found, document it here with the
 > root cause + fix + commit id. Never delete entries; future-you will
 > need them. New entries go at the top.
+
+### P-010 — Planner picks an over-large skill when CSV is short of rows (2026-04-29)
+
+**Symptom.** Operator tricked the system: ran the agent with a
+goal asking for `carousel` layout (5 slots) but a CSV with only 4
+rows. Planner picked `curate_carousel` (12 declared params, all
+required) and emitted a plan with `slot_5_content_id` and
+`slot_5_image_file_path` absent. Replay started, ran 13 sub-steps
+fine, and crashed at step 14:
+``SkillExecutionError: Step 14 needs parameter 'slot_5_content_select'
+but it was not provided``. Operator only saw retry/skip/abort; none
+were the right answer.
+
+**Root cause.** The planner's deterministic post-validation in
+`pilot/agent/planner.py::_validate_planner_output` checks "unknown
+params" (strips them) but does NOT check "missing required params"
+against the chosen skill's declared parameters. So a plan with an
+unfillable required slot got approved and crashed at execute time.
+
+**Fix.** Designed in AD-005 (see §8). Two layers:
+
+- **Planner-side** — extend `_validate_planner_output` to confirm
+  every `required: true` parameter on each `cs.params` is present.
+  Missing -> demote plan to clarify with a question like "carousel
+  needs 5 content+image pairs but the CSV has 4 rows; provide a
+  5th, or pick a 4-slot layout?"
+- **Executor pre-flight** — in `executor_real.py::execute`, walk
+  the v1 skill's recorded steps and confirm each `param_binding.name`
+  has a value in `step.params` (post alias-translation). If not,
+  return `StepResult(error_kind="missing_required_params", ...)`
+  with the missing list — clean error, not a stack trace.
+
+**Lesson.** **A planner that validates "unknown params" but not
+"missing required params" is half-validated.** Symmetric coverage
+is the principle: every check that the LLM-emitted plan must pass
+should have a deterministic post-LLM equivalent, not just the
+positive-side ones. Asymmetric validators leak errors into the
+runtime.
+
+### P-009 — `'Skill' object has no attribute 'id'` after a successful replay (2026-04-29)
+
+**Symptom.** Replay completed cleanly (17/17 sub-steps `ok`,
+banner verified, applied list updated), then the agent printed
+``agent_internal_error: AttributeError: 'Skill' object has no
+attribute 'id'`` and `task.failed`.
+
+**Root cause.** In yesterday's self-heal commit
+(`Self-heal L3 + agent-layer bug-fix sweep + operator E2E suite`),
+the `_run_skill_sync` worker function in `executor_real.py` does
+post-run aggregation that includes "persist healed alternates back
+to the skill JSON". For path resolution it called
+``skill_path = self._locate_skill_file(skill.id)`` — but `skill` in
+that scope is the **v1 `pilot.skill_models.Skill`** (no `id`
+field), not the v2 `pilot.agent.schemas.skill.SkillFile` from the
+outer `execute()` method. Worker thread doesn't have access to the
+v2 SkillFile.
+
+**Fix.** Resolve `skill_path` in `execute()` (where the v2
+SkillFile is in scope) and thread it into the worker as a parameter:
+``await loop.run_in_executor(self._pool, self._run_skill_sync,
+v1_skill, runtime_params, skill.base_url, skill_path)``. Worker
+no longer needs to introspect the skill. ~6 LOC change.
+
+**Lesson.** **A method that runs in a worker thread should be
+passed already-resolved values, not asked to re-derive them from
+the worker's own scope.** When refactoring code across an async/sync
+boundary, variables that look right (`skill.something`) may refer
+to different types on the two sides — the worker's `skill` is the
+v1 `Skill`, the outer scope's is the v2 `SkillFile`. Use distinct
+parameter names if the types matter (`v1_skill`, `skill_file`).
 
 ### P-008 — React reconciliation reused a stale file input across layout swap (2026-04-28)
 
@@ -527,6 +669,147 @@ detached `setsid` shell, or kill specific PIDs from `ps`. Avoid broad
 > considered, where it lives in `DOCS/PRODUCT_PLAN.md`. Newest at the top.
 > Never delete; supersede with a new entry that explicitly references
 > the prior one.
+
+### AD-006 — Layout-as-parameter: portal-context routing now, loop-aware skills as the long-term fix (2026-04-29)
+
+**Decision.** The current "one skill per layout" model
+(`curate_carousel`, `curate_featured_row`, `curate_grid_2x2`)
+doesn't match the operator's mental model — to them it's *one*
+skill ("fill the curation form") with `layout` as a dropdown
+parameter. Three escalating fixes; ship Option 1 immediately,
+keep Option 2 on the roadmap, reject Option 3.
+
+**Option 1 — portal-context routing (ship now).** Extend
+`portals/<id>/context.yaml` with a flow-to-skill map:
+
+```yaml
+flows:
+  - intent: curate
+    description: "Fill the curation form for any layout"
+    by_layout:
+      grid-2x2: curate_grid_2x2
+      featured-row: curate_featured_row
+      carousel: curate_carousel
+```
+
+The planner reads this and routes goal-stated layout to the right
+recorded skill. Operator's mental model preserved at the planner
+layer; under the hood it's still per-layout recordings. ~30 LOC.
+
+**Option 2 — loop-aware skills (real fix; roadmap).** Recordings
+become *programs*. The annotate-LLM pass detects that steps 6-13
+are four near-identical slot-fill blocks (monotonically incrementing
+slot index, consistent fingerprint template), compresses them into
+a single `LoopStep` with templated fingerprints
+(`slot-${i}-content-select`), and the runner expands the loop at
+replay based on `slot_count` from portal context. The LLM detects
+the pattern at *annotate* time only — replay stays deterministic.
+2-3 weeks of work; meaningful product upgrade.
+
+**Option 3 — multi-demonstration merge.** Rejected as a halfway
+house: more complex than Option 1, less general than Option 2.
+
+**Why.** Option 1 closes the operator-experience gap immediately
+without changing skill semantics. Option 2 generalizes to the
+common enterprise-portal pattern of "repeated structures"
+(table rows, batch forms, layouts with variable slots). Option 2
+is also the natural place for portal-schema knowledge to land.
+
+**Lives in.** `DOCS/PRODUCT_PLAN.md` §6 (V2 capabilities — added
+loop-aware skills as a planned capability), `pilot/agent/planner.py`
+(routing logic + portal context read), `portals/<id>/context.yaml`
+(flow-to-skill maps).
+
+### AD-005 — Planning-time coverage validation (2026-04-29)
+
+**Decision.** Before emitting `decision="plan"`, the planner shall
+confirm every `required: true` parameter on the chosen skill has
+a value in `cs.params`. Missing required params -> emit clarify,
+not plan. Add a defense-in-depth pre-flight check in the executor
+that surfaces any leakage as `error_kind=missing_required_params`
+with a structured `missing_params` list — not a stack trace.
+
+**Why.** Today's planner validates "unknown params" (strips them)
+but not "missing required params". So a plan with a 5-slot skill
+filled by a 4-row CSV gets approved, runs 13 sub-steps fine, then
+crashes at step 14 with `SkillExecutionError`. Operator only sees
+retry/skip/abort, none of them right (P-010).
+
+**Symmetric-validation principle.** Every check we want the LLM
+to make has a deterministic post-LLM equivalent. We do this for
+unknown skill ids and unknown param names; we should do it for
+required-param coverage too. Asymmetric validators leak errors
+into the runtime.
+
+**Lives in.** `pilot/agent/planner.py::_validate_planner_output`
+(planner-side check) + `pilot/agent/executor_real.py::execute`
+(pre-flight, mirrors the existing `Path.exists()` check for
+`file_path` params).
+
+### AD-004 — Skills are recordings, not inferences (2026-04-29)
+
+**Decision.** The planner shall not attempt to drive a flow it
+has not been taught. When the operator's goal references a
+layout / variant / portal section for which no recorded skill
+exists, the planner emits `decision="clarify"`, not a "closest-
+match" plan that substitutes a different recording.
+
+**Why.** This is the architectural commitment that makes our
+replay deterministic. The planner picking the closest skill and
+hoping the recorded fingerprints "happen to work" on a different
+flow is the same posture as Skyvern's vision-LLM-in-the-loop
+approach — and the same source of their 14% failure rate on
+write-heavy tasks per their own published benchmark.
+
+**Where the LLM is allowed to look at the live page.** Only at
+*recording* time, with the operator in the loop:
+- **Annotate-LLM** sees the recorded trace and proposes semantic
+  param names — operator confirms before saving.
+- **Future "assisted teach" mode** could use DOM inspection to
+  scaffold a teach session ("I see 5 slots in this carousel, walk
+  me through filling slot 1 first"). Inference is bounded by
+  operator approval; the resulting skill is auditable.
+
+What the LLM is NOT allowed to do:
+- Read the live DOM at replay time and "figure out" missing params
+- Substitute a near-match skill when the requested skill doesn't exist
+- Decide what an unrecorded layout / option needs without grounding
+  in a portal-context schema
+
+**Where schema-level facts live.** `portals/<id>/context.yaml` is
+the right place for "carousel has 5 slots", "saving requires a
+non-empty comment", and similar **portal schema facts that don't
+depend on any one recording**. The planner uses this to validate
+feasibility (e.g. "your CSV has 4 rows, carousel needs 5 — clarify")
+even when no recording matches yet.
+
+**Lives in.** `DOCS/requirement.md` §3.2 (deterministic execution),
+§14 (portal knowledge files); `DOCS/PRODUCT_PLAN.md` §2 ("LLMs
+reason at the edges; the deterministic replay core runs in the
+middle"); `pilot/agent/planner.py` (skill matching).
+
+### AD-003 — Local secrets via dotenv (2026-04-29)
+
+**Decision.** Pilot loads a repo-root `.env` at every package
+import via `python-dotenv`. `.env` is gitignored; `.env.example`
+is committed as the canonical key/var template. Shell vars take
+precedence (`override=False`).
+
+**Why.** Daily operator workflow benefits from "set the key once,
+forget about it". Per-shell `export GROQ_API_KEY=...` is fragile
+on Windows where cmd / PowerShell / Git Bash each have different
+syntax. dotenv is a single-file source of truth that works the
+same in every shell.
+
+**Security posture.** `.env.example` documents which vars exist;
+`.env` is for real values. The `.env.example` includes Groq /
+OpenAI / Bedrock / custom_org keys plus per-stage model overrides.
+The gitignore explicitly whitelists `.env.example` so a careless
+`git add .` can't commit real values.
+
+**Lives in.** `pilot/__init__.py::_load_dotenv_if_available`,
+`.gitignore`, `.env.example`, `pyproject.toml` (declares
+`python-dotenv` as a core dep).
 
 ### AD-002 — v1 ships as a web app; v2 wraps it in Electron (2026-04-28)
 
