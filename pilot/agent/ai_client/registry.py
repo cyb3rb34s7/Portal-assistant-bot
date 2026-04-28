@@ -31,6 +31,7 @@ _BUILTIN_ADAPTERS: dict[str, str] = {
     "bedrock": "pilot.agent.ai_client.adapters.bedrock",
     "groq": "pilot.agent.ai_client.adapters.groq",
     "openai": "pilot.agent.ai_client.adapters.openai",
+    "mock": "pilot.agent.ai_client.adapters.mock",
 }
 
 _INSTANCES: dict[str, AIClient] = {}

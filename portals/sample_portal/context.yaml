@@ -1,0 +1,87 @@
+# Portal context file for the sample (test) portal shipped in
+# sample_portal/. Used by the agent's planner stage to ground its
+# reasoning about goals expressed in natural language.
+#
+# Schema: pilot/agent/schemas/portal_context.py :: PortalContext
+
+schema_version: 1
+
+portal_id: sample_portal
+name: "CurationPilot Sample Portal"
+base_url: "http://localhost:5173"
+
+glossary:
+  - term: "release"
+    meaning: >
+      A bundle of content items scheduled to go live together on a
+      specific date. Operators commonly receive one PPT per release.
+    aliases: ["batch", "drop"]
+
+  - term: "curation"
+    meaning: >
+      The act of placing one or more content items into layout slots,
+      scheduling their go-live dates, and optionally attaching
+      thumbnails. The primary user workflow for this portal.
+
+  - term: "slot"
+    meaning: >
+      A position in the layout grid identified by a (row, position)
+      pair. Both are 1-indexed.
+    aliases: ["position"]
+
+  - term: "asset"
+    meaning: >
+      A piece of content (video, image, audio) tracked by a stable
+      identifier of the form A-NNNN.
+    aliases: ["item", "content item"]
+
+page_map:
+  - path: "/dashboard"
+    role: "home"
+    notes: "Default landing page after login."
+
+  - path: "/curation"
+    role: "primary_workflow"
+    sub_tabs: ["layout", "schedule", "thumbnails"]
+    notes: >
+      Three-tab workflow. The Layout tab places an asset in a grid slot;
+      Schedule sets start/end dates; Thumbnails attaches an image.
+
+  - path: "/media-assets"
+    role: "asset_library"
+    notes: "Browse and create assets. Save and Delete are available."
+
+field_conventions:
+  - field: "content_id"
+    format: "A-NNNN"
+    examples: ["A-9001", "A-9042", "A-7777"]
+
+  - field: "schedule_start"
+    format: "YYYY-MM-DD"
+    timezone: "UTC"
+
+  - field: "schedule_end"
+    format: "YYYY-MM-DD"
+    timezone: "UTC"
+
+  - field: "layout_row"
+    format: "1-indexed positive integer"
+    examples: ["1", "2", "3"]
+
+  - field: "layout_position"
+    format: "1-indexed positive integer"
+    examples: ["1", "2", "3"]
+
+destructive_actions:
+  - "publish"
+  - "delete"
+  - "save_layout"     # mutates portal state, but reversible
+
+session:
+  login_url: ""           # sample portal has no auth
+  session_duration_minutes: null
+  sso_provider: "none"
+  notes: >
+    Sample portal has no authentication; this section is filled in
+    only to validate the schema is exercised end-to-end. Real portals
+    should populate login_url, sso_provider, and session_duration_minutes.
