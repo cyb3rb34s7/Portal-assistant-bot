@@ -374,3 +374,196 @@ html, body, #root {
   font-size: 14px;
   color: #6b7280;
 }
+
+/* ---- New curation workflow ---- */
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.btn-primary {
+  display: inline-block;
+  padding: 8px 14px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  background: #93c5fd;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  display: inline-block;
+  padding: 8px 14px;
+  background: #fff;
+  border: 1px solid #2563eb;
+  color: #2563eb;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-secondary:disabled {
+  border-color: #93c5fd;
+  color: #93c5fd;
+  cursor: not-allowed;
+}
+
+.muted {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.errors {
+  color: #b91c1c;
+  font-size: 13px;
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.success {
+  color: #065f46;
+  font-weight: 600;
+  margin-top: 10px;
+}
+
+.path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 13px;
+  text-align: left;
+}
+
+.data-table th {
+  background: #f9fafb;
+  font-weight: 600;
+  color: #374151;
+}
+
+.layout-options {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.layout-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 14px 18px;
+  background: #fff;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  min-width: 140px;
+}
+
+.layout-option:hover {
+  border-color: #93c5fd;
+}
+
+.layout-option.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.slots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.slot-card {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slot-card .slot-header {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+  margin-bottom: 6px;
+}
+
+.slot-card label {
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.slot-card select,
+.slot-card input[type="file"] {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.slot-card .ok {
+  color: #047857;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.image-label {
+  margin-top: 6px;
+}
+
+.comment-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.comment-row label {
+  font-size: 13px;
+  color: #374151;
+}
+
+.comment-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.action-row {
+  display: flex;
+  gap: 10px;
+}

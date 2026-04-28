@@ -1,0 +1,6 @@
+content_id,title,image_path,category,release_date
+A-9001,Spring Drop One,tests/fixtures/images/A-9001.png,featured,2026-05-01
+A-9002,Spring Drop Two,tests/fixtures/images/A-9002.png,featured,2026-05-02
+A-9003,Editorial Pick,tests/fixtures/images/A-9003.png,editorial,2026-05-03
+A-9004,Trending Now,tests/fixtures/images/A-9004.png,trending,2026-05-04
+A-9005,New Arrival,tests/fixtures/images/A-9005.png,new,2026-05-05

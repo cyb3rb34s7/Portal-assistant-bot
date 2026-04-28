@@ -1,11 +1,8 @@
 import { NavLink } from "react-router-dom";
 
 const items = [
-  { to: "/dashboard", label: "Dashboard", testId: "nav-dashboard" },
-  { to: "/media-assets", label: "Media Assets", testId: "nav-media-assets" },
+  { to: "/upload", label: "Upload", testId: "nav-upload" },
   { to: "/curation", label: "Curation", testId: "nav-curation" },
-  { to: "/schedule", label: "Schedule", testId: "nav-schedule" },
-  { to: "/settings", label: "Settings", testId: "nav-settings" },
 ];
 
 export default function Sidebar() {

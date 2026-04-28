@@ -1,190 +1,201 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import LayoutTab from "./LayoutTab.jsx";
-import ScheduleTab from "./ScheduleTab.jsx";
-import ThumbnailsTab from "./ThumbnailsTab.jsx";
-import PreviewFrame from "./PreviewFrame.jsx";
-import UnlabeledToolbar from "./UnlabeledToolbar.jsx";
-
-const TABS = [
-  { id: "layout", label: "Layout", testId: "curation-tab-layout" },
-  { id: "schedule", label: "Schedule", testId: "curation-tab-schedule" },
-  { id: "thumbnails", label: "Thumbnails", testId: "curation-tab-thumbnails" },
-  { id: "preview", label: "Preview", testId: "curation-tab-preview" },
-];
+import { useState } from "react";
+import { LAYOUTS, usePortal } from "../../store/PortalStore.jsx";
 
 export default function Curation() {
-  const [activeTab, setActiveTab] = useState("layout");
-  const [banner, setBanner] = useState(null);
-  const [dirtyMap, setDirtyMap] = useState({
-    layout: false,
-    schedule: false,
-    thumbnails: false,
-  });
-  const [pendingTab, setPendingTab] = useState(null);
-
-  const [layoutRows, setLayoutRows] = useState([
-    { contentId: "A-1001", row: 1, position: 1 },
-  ]);
-  const [schedules, setSchedules] = useState([
-    { contentId: "A-1001", start: "2026-04-01", end: "2026-04-30" },
-  ]);
-  const [thumbnails, setThumbnails] = useState([
-    { contentId: "A-1001", fileName: "a1001_hero.jpg" },
-  ]);
-
-  const showBanner = useCallback((message, kind = "success") => {
-    setBanner({ message, kind });
-    setTimeout(() => setBanner(null), 3000);
-  }, []);
-
-  const anyDirty = useMemo(
-    () => Object.values(dirtyMap).some(Boolean),
-    [dirtyMap]
-  );
-
-  const markDirty = useCallback((tabId, dirty) => {
-    setDirtyMap((prev) => ({ ...prev, [tabId]: dirty }));
-  }, []);
-
-  function requestTab(tabId) {
-    if (tabId === activeTab) return;
-    if (dirtyMap[activeTab]) {
-      setPendingTab(tabId);
-      return;
-    }
-    setActiveTab(tabId);
-  }
-
-  function confirmDiscard() {
-    if (!pendingTab) return;
-    markDirty(activeTab, false);
-    setActiveTab(pendingTab);
-    setPendingTab(null);
-  }
-
-  function cancelDiscard() {
-    setPendingTab(null);
-  }
-
-  useEffect(() => {
-    function onBeforeUnload(e) {
-      if (anyDirty) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    }
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [anyDirty]);
+  const { state, dispatch } = usePortal();
 
   return (
-    <section className="page" data-testid="page-curation">
+    <section className="page" data-testid="curation-page">
       <header className="page-header">
         <h1>Curation</h1>
-        <UnlabeledToolbar
-          onExport={() => showBanner("Exported draft")}
-          onReset={() => showBanner("Workspace reset")}
-          onPublishPreview={() => showBanner("Preview staged")}
-        />
+        <p className="muted">
+          Pick a layout, fill slots with uploaded contents, attach images, save, and apply.
+        </p>
       </header>
 
-      {banner && (
-        <div
-          className={`banner ${banner.kind}`}
-          role="status"
-          data-testid="curation-banner"
-        >
-          {banner.message}
+      {state.contents.length === 0 ? (
+        <div className="card" data-testid="no-contents-warning">
+          <p>No contents uploaded yet. Go to the Upload tab first.</p>
         </div>
+      ) : (
+        <>
+          <LayoutPicker />
+          {state.draftLayout && <LayoutEditor />}
+        </>
       )}
 
-      <div
-        className="curation-tabs"
-        role="tablist"
-        data-testid="curation-tabs"
-      >
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={activeTab === t.id}
-            className={`curation-tab ${activeTab === t.id ? "active" : ""} ${
-              dirtyMap[t.id] ? "dirty" : ""
-            }`}
-            onClick={() => requestTab(t.id)}
-            data-testid={t.testId}
-          >
-            {t.label}
-            {dirtyMap[t.id] && (
-              <span className="dirty-dot" aria-label="unsaved changes">
-                ●
-              </span>
-            )}
-          </button>
+      {state.appliedLayouts.length > 0 && <AppliedLayoutsList />}
+    </section>
+  );
+}
+
+function LayoutPicker() {
+  const { state, dispatch } = usePortal();
+  return (
+    <div className="card" data-testid="layout-picker">
+      <h2>Choose a layout</h2>
+      <div className="layout-options">
+        {Object.entries(LAYOUTS).map(([id, info]) => {
+          const isActive = state.draftLayout?.layout_id === id;
+          return (
+            <button
+              key={id}
+              className={`layout-option ${isActive ? "active" : ""}`}
+              data-testid={`layout-option-${id}`}
+              onClick={() =>
+                dispatch({ type: "SELECT_LAYOUT", layout_id: id, slotCount: info.slotCount })
+              }
+            >
+              <strong>{info.label}</strong>
+              <span className="muted">{info.slotCount} slots</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function LayoutEditor() {
+  const { state, dispatch } = usePortal();
+  const draft = state.draftLayout;
+
+  return (
+    <div className="card" data-testid="layout-editor">
+      <h2>
+        Editing: <code>{draft.layout_id}</code>
+      </h2>
+      <div className="slots-grid" data-testid={`slots-${draft.layout_id}`}>
+        {draft.slots.map((slot) => (
+          <SlotCard key={slot.idx} slot={slot} />
         ))}
       </div>
 
-      <div className="curation-body" data-testid="curation-body">
-        {activeTab === "layout" && (
-          <LayoutTab
-            rows={layoutRows}
-            setRows={setLayoutRows}
-            markDirty={(d) => markDirty("layout", d)}
-            showBanner={showBanner}
-          />
-        )}
-        {activeTab === "schedule" && (
-          <ScheduleTab
-            schedules={schedules}
-            setSchedules={setSchedules}
-            markDirty={(d) => markDirty("schedule", d)}
-            showBanner={showBanner}
-          />
-        )}
-        {activeTab === "thumbnails" && (
-          <ThumbnailsTab
-            thumbnails={thumbnails}
-            setThumbnails={setThumbnails}
-            markDirty={(d) => markDirty("thumbnails", d)}
-            showBanner={showBanner}
-          />
-        )}
-        {activeTab === "preview" && <PreviewFrame />}
+      <div className="comment-row">
+        <label htmlFor="comment-input">Comment</label>
+        <input
+          id="comment-input"
+          data-testid="input-comment"
+          type="text"
+          value={draft.comment}
+          onChange={(e) => dispatch({ type: "SET_COMMENT", comment: e.target.value })}
+          placeholder="e.g. Spring drop hero row"
+        />
       </div>
 
-      {pendingTab && (
-        <div
-          className="modal-overlay"
-          role="dialog"
-          aria-modal="true"
-          data-testid="dirty-guard-modal"
+      <div className="action-row">
+        <button
+          className="btn-primary"
+          data-testid="btn-save-layout"
+          disabled={
+            draft.saved ||
+            draft.slots.some((s) => !s.content_id || !s.image_uploaded) ||
+            !draft.comment.trim()
+          }
+          onClick={() => dispatch({ type: "SAVE_LAYOUT" })}
         >
-          <div className="modal">
-            <h2>Unsaved changes</h2>
-            <p>
-              You have unsaved changes on the{" "}
-              <strong>{activeTab}</strong> tab. Switching tabs will discard
-              them.
-            </p>
-            <div className="modal-actions">
-              <button
-                className="btn"
-                onClick={cancelDiscard}
-                data-testid="btn-dirty-cancel"
-              >
-                Keep editing
-              </button>
-              <button
-                className="btn danger"
-                onClick={confirmDiscard}
-                data-testid="btn-dirty-discard"
-              >
-                Discard and switch
-              </button>
-            </div>
-          </div>
-        </div>
+          {draft.saved ? "Saved" : "Save Layout"}
+        </button>
+        <button
+          className="btn-secondary"
+          data-testid="btn-apply-layout"
+          disabled={!draft.saved || draft.applied}
+          onClick={() => dispatch({ type: "APPLY_LAYOUT" })}
+        >
+          {draft.applied ? "Applied" : "Apply Layout"}
+        </button>
+      </div>
+
+      {draft.saved && (
+        <p className="success" data-testid="status-saved">
+          Layout saved.
+        </p>
       )}
-    </section>
+      {draft.applied && (
+        <p className="success" data-testid="status-applied">
+          Layout applied.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SlotCard({ slot }) {
+  const { state, dispatch } = usePortal();
+  const used = new Set(
+    state.draftLayout.slots
+      .filter((s) => s.idx !== slot.idx && s.content_id)
+      .map((s) => s.content_id)
+  );
+  const options = state.contents.filter((c) => !used.has(c.content_id));
+
+  function onPickContent(e) {
+    const value = e.target.value || null;
+    dispatch({ type: "ASSIGN_SLOT_CONTENT", idx: slot.idx, content_id: value });
+  }
+
+  function onPickImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // We don't actually need the bytes; we just record the upload happened.
+    dispatch({ type: "UPLOAD_SLOT_IMAGE", idx: slot.idx });
+  }
+
+  return (
+    <div className="slot-card" data-testid={`slot-${slot.idx}`}>
+      <div className="slot-header">Slot {slot.idx}</div>
+
+      <label htmlFor={`slot-${slot.idx}-content`}>Content</label>
+      <select
+        id={`slot-${slot.idx}-content`}
+        data-testid={`slot-${slot.idx}-content-select`}
+        value={slot.content_id ?? ""}
+        onChange={onPickContent}
+      >
+        <option value="">— pick content —</option>
+        {slot.content_id && !options.find((o) => o.content_id === slot.content_id) && (
+          // Keep the current selection visible even though it'd be filtered.
+          <option value={slot.content_id}>{slot.content_id}</option>
+        )}
+        {options.map((c) => (
+          <option key={c.content_id} value={c.content_id}>
+            {c.content_id} — {c.title}
+          </option>
+        ))}
+      </select>
+
+      <label htmlFor={`slot-${slot.idx}-image`} className="image-label">
+        Image
+      </label>
+      <input
+        id={`slot-${slot.idx}-image`}
+        data-testid={`slot-${slot.idx}-image-input`}
+        type="file"
+        accept="image/*"
+        disabled={!slot.content_id}
+        onChange={onPickImage}
+      />
+      {slot.image_uploaded && (
+        <span className="ok" data-testid={`slot-${slot.idx}-image-ok`}>
+          uploaded
+        </span>
+      )}
+    </div>
+  );
+}
+
+function AppliedLayoutsList() {
+  const { state } = usePortal();
+  return (
+    <div className="card" data-testid="applied-layouts">
+      <h2>Applied layouts ({state.appliedLayouts.length})</h2>
+      <ul>
+        {state.appliedLayouts.map((l, i) => (
+          <li key={i} data-testid={`applied-layout-${i}`}>
+            <code>{l.layout_id}</code> — {l.slots.length} slots — “{l.comment}”
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
