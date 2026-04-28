@@ -69,6 +69,12 @@ class ElementFingerprint(BaseModel):
     frame_path: list[str] = Field(default_factory=list)
     in_shadow_root: bool = False
 
+    # Alternate fingerprints accumulated by self-heal (L3) over time.
+    # On replay, each alternate is tried via L1/L2 BEFORE invoking L3
+    # again, so a portal that drifted once stays cheap to re-execute.
+    # Persisted back to the skill JSON when a heal succeeds + verifies.
+    alternates: list["ElementFingerprint"] = Field(default_factory=list)
+
 
 class ParamBinding(BaseModel):
     """Binds a step's value (or a substring of it) to a named parameter."""

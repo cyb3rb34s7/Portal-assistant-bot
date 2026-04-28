@@ -38,16 +38,33 @@ from pilot.agent.schemas.skill import SkillFile, upgrade_v1_to_v2
 # ---------------------------------------------------------------------------
 
 
-def load_skill_library(skills_dir: Path) -> list[SkillFile]:
+def load_skill_library(
+    skills_dir: Path,
+    *,
+    errors: list[str] | None = None,
+) -> list[SkillFile]:
     """Load all .json/.yaml skill files from a directory.
 
     v1 skills (no schema_version) are upgraded in-memory via
-    `upgrade_v1_to_v2`. Files that fail validation are skipped with a
-    warning print to stderr (the orchestrator emits this as
-    agent.log{level:'warn'} downstream).
+    ``upgrade_v1_to_v2``. ``<stem>.v2.json`` sidecars are merged onto
+    their primary when present. Files that fail to load are skipped.
+
+    Error reporting:
+      - If ``errors`` is provided (a mutable list), each load/merge
+        failure is appended to it as a human-readable string and the
+        caller (e.g. the orchestrator) is responsible for surfacing
+        them via ``agent.log``.
+      - If ``errors`` is None, failures fall back to ``print`` for
+        backwards compatibility with eval scripts that don't subscribe.
     """
     if not skills_dir.exists():
         return []
+
+    def _record(msg: str) -> None:
+        if errors is not None:
+            errors.append(msg)
+        else:
+            print(msg, flush=True)
 
     out: list[SkillFile] = []
     for p in sorted(skills_dir.iterdir()):
@@ -76,9 +93,8 @@ def load_skill_library(skills_dir: Path) -> list[SkillFile]:
             # Merge a `<stem>.v2.json` sidecar if present. The sidecar
             # carries LLM-annotated metadata: better param names,
             # description, preconditions, destructive_actions,
-            # success_assertions. The original v1 file is left intact;
-            # this lets us throw away a bad annotate pass without
-            # losing the recording.
+            # success_assertions, plus the param_alias_map.
+            sidecar_alias_map: dict[str, str] = {}
             sidecar = p.with_suffix(".v2.json")
             if sidecar.exists():
                 try:
@@ -96,35 +112,41 @@ def load_skill_library(skills_dir: Path) -> list[SkillFile]:
                     ):
                         if k in side:
                             data[k] = side[k]
-                    if "param_alias_map" in side:
-                        # Stash the alias map on the dict; SkillFile
-                        # doesn't have a field for it, so we keep it as
-                        # an "extra" the executor reads via
-                        # _alias_map_for(skill_id) helper below.
-                        _ALIAS_MAPS[data["id"]] = side["param_alias_map"]
+                    if "param_alias_map" in side and isinstance(
+                        side["param_alias_map"], dict
+                    ):
+                        sidecar_alias_map = dict(side["param_alias_map"])
                 except Exception as e:  # noqa: BLE001
-                    print(
-                        f"[planner] sidecar merge failed for {sidecar.name}: {e}",
-                        flush=True,
+                    _record(
+                        f"skill sidecar merge failed for {sidecar.name}: "
+                        f"{type(e).__name__}: {e}"
                     )
 
             skill = upgrade_v1_to_v2(data)
+            # Stash the alias map directly on the skill model so it
+            # travels with the value (no module-level globals, no
+            # cross-task / cross-portal accumulation hazard).
+            if sidecar_alias_map:
+                skill.param_alias_map = sidecar_alias_map
             out.append(skill)
         except Exception as e:  # noqa: BLE001 - intentional broad catch
-            print(f"[planner] skill load failed for {p.name}: {e}", flush=True)
+            _record(
+                f"skill load failed for {p.name}: {type(e).__name__}: {e}"
+            )
     return out
 
 
-# Alias map: semantic_param_name -> v1 binding name. Populated from
-# `.v2.json` sidecars during load_skill_library. Lives at module scope
-# because SkillFile is a Pydantic model we don't want to extend just to
-# carry implementation detail; the RealExecutor reads from here.
-_ALIAS_MAPS: dict[str, dict[str, str]] = {}
+def alias_map_for(skill: SkillFile | str) -> dict[str, str]:
+    """Return the semantic->v1-binding alias map for a skill.
 
-
-def alias_map_for(skill_id: str) -> dict[str, str]:
-    """Return the semantic->v1-binding alias map for a skill, or {}."""
-    return _ALIAS_MAPS.get(skill_id, {})
+    Accepts either a SkillFile instance (preferred) or a skill_id
+    string. The string form is retained only for backwards compatibility
+    and always returns ``{}`` because the alias map now lives on the
+    SkillFile instance itself, not in a module-level cache.
+    """
+    if isinstance(skill, SkillFile):
+        return dict(skill.param_alias_map)
+    return {}
 
 
 # ---------------------------------------------------------------------------

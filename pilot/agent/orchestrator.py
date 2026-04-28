@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from pilot.agent.ai_client import AIClient
 from pilot.agent.clarify import ClarifyAnswer, ClarifyState
@@ -56,6 +56,7 @@ from pilot.agent.schemas.protocol import (
     PlanReject,
     ReportReady,
     StepFailedEvent,
+    StepHealedEvent,
     StepProgressEvent,
     StepStartedEvent,
     StepSucceededEvent,
@@ -80,6 +81,13 @@ class StepResult:
     error_kind: str | None = None
     error_message: str | None = None
     screenshot_path: str | None = None
+    heals: list[dict[str, Any]] = field(default_factory=list)
+    """One entry per sub-step inside this plan step that the runner
+    self-healed (L3). Each dict carries ``original_summary``,
+    ``new_summary``, ``confidence``, ``reason``,
+    ``post_condition_passed``, ``persisted_to_skill``. The orchestrator
+    emits a ``StepHealedEvent`` per entry between progress and
+    succeeded (or before failed)."""
 
 
 class StepExecutor:
@@ -211,8 +219,12 @@ class Orchestrator:
 
     # ---- Skill library + portal context loading ------------------------
 
-    def _load_skills(self) -> list[SkillFile]:
-        return load_skill_library(self.config.skills_dir)
+    async def _load_skills(self) -> list[SkillFile]:
+        errors: list[str] = []
+        skills = load_skill_library(self.config.skills_dir, errors=errors)
+        for msg in errors:
+            await self._log(msg, level="warn", source="skill_loader")
+        return skills
 
     # ---- Run a task ----------------------------------------------------
 
@@ -225,6 +237,23 @@ class Orchestrator:
         self._cancelled = False
         self._step_records = []
 
+        try:
+            await self._run_task_inner(submit)
+        finally:
+            # Per-task cleanup — close any browser/CDP resources held by
+            # the executor. Safe even if the executor was a FakeExecutor
+            # without a close method, or if the task was cancelled mid-run.
+            close = getattr(self.executor, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as e:  # noqa: BLE001
+                    await self._log(
+                        f"executor.close raised: {type(e).__name__}: {e}",
+                        level="warn",
+                    )
+
+    async def _run_task_inner(self, submit: TaskSubmit) -> None:
         try:
             # ---- Intake ----
             entities = await run_intake(
@@ -245,7 +274,7 @@ class Orchestrator:
                 return await self._cancel_task()
 
             # ---- Plan + clarify loop ----
-            skills = self._load_skills()
+            skills = await self._load_skills()
             clarify_state = ClarifyState()
             goal_text = submit.goal
 
@@ -345,6 +374,35 @@ class Orchestrator:
 
             # ---- Execute ----
             skills_by_id = {s.id: s for s in skills}
+            loop = asyncio.get_running_loop()
+
+            def _make_progress_emitter(step_idx: int):
+                """Build a sync emit_progress callback bound to step_idx.
+
+                The factory captures step_idx by value so executor
+                callbacks fired after the step loop has advanced still
+                attribute progress to the correct step.
+                """
+                def _emit_progress_sync(
+                    action: str, info: dict[str, Any]
+                ) -> None:
+                    coro = self._emit(
+                        StepProgressEvent(
+                            task_id=self.task_id,  # type: ignore[arg-type]
+                            idx=step_idx,
+                            action=action,
+                            test_id=info.get("test_id"),
+                            screenshot_path=info.get("screenshot_path"),
+                        )
+                    )
+                    try:
+                        asyncio.run_coroutine_threadsafe(coro, loop)
+                    except RuntimeError:
+                        # Loop closed (task cancellation race); drop.
+                        pass
+
+                return _emit_progress_sync
+
             for step in plan.steps:
                 if self._cancelled:
                     return await self._cancel_task()
@@ -371,27 +429,29 @@ class Orchestrator:
                     )
                 )
 
-                async def _emit_progress(action: str, info: dict[str, Any]) -> None:
+                emit_progress = _make_progress_emitter(step.idx)
+                result = await self.executor.execute(step, skill, emit_progress)
+
+                # Emit one StepHealed per heal that happened during this
+                # plan step, BEFORE succeeded/failed so the UI can show
+                # the heal banner alongside the step.
+                for h in result.heals:
                     await self._emit(
-                        StepProgressEvent(
-                            task_id=self.task_id,  # type: ignore[arg-type]
+                        StepHealedEvent(
+                            task_id=self.task_id,
                             idx=step.idx,
-                            action=action,
-                            test_id=info.get("test_id"),
-                            screenshot_path=info.get("screenshot_path"),
+                            original_summary=str(h.get("original_summary", "?")),
+                            new_summary=str(h.get("new_summary", "?")),
+                            confidence=h.get("confidence", "low"),
+                            reason=str(h.get("reason", "")),
+                            post_condition_passed=bool(
+                                h.get("post_condition_passed", False)
+                            ),
+                            persisted_to_skill=bool(
+                                h.get("persisted_to_skill", False)
+                            ),
                         )
                     )
-
-                # The executor may be sync or async-progress. We adapt
-                # by giving it a sync emit that schedules onto the loop.
-                loop = asyncio.get_event_loop()
-
-                def _emit_progress_sync(action: str, info: dict[str, Any]) -> None:
-                    asyncio.run_coroutine_threadsafe(
-                        _emit_progress(action, info), loop
-                    )
-
-                result = await self.executor.execute(step, skill, _emit_progress_sync)
 
                 if result.succeeded:
                     await self._record_step(
@@ -405,7 +465,9 @@ class Orchestrator:
                         )
                     )
                 else:
-                    await self._handle_step_failure(step, skill, result, skills_by_id)
+                    await self._handle_step_failure(
+                        step, skill, result, skills_by_id, emit_progress
+                    )
                     if self._cancelled:
                         return await self._cancel_task()
 
@@ -443,6 +505,7 @@ class Orchestrator:
         skill: SkillFile,
         result: StepResult,
         skills_by_id: dict[str, SkillFile],
+        emit_progress: Callable[[str, dict[str, Any]], None],
     ) -> None:
         await self._emit(
             StepFailedEvent(
@@ -494,7 +557,7 @@ class Orchestrator:
             await self._record_step(step, status="skipped", duration_ms=0)
             return
         # retry / use_alternate (use_alternate is treated as retry in v1)
-        retry = await self.executor.execute(step, skill, lambda *_a, **_k: None)
+        retry = await self.executor.execute(step, skill, emit_progress)
         status = "succeeded" if retry.succeeded else "failed"
         await self._record_step(step, status=status, duration_ms=retry.duration_ms)
         if retry.succeeded:

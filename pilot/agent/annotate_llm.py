@@ -229,15 +229,20 @@ async def annotate_skill(
         alias_map[lp.semantic_name] = lp.original_name
 
     destructive_actions = []
+    _DESTRUCTIVE_KINDS = ("publish", "delete", "archive", "apply", "save", "submit")
     for idx in annotation.destructive_step_indexes:
         if 0 <= idx < len(steps_v1):
             step = steps_v1[idx]
+            label = (step.get("semantic_label") or "").lower()
+            kind = "save"
+            for k in _DESTRUCTIVE_KINDS:
+                if k in label:
+                    kind = k
+                    break
             destructive_actions.append({
                 "step": idx,
-                "kind": (step.get("semantic_label") or "save").split("_")[1]
-                if (step.get("semantic_label") or "").count("_") >= 1
-                else "save",
-                "reversible": True,
+                "kind": kind,
+                "reversible": kind in ("save", "submit"),
                 "confirm_prompt": None,
             })
 

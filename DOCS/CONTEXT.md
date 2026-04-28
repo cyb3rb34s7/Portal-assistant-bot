@@ -222,6 +222,44 @@ Approach (held throughout):
   behind `GROQ_API_KEY`.
 - Hand-written orchestrator (~430 LOC). No agent framework.
 
+### Code-review bug-fix sweep + L3 self-heal (2026-04-28)
+
+Architecture review of the agent layer surfaced 11 issues; **9 fixed
+in one pass** (issues 1, 2, 3, 4, 5, 7, 8, 12, 16 from the review log)
+plus a real portal bug (#20: stale file inputs across layout swap)
+discovered during the new operator E2E test. Behaviour-preserving
+refactor; all existing tests stay green.
+
+Then **L3 self-heal landed as the runner's locator-repair stage**.
+Architecture: deterministic-by-default with confidence bands, post-
+condition signature compare, alternate-fingerprint persistence onto
+the skill JSON, and a `StepHealedEvent` typed protocol event so
+operators see what got healed. LLM-pick backend ships behind a
+`make_repair_for_runner(client=...)` helper for when the internal LLM
+is wired in; without a client, the deterministic backend is used.
+
+Adds:
+- `pilot/agent/locator_repair.py` (`LocatorRepair`, `HealResult`).
+- `tests/agent/test_locator_repair.py` (7 cases).
+- `scripts/operator_test_suite.py` (13 Playwright scenarios; 13/13
+  PASS against the rebuilt portal).
+
+Updates: `pilot/skill_runner.py` (3-tuple resolver, alternates
+lookup, post-condition check), `pilot/agent/executor_real.py` (CDP
+reuse, base_url default, file-path pre-check, skill JSON write-back),
+`pilot/agent/orchestrator.py` (heals plumbing, `StepHealedEvent`
+emission, executor.close in finally), `pilot/agent/planner.py`
+(alias map off global, errors sink), `pilot/agent/schemas/skill.py`
+(example -> default_hint preserve), `pilot/models.py`
+(`ToolResult.healed`), `pilot/skill_models.py`
+(`ElementFingerprint.alternates`), `pilot/agent/schemas/protocol.py`
+(`StepHealedEvent`), `pilot/agent/annotate_llm.py` (keyword-based
+destructive kind), `sample_portal/src/pages/Curation/index.jsx`
+(layout-keyed SlotCard).
+
+**Verified:** 9/9 unit + integration tests in 0.92s; 13/13 operator
+E2E. Working tree clean before commit.
+
 ---
 
 ## 5. Next up `[live]`
@@ -259,6 +297,59 @@ V2 deferred features list lives in `DOCS/PRODUCT_PLAN.md` §7.
 > **Rule.** When a non-trivial bug is found, document it here with the
 > root cause + fix + commit id. Never delete entries; future-you will
 > need them. New entries go at the top.
+
+### P-008 — React reconciliation reused a stale file input across layout swap (2026-04-28)
+
+**Symptom.** Operator E2E test S10 (3 layouts back-to-back) failed
+when filling slot 1 of the second layout: `wait_for_selector
+slot-1-image-ok` timed out. Screenshot showed slot 1's "Choose File"
+button labelled `A-9001.png` even though the React state had
+`image_uploaded: false` for that slot.
+
+**Root cause.** The Curation page rendered SlotCards with
+`key={slot.idx}`. Both `grid-2x2` and `featured-row` use slots indexed
+1..4. React's reconciler matched by key, kept the same SlotCard
+component instance across the layout swap, and reused the underlying
+`<input type=file>` DOM node — including its uncontrolled file
+selection from the previous layout. React state was correctly reset
+(`image_uploaded: false`), but the DOM held stale data.
+
+**Fix.** `key={`${draft.layout_id}-${slot.idx}`}` forces React to
+unmount the previous layout's SlotCards entirely so the new layout
+gets fresh `<input type=file>` elements with empty file values.
+
+**Lesson.** **Uncontrolled DOM elements (file inputs, embedded video
+players, canvases) keep their internal state across React re-renders
+unless you change the key.** If a component owns DOM state React
+doesn't manage, key the component on whatever dimensions imply "fresh
+DOM needed" — for layout swaps that's `layout_id`. The portal bug
+was operator-visible (stale filenames after switching layouts), not
+just an automation hazard.
+
+### P-007 — sync_playwright reentrancy (redux) for L3 LLM calls (2026-04-28)
+
+**Symptom.** Designing the L3 LLM heal: the runner is sync
+(sync_playwright), but `pilot.agent.ai_client.complete_structured` is
+async. Calling it inline from a runner method would risk a P-004-style
+reentrancy deadlock if the LLM client touched any sync_playwright API.
+
+**Root cause.** Same shape as P-004. sync_playwright dispatches its
+work on a single thread/event loop; running an asyncio task inline
+inside a runner method that's already executing inside that loop's
+context can reenter the loop and stall.
+
+**Fix.** `pilot.agent.locator_repair.make_repair_for_runner(client, model)`
+wraps the async `complete_structured` in a sync shim that uses
+`asyncio.run(...)` — fresh event loop per call, no reentrancy with
+the sync_playwright loop on the runner thread. The runner thread is
+itself an `asyncio.to_thread` worker, so spinning up a child loop is
+bounded and safe.
+
+**Lesson.** **The `asyncio.run` shim is the safe default for any
+LLM-on-failure plumbing inside the sync runner.** Anything that
+needs to call async code from inside `skill_runner.py` should go
+through this pattern, not bare `await` or `loop.run_until_complete`
+in the runner thread.
 
 ### P-006 — v1→v2 skill migration silently dropped all parameters (2026-04-28)
 

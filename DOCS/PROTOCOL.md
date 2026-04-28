@@ -261,7 +261,7 @@ Present the plan for approval.
 }
 ```
 
-### 5.7 `step.started` / `step.progress` / `step.succeeded` / `step.failed`
+### 5.7 `step.started` / `step.progress` / `step.healed` / `step.succeeded` / `step.failed`
 
 ```json
 {"v":1,"type":"step.started","task_id":"...",
@@ -271,6 +271,15 @@ Present the plan for approval.
 {"v":1,"type":"step.progress","task_id":"...",
  "idx":1,"action":"click","test_id":"btn-save-layout",
  "screenshot_path":"sessions/.../step_001.png"}
+
+{"v":1,"type":"step.healed","task_id":"...",
+ "idx":1,
+ "original_summary":"btn-save-layout",
+ "new_summary":"btn-save-draft-layout",
+ "confidence":"high",
+ "reason":"deterministic best-match: 'btn-save-draft-layout' (similarity=0.89)",
+ "post_condition_passed":true,
+ "persisted_to_skill":true}
 
 {"v":1,"type":"step.succeeded","task_id":"...",
  "idx":1,"duration_ms":3210}
@@ -286,6 +295,29 @@ Present the plan for approval.
    {"action":"abort",        "label":"Abort run"}
  ]}
 ```
+
+**About `step.healed`.** Emitted by the runner's L3 self-heal (see
+`pilot/agent/locator_repair.py`). Sent **between** `step.progress`
+and `step.succeeded` on a successful heal, or before `step.failed`
+when a heal was attempted but the post-condition didn't verify.
+
+- `original_summary` / `new_summary` — short labels (testid /
+  accessible name / xpath) of the recorded vs. picked element. For
+  the operator audit, not for programmatic matching.
+- `confidence` — `high` / `medium` / `low`. Runner refuses to execute
+  on `low`; `medium` runs but never persists; `high` runs + persists.
+- `reason` — one-sentence justification (LLM's reasoning, or
+  "deterministic best-match: ... similarity=N.NN" for the no-LLM
+  backend).
+- `post_condition_passed` — did the page state change after the
+  healed action? `false` flips the surrounding result to `step.failed`
+  with `error_kind=locator_exhausted` (or similar), but this event
+  still fires so operators see what was attempted.
+- `persisted_to_skill` — `true` means the new fingerprint was
+  appended to the step's `alternates` in the skill JSON. The next
+  replay hits L1 directly.
+
+Hosts that don't know this event log-and-ignore per §8.
 
 ### 5.8 `paused`
 

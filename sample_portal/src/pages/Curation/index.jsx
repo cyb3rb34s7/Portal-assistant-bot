@@ -67,7 +67,14 @@ function LayoutEditor() {
       </h2>
       <div className="slots-grid" data-testid={`slots-${draft.layout_id}`}>
         {draft.slots.map((slot) => (
-          <SlotCard key={slot.idx} slot={slot} />
+          // Include layout_id in the key so React unmounts the previous
+          // layout's SlotCard DOM (and its uncontrolled file input)
+          // instead of reusing it. Without this, switching layouts
+          // leaves stale filenames in the file inputs of the new layout.
+          <SlotCard
+            key={`${draft.layout_id}-${slot.idx}`}
+            slot={slot}
+          />
         ))}
       </div>
 

@@ -26,6 +26,11 @@ class ToolResult(BaseModel):
     error: Optional[str] = None
     screenshot_path: Optional[str] = None
     confidence: Optional[Literal["high", "medium", "low"]] = None
+    # Set by skill_runner when a step's locator was self-healed (L3).
+    # The dict carries: original_summary, new_summary, confidence,
+    # reason, post_condition_passed, new_fingerprint (full).
+    # Consumed by orchestrators to emit StepHealed + persist alternates.
+    healed: Optional[dict[str, Any]] = None
 
 
 class Task(BaseModel):

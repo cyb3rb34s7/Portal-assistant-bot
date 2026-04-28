@@ -89,6 +89,18 @@ class SkillFile(BaseModel):
     success_assertions: list[SuccessAssertion] = Field(default_factory=list)
     destructive_actions: list[DestructiveActionSpec] = Field(default_factory=list)
 
+    # base_url for the portal this skill targets. Used by the executor as
+    # a default `target_url_substring` when attaching to the operator's
+    # Chrome (so the right tab is picked when several are open).
+    base_url: str | None = None
+
+    # Maps semantic parameter name (planner-emitted) -> v1 trace binding
+    # name (recorded fingerprint). Populated from `<skill>.v2.json`
+    # sidecars by load_skill_library; the executor reads it to translate
+    # the planner's params before handing them to SkillRunner. Stored on
+    # the skill so it travels with the model — no module-level globals.
+    param_alias_map: dict[str, str] = Field(default_factory=dict)
+
     # Recorded steps (untyped here; the runner uses the existing
     # skill_models.py types). We keep them as a raw list so legacy v1
     # skills still load.
@@ -113,9 +125,9 @@ def _migrate_v1_params(legacy_params: list[dict[str, Any]]) -> list[dict[str, An
     """v1 used a top-level field name `params` whose entries had keys
     {name, type, description, example, required}; v2 uses `parameters`
     whose entries have keys {name, semantic, required, type,
-    source_hint, default_hint}. Rename + reshape with conservative
-    defaults; we drop `example` (it isn't part of v2; the annotate
-    pass will add `default_hint` properly later)."""
+    source_hint, default_hint}. Rename + reshape, mapping v1 ``example``
+    -> v2 ``default_hint`` so the example value is preserved for
+    skills that have not yet been re-annotated by the LLM pass."""
     out: list[dict[str, Any]] = []
     for p in legacy_params or []:
         if not isinstance(p, dict):
@@ -123,13 +135,14 @@ def _migrate_v1_params(legacy_params: list[dict[str, Any]]) -> list[dict[str, An
         name = p.get("name")
         if not name:
             continue
+        example = p.get("example")
         out.append({
             "name": name,
             "semantic": p.get("description") or None,
             "required": bool(p.get("required", True)),
             "type": _V1_TYPE_MAP.get(str(p.get("type", "string")).lower(), "string"),
             "source_hint": None,
-            "default_hint": p.get("example") if p.get("example") is not None else None,
+            "default_hint": str(example) if example not in (None, "") else None,
         })
     return out
 
@@ -160,4 +173,7 @@ def upgrade_v1_to_v2(legacy: dict[str, Any]) -> SkillFile:
     if "parameters" not in data and "params" in data:
         data["parameters"] = _migrate_v1_params(data["params"])
 
+    # v1 skills carry `base_url` at the top level too; pass it through.
+    # Also drop legacy fields the v2 model doesn't know about (the model
+    # rejects extras silently otherwise).
     return SkillFile.model_validate(data)

@@ -293,22 +293,93 @@ context and returns approve/reject. Rejecting a step does not abort
 the run — it logs a `gate` entry and continues (dependent tasks will
 surface their own failures).
 
-### 6.6 Four-level locator fallback (replay)
+### 6.6 Four-level locator fallback (replay) + L3 self-heal
 
 Per step, the runner tries in order:
 
 | Level | Strategy |
 |---|---|
-| **L1 exact** | `data-testid` → `id` → `name=` → `aria-label=` |
-| **L2 semantic** | `role + accessible name`; `placeholder`; containing text; css_path |
-| **L3 fingerprint-match** | Queries all interactable elements in the page, scores each against the fingerprint (weighted role / accessible name / tag / text / placeholder / landmark), picks the top match if score ≥ 0.55 |
+| **L1 exact** | `data-testid` → `id` → `name=` → `aria-label=`, tried against the original fingerprint **and each persisted alternate** (see §6.6.1) |
+| **L2 semantic** | `role + accessible name` → `placeholder` → containing text → css_path; same alternate-aware loop as L1 |
+| **L3 self-heal** | Calls `pilot.agent.locator_repair.LocatorRepair.heal(...)`. Returns a `(locator, confidence, reason)` tuple. Confidence policy below. |
 | **L4 human** | Pauses, screenshots, prints context, waits for operator to complete the step manually; then resumes |
 
-L3 is currently a deterministic similarity matcher (no LLM), which
-makes it reproducible and testable. The same seam is designed to be
-swapped for an LLM-picked candidate from a distilled DOM when an
-internal LLM is available. See §13 of `DOCS/requirement.md` for the
-MCP/LLM plan.
+#### 6.6.1 Persisted alternates (no-LLM resilience)
+
+Every `ElementFingerprint` carries an `alternates: list[ElementFingerprint]`
+field. When L3 successfully heals a step at high confidence (and the
+post-condition verifies), the new fingerprint is appended to that list
+and the skill JSON is rewritten on disk. Subsequent replays try each
+alternate against L1/L2 before falling through to L3 again — so a
+portal that drifted once stays cheap forever after.
+
+Alternates are deduplicated by stable identity (testid, id,
+role+accessible-name, or xpath). The skill JSON does not bloat across
+reruns.
+
+#### 6.6.2 Self-heal backends and confidence policy
+
+`LocatorRepair` ships with two backends behind one interface:
+
+- **Deterministic backend** (default; used when no `AIClient` is
+  injected): weighted similarity scorer across the page's interactable
+  elements. Scores 0..1; mapped to confidence by:
+  - `>= 0.85` → high
+  - `>= 0.65` → medium
+  - `>= 0.55` → low (returned but caller refuses)
+  - `<  0.55` → no candidate; refuse.
+- **LLM backend** (used when `make_repair_for_runner(client, model)`
+  builds the repair with a non-None client): distills the page's
+  interactables, asks the model to pick by index from the list +
+  return its own `high/medium/low` self-confidence + a one-sentence
+  reason. Validated as a Pydantic model; `element_index = -1` means
+  the model refused.
+
+The runner enforces the same policy regardless of backend:
+
+| Confidence | Runner behaviour |
+|---|---|
+| `low` | Refuse to execute; escalate to L4 human takeover. |
+| `medium` | Execute; verify post-condition; **never persist** — you get the heal once, but the skill isn't permanently changed. |
+| `high` | Execute; verify post-condition; persist the new fingerprint to the skill JSON. |
+
+#### 6.6.3 Post-condition verification
+
+Every L3-healed action runs a lightweight before/after page-state
+check: `(url, body innerText length, count of visible interactables)`.
+If the signature is identical 350ms after the action, the runner
+assumes the click hit the wrong element (or did nothing visible) and
+treats the step as failed — the regular pause/retry/skip flow takes
+over. This is a heuristic, not a strong assertion, but it catches
+the most common wrong-pick failure mode.
+
+The runner sets `ToolResult.healed.post_condition_passed` to record
+the result; the orchestrator emits a `step.healed` event regardless
+so operators see what was attempted even when verification fails.
+
+#### 6.6.4 Operator visibility
+
+Self-heal is healable-by-default — there's no per-skill opt-in flag.
+What operators DO see:
+
+- A `step.healed` JSON-RPC event between `step.progress` and
+  `step.succeeded` (or `step.failed`) carrying:
+  ```
+  original_summary    e.g. "btn-save-layout"
+  new_summary         e.g. "btn-save-draft-layout"
+  confidence          high | medium | low
+  reason              "deterministic best-match: ... (similarity=0.89)"
+                       OR the LLM's one-sentence justification
+  post_condition_passed   true | false
+  persisted_to_skill      true | false
+  ```
+- An `info`-level audit log line per heal: `L3 healed: <orig> -> <new>
+  (high, deterministic)`.
+- An `info`-level entry in the per-session JSONL trace.
+
+When an internal LLM client is wired in (`pilot.agent.locator_repair.make_repair_for_runner(client=...)`)
+and passed to `RealExecutor` / `SkillRunner`, the LLM backend takes
+over without any other code changes.
 
 ### 6.7 Audit artifacts per session
 
@@ -692,48 +763,62 @@ curationpilot-poc/
 │   ├── browser.py              # CDP connect helper
 │   ├── teach.py                # Teach-mode recorder
 │   ├── annotate.py             # Annotation engine (auto + interactive)
-│   ├── skill_runner.py         # Replay with 4-level fallback
-│   ├── skill_models.py         # Pydantic: Skill, SkillStep, Fingerprint, etc.
+│   ├── skill_runner.py         # Replay with 4-level fallback (L1 alts → L2 → L3 self-heal → L4 human)
+│   ├── skill_models.py         # Pydantic: Skill, SkillStep, ElementFingerprint (with .alternates)
 │   ├── audit.py                # JSONL audit + screenshots
-│   ├── models.py               # Legacy ToolResult, Task, TaskList
+│   ├── models.py               # ToolResult (with .healed), Task, TaskList
 │   ├── runner.py               # Legacy manifest runner (kept for reference)
 │   ├── adapters/               # Legacy hand-written adapters
 │   │   ├── base.py
 │   │   └── media_assets.py
-│   └── overlay/
-│       └── grabber.js          # The injected listener
-├── sample_portal/              # React + Vite demo portal
+│   ├── overlay/
+│   │   └── grabber.js          # The injected listener (teach mode)
+│   └── agent/                  # v1 LLM-at-the-edges agent layer
+│       ├── intake.py           # PPTX/CSV/folder pre-pass + LLM refinement
+│       ├── planner.py          # goal + skills → Plan or Clarify
+│       ├── clarify.py          # 3-round budget, answer fold-back
+│       ├── orchestrator.py     # state machine, emits AgentEvents
+│       ├── executor_real.py    # Bridges PlanStep → SkillRunner over CDP
+│       ├── locator_repair.py   # L3 self-heal (deterministic + LLM)
+│       ├── annotate_llm.py     # v1 → v2 skill enrichment via LLM
+│       ├── reporter.py         # post-run markdown report
+│       ├── server.py           # stdio NDJSON JSON-RPC server
+│       ├── cli.py              # `pilot agent do/intake/plan` CLI
+│       ├── ai_client/          # Provider abstraction (Bedrock/OpenAI/Groq/mock)
+│       └── schemas/            # protocol, domain, skill, portal_context
+├── sample_portal/              # React + Vite demo portal (Upload + Curation)
 │   └── src/
 │       ├── App.jsx
-│       ├── components/
-│       │   └── Sidebar.jsx
+│       ├── components/Sidebar.jsx
+│       ├── store/PortalStore.jsx   # useReducer + localStorage
+│       ├── lib/csv.js
 │       └── pages/
-│           ├── Dashboard.jsx
-│           ├── MediaAssets.jsx
-│           ├── Curation/
-│           │   ├── index.jsx
-│           │   ├── LayoutTab.jsx
-│           │   ├── ScheduleTab.jsx
-│           │   ├── ThumbnailsTab.jsx
-│           │   ├── PreviewFrame.jsx
-│           │   └── UnlabeledToolbar.jsx
-│           ├── Schedule.jsx
-│           └── Settings.jsx
+│           ├── Upload.jsx
+│           └── Curation/index.jsx  # LayoutPicker → LayoutEditor → SlotCard
+├── portals/                    # Per-portal grounding for the planner
+│   └── sample_portal/context.yaml
 ├── sample_tasks/               # Legacy hand-written task lists
 │   └── add_and_verify.json
 ├── scripts/
 │   ├── launch_chrome_cdp.sh    # bash launcher
 │   ├── serve_portal.sh
-│   ├── e2e_test.py             # full teach-annotate-replay-verify loop
-│   └── resilience_test.py      # L2 fallback under locator drift
+│   ├── e2e_test.py             # original teach-annotate-replay-verify loop
+│   ├── resilience_test.py      # L2 fallback under locator drift
+│   ├── operator_test_suite.py  # 13 Playwright operator scenarios on rebuilt portal
+│   ├── e2e_cli_run.py          # Phase 5 driver: NL goal → real Chrome
+│   ├── teach_workflow.py       # Records the 3 curation skills end-to-end
+│   ├── simulate_operator.py    # Operator-style Playwright driver (no agent)
+│   └── eval_*.py               # Planner / clarify / hostile / executor benches
+├── tests/
+│   ├── agent/                  # Smoke + integration + LocatorRepair unit tests
+│   └── fixtures/               # CSVs + image fixtures for hostile bench
 ├── sessions/                   # (gitignored) Per-run artifacts
 │   └── <session-id>/
 │       ├── trace.jsonl
 │       ├── meta.json
 │       ├── audit_log.jsonl
 │       └── screenshots/
-├── skills/                     # (optional to track) Saved skills
-│   └── <name>.json
+├── skills/                     # Saved skills (.json + optional .v2.json sidecars)
 ├── pyproject.toml
 └── README.md
 ```
@@ -785,14 +870,17 @@ Honest limitations of the current POC:
 - **No GUI.** All operator interaction is through the CLI. A minimal
   React dashboard at `localhost:3000` is the natural next step and is
   already specified in `DOCS/requirement.md` §6.9.
-- **L3 is deterministic, not LLM-assisted.** Swap is ready when an
-  internal LLM client is available. Confidence policy specced in §12.
+- **L3 self-heal LLM backend not yet wired in production.** The
+  architecture and code are in place (`pilot/agent/locator_repair.py`
+  + `make_repair_for_runner(client=...)`); the deterministic backend
+  is the active default. When the internal ~70B client is available,
+  one constructor change in `RealExecutor` flips it on.
+- **Post-condition is heuristic** (page-state signature compare).
+  Catches "click hit nothing" but not "click hit a similar-looking
+  wrong element whose action ALSO mutates the page." Strong post-
+  conditions per step (recorded at teach time) would close this gap.
 - **Parameter substitution is "whole" mode only.** Substring and
   template modes defined in the schema but not yet resolved at replay.
-- **Post-conditions are captured but not asserted.** Each step records
-  what changed after it ran; the runner doesn't currently verify those
-  changes. Adding it is straightforward and would catch silent replay
-  failures.
 - **Shadow DOM piercing is partial.** Fingerprints flag
   `in_shadow_root`, but the serializer doesn't yet walk the shadow
   tree. Add when a real portal needs it.
@@ -801,5 +889,5 @@ Honest limitations of the current POC:
 
 ---
 
-*Document version: POC-1.0*  
-*Status: teach/annotate/replay loop working end-to-end; drift resilience verified*
+*Document version: POC-1.1*  
+*Status: teach/annotate/replay + L3 self-heal (deterministic) working end-to-end; LLM-backed L3 ready to wire in.*

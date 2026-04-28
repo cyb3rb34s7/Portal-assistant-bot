@@ -205,6 +205,35 @@ class StepProgressEvent(_Envelope):
     screenshot_path: str | None = None
 
 
+class StepHealedEvent(_Envelope):
+    """Emitted when a step's locator was repaired by L3 self-heal.
+
+    Sent BETWEEN step.progress and step.succeeded. Hosts that don't
+    know this type log-and-ignore (per protocol §8). UI is expected to
+    render this in amber so operators see a heal happened on this step.
+    """
+
+    type: Literal["step.healed"] = "step.healed"
+    task_id: str
+    idx: int
+    original_summary: str
+    """Short string describing the original locator (testid / accessible
+    name / xpath) that failed to resolve, for operator review."""
+    new_summary: str
+    """Short string describing the locator that was used instead."""
+    confidence: Literal["high", "medium", "low"]
+    reason: str
+    """Why the alternate was chosen — usually the LLM's one-sentence
+    justification, or 'deterministic best-match' for the no-LLM path."""
+    post_condition_passed: bool
+    """Did the page actually change after the healed click? If False the
+    step is treated as failed; this event is emitted regardless so the
+    operator sees what was attempted."""
+    persisted_to_skill: bool = False
+    """True if the alternate fingerprint was written back into the skill
+    JSON, so the next run hits L1 immediately."""
+
+
 class StepSucceededEvent(_Envelope):
     type: Literal["step.succeeded"] = "step.succeeded"
     task_id: str
@@ -266,6 +295,7 @@ AgentEvent = Union[
     PlanProposed,
     StepStartedEvent,
     StepProgressEvent,
+    StepHealedEvent,
     StepSucceededEvent,
     StepFailedEvent,
     Paused,

@@ -4,11 +4,22 @@ Accepts a Skill (JSON) plus a parameter dict and executes each step
 through a 4-level locator fallback:
 
   Level 1  Exact fingerprint — test_id / id / name / aria-label
+           (also tries persisted alternates from prior heals first, so
+            a step that healed once stays cheap forever after)
   Level 2  Semantic — role + accessible name / text contains
-  Level 3  Deterministic best-match using the full fingerprint as a
-           similarity query against interactable elements on the page.
-           (No LLM dependency in POC; ready to be swapped for AI later.)
+  Level 3  Self-heal via pilot.agent.locator_repair.LocatorRepair —
+           deterministic similarity scorer by default, LLM-pick
+           when an AIClient is wired in. Returns a confidence band.
   Level 4  Human takeover — pause, screenshot, print context, wait.
+
+After any L3 heal, a lightweight post-condition check verifies the page
+state changed in response to the action. If nothing visibly changed,
+the step is treated as failed and the alternate is NOT persisted —
+operator pauses into L4. Heals that pass post-condition AND have
+``confidence == "high"`` get their fingerprint persisted onto the step's
+``alternates`` list (the runner records this on ``ToolResult.healed``;
+the caller — usually pilot.agent.executor_real — writes it back to the
+skill JSON).
 
 Reuses pilot.audit.AuditLogger and pilot.models.ToolResult so replays
 fold into the existing session artifact format.
@@ -16,8 +27,8 @@ fold into the existing session artifact format.
 
 from __future__ import annotations
 
-import difflib
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -57,7 +68,12 @@ class SkillRunner:
         approve_fn: Optional[Callable[[SkillStep], bool]] = None,
         takeover_fn: Optional[Callable[[SkillStep], bool]] = None,
         console: Optional[Console] = None,
+        repair: Optional[Any] = None,
     ):
+        """``repair`` is an optional pilot.agent.locator_repair.LocatorRepair
+        instance. When None, the runner builds a default deterministic
+        repair on first use (no LLM). Pass an LLM-backed repair when
+        you want self-heal to use the model."""
         self.session = session
         self.skill = skill
         self.params = params
@@ -68,6 +84,7 @@ class SkillRunner:
         self.approve_fn = approve_fn or _cli_approve
         self.takeover_fn = takeover_fn or _cli_takeover
         self._results: list[tuple[SkillStep, ToolResult, int]] = []
+        self._repair = repair  # lazily built in _resolve_locator if None
 
     # ---- Public --------------------------------------------------------
 
@@ -211,46 +228,54 @@ class SkillRunner:
         )
 
     def _do_click(self, step: SkillStep) -> tuple[ToolResult, int]:
-        locator, level = self._resolve_locator(step)
+        locator, level, heal = self._resolve_locator(step)
         if locator is None:
             return self._fallback_human(step, "could not locate click target")
-        locator.click(timeout=4000)
+        page = self.session.page
+        verified = self._execute_with_heal_check(
+            page, level, heal, lambda: locator.click(timeout=4000)
+        )
         shot = self._screenshot(f"step_{step.index}_click")
-        return (
-            ToolResult(
-                success=True,
-                action_taken=f"clicked {step.semantic_label} [{LEVEL_LABELS[level]}]",
-                screenshot_path=shot,
-            ),
-            level,
+        return self._build_action_result(
+            success=verified,
+            level=level,
+            heal=heal,
+            action_taken=f"clicked {step.semantic_label} [{LEVEL_LABELS[level]}]",
+            screenshot_path=shot,
+            unverified_error="L3 heal: page state did not change after click",
         )
 
     def _do_change(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
-        locator, level = self._resolve_locator(step)
+        locator, level, heal = self._resolve_locator(step)
         if locator is None:
             return self._fallback_human(step, "could not locate input target")
         fp = step.fingerprint
         tag = (fp.tag if fp else "") or ""
+        page = self.session.page
         if tag == "select":
-            locator.select_option(value=value or "")
+            verified = self._execute_with_heal_check(
+                page, level, heal, lambda: locator.select_option(value=value or "")
+            )
         else:
-            locator.fill(value or "")
+            verified = self._execute_with_heal_check(
+                page, level, heal, lambda: locator.fill(value or "")
+            )
         shot = self._screenshot(f"step_{step.index}_change")
-        return (
-            ToolResult(
-                success=True,
-                action_taken=f"set {step.semantic_label} = {value!r} [{LEVEL_LABELS[level]}]",
-                screenshot_path=shot,
-            ),
-            level,
+        return self._build_action_result(
+            success=verified,
+            level=level,
+            heal=heal,
+            action_taken=f"set {step.semantic_label} = {value!r} [{LEVEL_LABELS[level]}]",
+            screenshot_path=shot,
+            unverified_error="L3 heal: page state did not change after fill",
         )
 
     def _do_upload(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
-        locator, level = self._resolve_locator(step)
+        locator, level, heal = self._resolve_locator(step)
         if locator is None:
             return self._fallback_human(step, "could not locate file input")
         if not value:
@@ -259,29 +284,76 @@ class SkillRunner:
                     success=False,
                     action_taken="upload",
                     error="no file_path parameter resolved",
+                    healed=heal,
                 ),
                 level,
             )
-        locator.set_input_files(value)
+        page = self.session.page
+        verified = self._execute_with_heal_check(
+            page, level, heal, lambda: locator.set_input_files(value)
+        )
         shot = self._screenshot(f"step_{step.index}_upload")
-        return (
-            ToolResult(
-                success=True,
-                action_taken=f"uploaded {value}",
-                screenshot_path=shot,
-            ),
-            level,
+        return self._build_action_result(
+            success=verified,
+            level=level,
+            heal=heal,
+            action_taken=f"uploaded {value}",
+            screenshot_path=shot,
+            unverified_error="L3 heal: page state did not change after upload",
         )
 
     def _do_key(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
-        locator, level = self._resolve_locator(step)
+        locator, level, heal = self._resolve_locator(step)
         if locator is None:
             return self._fallback_human(step, "could not locate key target")
-        locator.press(value or step.value or "Enter")
+        key = value or step.value or "Enter"
+        page = self.session.page
+        verified = self._execute_with_heal_check(
+            page, level, heal, lambda: locator.press(key)
+        )
+        return self._build_action_result(
+            success=verified,
+            level=level,
+            heal=heal,
+            action_taken=f"pressed {key!r}",
+            screenshot_path=None,
+            unverified_error="L3 heal: page state did not change after key press",
+        )
+
+    def _build_action_result(
+        self,
+        *,
+        success: bool,
+        level: int,
+        heal: Optional[dict[str, Any]],
+        action_taken: str,
+        screenshot_path: Optional[str],
+        unverified_error: str,
+    ) -> tuple[ToolResult, int]:
+        if success:
+            return (
+                ToolResult(
+                    success=True,
+                    action_taken=action_taken,
+                    screenshot_path=screenshot_path,
+                    healed=heal,
+                ),
+                level,
+            )
+        # Healed action ran but post-condition didn't pass — escalate as
+        # a step failure. The orchestrator's pause/retry/skip flow takes
+        # over from here. The healed dict is preserved so the operator
+        # can see what was attempted.
         return (
-            ToolResult(success=True, action_taken=f"pressed {value!r}"),
+            ToolResult(
+                success=False,
+                action_taken=action_taken,
+                error=unverified_error,
+                screenshot_path=screenshot_path,
+                healed=heal,
+            ),
             level,
         )
 
@@ -312,28 +384,40 @@ class SkillRunner:
 
     def _resolve_locator(
         self, step: SkillStep
-    ) -> tuple[Optional[Locator], int]:
+    ) -> tuple[Optional[Locator], int, Optional[dict[str, Any]]]:
+        """Resolve a step's locator. Returns (locator, level, heal_info).
+
+        ``heal_info`` is None for L1/L2/L4. For L3 it carries a dict
+        the action method enriches with post_condition_passed before
+        attaching to the resulting ToolResult.
+        """
         page = self.session.page
         fp = step.fingerprint
         if fp is None:
-            return None, 4
+            return None, 4, None
 
         # --- Level 1 — exact stable attributes ----
-        l1 = self._level1(page, fp)
-        if l1 is not None:
-            return l1, 1
+        # Try the original fingerprint first, then any alternates persisted
+        # by prior heals so a step that healed once is cheap forever after.
+        for candidate in self._fp_with_alternates(fp):
+            l1 = self._level1(page, candidate)
+            if l1 is not None:
+                return l1, 1, None
 
         # --- Level 2 — semantic ----
-        l2 = self._level2(page, fp)
-        if l2 is not None:
-            return l2, 2
+        for candidate in self._fp_with_alternates(fp):
+            l2 = self._level2(page, candidate)
+            if l2 is not None:
+                return l2, 2, None
 
-        # --- Level 3 — deterministic fingerprint match across interactables ----
-        l3 = self._level3(page, fp)
-        if l3 is not None:
-            return l3, 3
+        # --- Level 3 — self-heal via locator_repair ----
+        return self._level3(page, fp, step.semantic_label)
 
-        return None, 4
+    def _fp_with_alternates(self, fp: ElementFingerprint):
+        """Yield the original fingerprint, then each persisted alternate."""
+        yield fp
+        for alt in fp.alternates or []:
+            yield alt
 
     def _level1(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
         if fp.test_id:
@@ -390,40 +474,125 @@ class SkillRunner:
                 pass
         return None
 
-    def _level3(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
-        """Deterministic best-match against interactable elements on the page.
+    def _level3(
+        self,
+        page: Page,
+        fp: ElementFingerprint,
+        semantic_label: Optional[str],
+    ) -> tuple[Optional[Locator], int, Optional[dict[str, Any]]]:
+        """Self-heal via pilot.agent.locator_repair.
 
-        Queries all interactable candidates, scores each against the
-        fingerprint, and returns a locator for the top match if the
-        score clears a confidence threshold.
+        Returns (locator, 3, heal_info) on a confident pick. Returns
+        (None, 4, None) if the repair refuses or fails — caller will
+        escalate to human takeover.
         """
+        repair = self._get_repair()
+        result = repair.heal(page, fp, semantic_label)
+        if result.locator is None or result.confidence == "low":
+            self.audit.log(
+                "info",
+                f"L3 refused: confidence={result.confidence} reason={result.reason}",
+            )
+            return None, 4, None
+
+        new_fp_dump = (
+            result.new_fingerprint.model_dump() if result.new_fingerprint else None
+        )
+        new_summary = "?"
+        if result.new_fingerprint:
+            new_summary = (
+                result.new_fingerprint.test_id
+                or result.new_fingerprint.accessible_name
+                or (result.new_fingerprint.text or "")[:60]
+                or result.new_fingerprint.tag
+                or "?"
+            )
+        original_summary = (
+            fp.test_id or fp.accessible_name or (fp.text or "")[:60] or fp.tag or "?"
+        )
+        heal_info: dict[str, Any] = {
+            "original_summary": original_summary,
+            "new_summary": new_summary,
+            "confidence": result.confidence,
+            "reason": result.reason,
+            "post_condition_passed": False,  # filled by action method
+            "new_fingerprint": new_fp_dump,
+            "backend": result.backend,
+        }
+        self.audit.log(
+            "info",
+            (
+                f"L3 healed: {original_summary!r} -> {new_summary!r} "
+                f"({result.confidence}, {result.backend})"
+            ),
+        )
+        return result.locator, 3, heal_info
+
+    def _get_repair(self):
+        """Lazily build a deterministic LocatorRepair if none was injected.
+
+        Imported at call-site to avoid a circular import with pilot.agent.
+        """
+        if self._repair is not None:
+            return self._repair
+        from pilot.agent.locator_repair import LocatorRepair
+
+        self._repair = LocatorRepair()  # deterministic, no LLM
+        return self._repair
+
+    # ---- Heal post-condition ---------------------------------------------
+
+    def _page_state_signature(self, page: Page) -> tuple[str, int, int]:
+        """Cheap whole-page signature: (url, body innerText length, count
+        of visible interactables). Used to verify a healed action
+        actually changed something. Not a strong assertion — but a
+        clicked button that does nothing leaves the signature unchanged,
+        which catches the most obvious wrong-pick failure mode."""
         try:
-            candidates = page.evaluate(_JS_LIST_INTERACTABLES)
+            sig = page.evaluate(
+                "() => { const txt = document.body ? document.body.innerText : '';"
+                " const interactables = document.querySelectorAll("
+                "'button:not([disabled]), a[href], input:not([disabled]),"
+                " select:not([disabled]), textarea:not([disabled]),"
+                " [role=\"button\"]'"
+                " ).length;"
+                " return { url: location.href,"
+                " textLen: txt.length,"
+                " interactables: interactables }; }"
+            )
+            return (
+                str(sig.get("url", "")),
+                int(sig.get("textLen", 0)),
+                int(sig.get("interactables", 0)),
+            )
         except Exception:
-            return None
-        if not candidates:
-            return None
+            return ("", 0, 0)
 
-        best_score = 0.0
-        best_xpath: Optional[str] = None
-        for c in candidates:
-            score = _similarity(fp, c)
-            if score > best_score:
-                best_score = score
-                best_xpath = c.get("xpath")
-
-        if best_score >= 0.55 and best_xpath:
-            try:
-                loc = page.locator(f"xpath={best_xpath}")
-                if _first_visible(loc):
-                    self.audit.log(
-                        "info",
-                        f"L3 match score={best_score:.2f} xpath={best_xpath}",
-                    )
-                    return loc.first
-            except Exception:
-                return None
-        return None
+    def _execute_with_heal_check(
+        self,
+        page: Page,
+        level: int,
+        heal_info: Optional[dict[str, Any]],
+        action_callable: Callable[[], None],
+    ) -> bool:
+        """Run an action; if it was a healed (L3) action, check that
+        the page state changed afterward. Returns True if the action
+        ran cleanly. Mutates heal_info['post_condition_passed'].
+        """
+        if level != 3 or heal_info is None:
+            action_callable()
+            return True
+        before = self._page_state_signature(page)
+        action_callable()
+        # SPA settle window — give effects time to render
+        try:
+            page.wait_for_timeout(350)
+        except Exception:
+            pass
+        after = self._page_state_signature(page)
+        passed = before != after
+        heal_info["post_condition_passed"] = passed
+        return passed
 
     # ---- Human takeover ----------------------------------------------------
 
@@ -504,103 +673,6 @@ def _first_visible(loc: Locator) -> bool:
             return loc.count() > 0
         except Exception:
             return False
-
-
-def _similarity(fp: ElementFingerprint, cand: dict[str, Any]) -> float:
-    score = 0.0
-    weights_total = 0.0
-
-    def add(weight: float, matcher: float) -> None:
-        nonlocal score, weights_total
-        score += weight * matcher
-        weights_total += weight
-
-    if fp.test_id and cand.get("testId"):
-        add(3.0, 1.0 if fp.test_id == cand["testId"] else 0.0)
-    if fp.element_id and cand.get("id"):
-        add(2.0, 1.0 if fp.element_id == cand["id"] else 0.0)
-    if fp.role and cand.get("role"):
-        add(1.5, 1.0 if fp.role == cand["role"] else 0.0)
-    if fp.tag and cand.get("tag"):
-        add(0.5, 1.0 if fp.tag == cand["tag"] else 0.0)
-    if fp.accessible_name and cand.get("accessibleName"):
-        add(
-            2.5,
-            difflib.SequenceMatcher(
-                None,
-                fp.accessible_name.lower(),
-                (cand["accessibleName"] or "").lower(),
-            ).ratio(),
-        )
-    if fp.text and cand.get("text"):
-        add(
-            1.0,
-            difflib.SequenceMatcher(
-                None,
-                fp.text.lower()[:60],
-                (cand["text"] or "").lower()[:60],
-            ).ratio(),
-        )
-    if fp.placeholder and cand.get("placeholder"):
-        add(1.5, 1.0 if fp.placeholder == cand.get("placeholder") else 0.0)
-    if fp.landmark and cand.get("landmark"):
-        add(
-            1.0,
-            1.0 if fp.landmark == cand["landmark"] else 0.0,
-        )
-
-    if weights_total == 0:
-        return 0.0
-    return score / weights_total
-
-
-_JS_LIST_INTERACTABLES = """
-(() => {
-  const out = [];
-  const selector = 'button, a, input, select, textarea, [role], [data-testid], [onclick]';
-  const nodes = Array.from(document.querySelectorAll(selector));
-  for (const el of nodes) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) continue;
-    const style = window.getComputedStyle(el);
-    if (style.visibility === 'hidden' || style.display === 'none') continue;
-    const pathParts = [];
-    let node = el;
-    while (node && node.nodeType === 1 && pathParts.length < 10) {
-      let seg = node.nodeName.toLowerCase();
-      const parent = node.parentElement;
-      if (parent) {
-        const sameTag = Array.from(parent.children).filter(
-          (c) => c.nodeName === node.nodeName
-        );
-        if (sameTag.length > 1) seg += '[' + (sameTag.indexOf(node) + 1) + ']';
-      }
-      pathParts.unshift(seg);
-      node = parent;
-    }
-    const xpath = '/' + pathParts.join('/');
-    let landmark = null;
-    let cur = el.parentElement;
-    while (cur) {
-      const tid = cur.getAttribute && cur.getAttribute('data-testid');
-      if (tid && /(page|panel|modal|dialog)/i.test(tid)) { landmark = tid; break; }
-      cur = cur.parentElement;
-    }
-    out.push({
-      tag: el.tagName.toLowerCase(),
-      id: el.id || null,
-      testId: el.getAttribute('data-testid'),
-      role: el.getAttribute('role') || null,
-      accessibleName: (el.getAttribute('aria-label') || el.innerText || '').trim().slice(0, 120),
-      text: (el.innerText || el.textContent || '').trim().slice(0, 120),
-      placeholder: el.getAttribute('placeholder'),
-      landmark,
-      xpath,
-    });
-  }
-  return out;
-})()
-"""
 
 
 def _cli_approve(step: SkillStep) -> bool:

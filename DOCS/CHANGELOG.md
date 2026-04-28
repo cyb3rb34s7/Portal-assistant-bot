@@ -11,6 +11,163 @@
 
 ## 2026-04-28
 
+### Self-heal: L3 locator-repair landed; full code-review bug-fix sweep + new operator E2E suite
+
+**Commit:** _(this commit)_
+
+Two bodies of work in one commit, paired because the operator code
+review uncovered the bugs and the operator-feedback discussion locked
+the self-heal design. All landed together so the docs reflect a single
+consistent state.
+
+**Bug-fix sweep (from architecture review).** Eleven issues were filed
+against the agent layer; nine were fixed in this commit. All ship with
+no behaviour regressions on existing tests:
+
+- **#1 + #2** RealExecutor refactored to keep one BrowserSession and
+  one sync_playwright driver across plan steps via a dedicated
+  `ThreadPoolExecutor(max_workers=1)`. A 12-step plan now attaches to
+  CDP **once** instead of twelve times. `target_url_substring` falls
+  back to `skill.base_url` when not set, so multi-tab Chrome attaches
+  to the correct portal tab.
+- **#3** Module-level `_ALIAS_MAPS` global removed. Alias maps now live
+  on the `SkillFile.param_alias_map` field, populated from `<skill>.v2.json`
+  sidecars at load time. No cross-task / cross-portal accumulation
+  hazard.
+- **#4** Step-loop closures rewritten via `_make_progress_emitter(idx)`
+  factory (binds idx by value, not by loop variable). Switched off
+  deprecated `asyncio.get_event_loop()` to `get_running_loop()`.
+- **#5** `load_skill_library` now accepts an optional `errors: list[str]`
+  sink. Orchestrator collects errors and emits them as
+  `agent.log{level=warn, source=skill_loader}` so missing skills are
+  visible to the host UI instead of silently dropped.
+- **#7** `_migrate_v1_params` now maps v1 `example` -> v2 `default_hint`
+  instead of dropping it. Skills that haven't been re-annotated keep
+  their example values.
+- **#8** Destructive-action `kind` now extracted by keyword scan
+  (`publish/delete/archive/apply/save/submit`) instead of a brittle
+  `split('_')[1]` that returned `"btn"` for `click_btn_save_layout`.
+  `reversible` is also keyword-derived.
+- **#12** Retry path now reuses the step's `emit_progress` callback
+  instead of `lambda *_a, **_k: None` — retry sub-actions stream live.
+- **#16** `Path.exists()` pre-check for `file_path` parameters in
+  RealExecutor: refuses with `error_kind=missing_file` before invoking
+  the runner, closing Phase 6's documented late-detection limit (6.4).
+- **#20** Real portal bug discovered during operator E2E: SlotCard's
+  `key={slot.idx}` was identical across layouts (1..4 in both grid-2x2
+  and featured-row), so React reconciled the same DOM file input.
+  Operator switching layouts saw stale filenames in the new layout's
+  slots. Fix: `key={`${draft.layout_id}-${slot.idx}`}` forces a clean
+  unmount.
+
+**L3 self-heal (locator-repair).** Replaces the prior deterministic-only
+L3 with a confidence-scored repair stage that the architecture has been
+asking for since requirement.md §12 was written. Healable by default —
+no per-skill opt-in, no extra approval gates beyond what's already in
+the skill format.
+
+Architecture (lives in `pilot/agent/locator_repair.py`):
+
+- Two backends behind one `LocatorRepair.heal(page, fingerprint, label)`
+  interface: a deterministic similarity scorer (default; same logic
+  the prior L3 used, now with confidence bands), and an LLM-pick
+  backend (used when an `AIClient` is wired in).
+- `make_repair_for_runner(client, model)` helper wraps the async
+  `complete_structured` in a sync shim safe to call from the runner
+  thread.
+- Confidence policy enforced by the runner:
+  - `low` -> refuse to execute, escalate to L4 human takeover
+  - `medium` -> execute + verify post-condition, do not persist
+  - `high` -> execute, verify, **persist alternate fingerprint** to
+    the skill JSON so the next replay hits L1.
+- **Post-condition check**: `_page_state_signature(page)` compares
+  `(url, body innerText length, count of visible interactables)`
+  before and after every L3-healed action. Unchanged signature ->
+  treat as failed -> caller's pause/retry/skip flow takes over.
+- **Persisted alternates**: each `ElementFingerprint` gains an
+  `alternates: list[ElementFingerprint]` field. L1 and L2 try the
+  original fingerprint AND each persisted alternate, so a step that
+  healed once stays cheap forever after. RealExecutor writes back to
+  `skills/<id>.json` after a successful run with dedupe via stable
+  identity (testid / id / role+name / xpath).
+- **Operator visibility**: new `StepHealedEvent` in the JSON-RPC
+  protocol, emitted between `step.progress` and `step.succeeded`
+  (or before `step.failed`). Carries original/new fingerprint
+  summaries, confidence, reason, post_condition_passed,
+  persisted_to_skill. Hosts that don't know the type log-and-ignore
+  per protocol §8.
+
+**Files added:**
+- `pilot/agent/locator_repair.py` (~430 LOC) — `LocatorRepair` class,
+  `HealResult` dataclass, deterministic + LLM heal paths, distilled-DOM
+  JS snippet, `make_repair_for_runner` helper.
+- `tests/agent/test_locator_repair.py` (~250 LOC) — 7 tests covering
+  deterministic high/medium/refuse/empty + LLM accept/refuse paths
+  with injected fakes.
+- `scripts/operator_test_suite.py` (~530 LOC) — 13 Playwright-driven
+  scenarios against the rebuilt sample portal. Boots vite on a
+  non-default port (5188 with strictPort) to avoid colliding with
+  other dev servers; verifies "Sample Portal" identity before
+  proceeding so tests fail loud rather than silently exercising the
+  wrong app. 13/13 pass.
+
+**Files updated:**
+- `pilot/skill_models.py` — `ElementFingerprint.alternates` field;
+  `Skill.base_url` already present, retained.
+- `pilot/models.py` — `ToolResult.healed: dict | None` so heal info
+  bubbles from runner to caller.
+- `pilot/skill_runner.py` — `_resolve_locator` returns 3-tuple
+  `(locator, level, heal_info)`; L1/L2 try persisted alternates first
+  via `_fp_with_alternates`; `_level3` calls `LocatorRepair`;
+  `_execute_with_heal_check` runs the post-condition signature compare
+  for L3 actions; `_build_action_result` standardises the
+  success/healed/error mapping; `_get_repair` lazily builds the
+  deterministic backend when no repair is injected.
+- `pilot/agent/orchestrator.py` — `StepResult.heals: list[dict]`;
+  emits one `StepHealedEvent` per heal between progress and
+  succeeded/failed; closure capture cleaned up via factory.
+- `pilot/agent/executor_real.py` — full rewrite for CDP reuse +
+  base_url default + Path.exists pre-check + writes successful
+  high-confidence verified heals back into `skills/<id>.json` with
+  `_alts_equivalent` dedupe; `_locate_skill_file` skips `.v2.json`
+  sidecars.
+- `pilot/agent/planner.py` — `load_skill_library(skills_dir, *, errors=None)`
+  signature; `_ALIAS_MAPS` global removed; `alias_map_for(skill)`
+  reads from `SkillFile.param_alias_map` (string-id back-compat shim
+  returns empty).
+- `pilot/agent/annotate_llm.py` — keyword-based destructive-kind
+  extraction.
+- `pilot/agent/schemas/skill.py` — `_migrate_v1_params` preserves
+  `example` as `default_hint`; field validator unchanged.
+- `pilot/agent/schemas/protocol.py` — `StepHealedEvent`; registered
+  in the `AgentEvent` discriminated union.
+- `sample_portal/src/pages/Curation/index.jsx` — SlotCard key
+  includes `layout_id` so React unmounts the previous layout's DOM
+  on swap (closes #20).
+
+**Verified locally (2026-04-28):**
+- Unit + integration: 9/9 PASS in 0.92s. Includes 7 new
+  `test_locator_repair.py` cases + the existing
+  `test_smoke_single_item.py` and `test_integration_multi_item.py`
+  (which exercise the orchestrator's heal-event plumbing through
+  the FakeExecutor path).
+- Operator E2E: 13/13 PASS — the runner refactor didn't regress any
+  portal flow.
+
+**Why two bodies in one commit.** They were one session, the docs
+are written together, and the self-heal additions touch files that
+the bug-fix sweep also touched (`executor_real.py`, `orchestrator.py`,
+`skill_models.py`). Splitting would mean writing the CHANGELOG twice
+and reviewing the same files twice. The merge commit is large but
+internally coherent.
+
+**Lesson logged in CONTEXT.md §6 (P-007).** When refactoring a sync
+runner that talks to sync_playwright, the L3 LLM call cannot be made
+inline — sync_playwright reentrancy deadlock (P-004 redux). The
+`make_repair_for_runner` helper wraps `asyncio.run` so the LLM call
+runs in an isolated event loop on the runner thread. This pattern is
+the safe default for any future LLM-on-failure plumbing.
+
 ### Phase 6 complete: hostile/operator-grade testing -- 17/19 cases passed; 2 real bugs found and fixed
 
 **Commit:** _(this commit)_
