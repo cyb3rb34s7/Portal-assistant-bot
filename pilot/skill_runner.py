@@ -27,6 +27,7 @@ fold into the existing session artifact format.
 
 from __future__ import annotations
 
+import difflib
 import json
 import time
 import uuid
@@ -152,12 +153,13 @@ class SkillRunner:
 
         value = self._resolved_value(step)
 
-        # Allow React/Vue/Angular state + effects to settle between steps,
-        # and flush any pending async work. Cheap insurance against races.
-        try:
-            self.session.page.wait_for_timeout(80)
-        except Exception:
-            pass
+        # Allow framework state + effects to settle between steps, and
+        # flush any pending async work. Plus: wait for known
+        # in-progress indicators ("Saving...", "Applying...", spinners)
+        # to disappear before we act on the next step. Catches the most
+        # common race where a recorded "click Apply" fires while the
+        # previous Save is still committing on the server.
+        self._wait_for_page_settle()
 
         try:
             if step.action == "navigate":
@@ -216,7 +218,17 @@ class SkillRunner:
                 ),
                 0,
             )
-        self.session.page.goto(url, wait_until="domcontentloaded")
+        # Navigate with networkidle: waits for both DOMContentLoaded
+        # and a 500ms quiet network window. SPAs that fetch data after
+        # initial load (most enterprise portals) need this signal —
+        # plain domcontentloaded fires before the data is rendered, so
+        # the next step's locator misses.
+        try:
+            self.session.page.goto(url, wait_until="networkidle", timeout=15000)
+        except PWTimeoutError:
+            # Fall back to domcontentloaded if the page never reaches
+            # networkidle (some portals keep long-poll connections open).
+            self.session.page.goto(url, wait_until="domcontentloaded")
         shot = self._screenshot(f"step_{step.index}_navigate")
         return (
             ToolResult(
@@ -253,10 +265,27 @@ class SkillRunner:
             return self._fallback_human(step, "could not locate input target")
         fp = step.fingerprint
         tag = (fp.tag if fp else "") or ""
+        input_type = (fp.input_type if fp else None) or ""
         page = self.session.page
         if tag == "select":
             verified = self._execute_with_heal_check(
-                page, level, heal, lambda: locator.select_option(value=value or "")
+                page,
+                level,
+                heal,
+                lambda: self._select_option_with_fuzzy_fallback(locator, value or ""),
+            )
+        elif input_type in ("checkbox", "radio"):
+            # Boolean inputs — Playwright's set_checked is the right API,
+            # not fill(). Coerce common truthy strings to bool. Recording
+            # captures value="true"/"false" via the grabber's change handler.
+            target_checked = (value or "").strip().lower() in (
+                "true", "1", "on", "yes", "checked"
+            )
+            verified = self._execute_with_heal_check(
+                page,
+                level,
+                heal,
+                lambda: locator.set_checked(target_checked),
             )
         else:
             verified = self._execute_with_heal_check(
@@ -390,11 +419,20 @@ class SkillRunner:
         ``heal_info`` is None for L1/L2/L4. For L3 it carries a dict
         the action method enriches with post_condition_passed before
         attaching to the resulting ToolResult.
+
+        If the fingerprint has ``templates`` (e.g. ``test_id`` was
+        recorded as ``"row-A-9001"`` and templated as ``"row-{content_id}"``),
+        we first materialize a fresh fingerprint with the current
+        parameter values substituted in. The materialized fingerprint
+        is what L1 / L2 / L3 see — so a re-templated DOM id like
+        ``row-B-12345`` resolves at L1 instead of falling through to
+        L3 self-heal.
         """
         page = self.session.page
         fp = step.fingerprint
         if fp is None:
             return None, 4, None
+        fp = self._materialize_fingerprint(fp)
 
         # --- Level 1 — exact stable attributes ----
         # Try the original fingerprint first, then any alternates persisted
@@ -412,6 +450,115 @@ class SkillRunner:
 
         # --- Level 3 — self-heal via locator_repair ----
         return self._level3(page, fp, step.semantic_label)
+
+    def _select_option_with_fuzzy_fallback(
+        self, locator: Locator, value: str
+    ) -> None:
+        """Pick a select's option, falling back from exact value-match
+        to fuzzy text-match if the recorded value is no longer one of
+        the dropdown's option values.
+
+        Real-world driver: state-dependent dropdowns (e.g. asset status
+        changes the available transition list — recorded value
+        ``QC_IN_PROGRESS`` may exist on one run but not on another
+        with a different starting state). When that happens, we look
+        for an option whose visible text matches the recorded value
+        instead, with similarity >= 0.7 to avoid wild guesses.
+
+        Raises an Exception with ``error_kind=option_not_available``-
+        style context if no match clears the threshold; the calling
+        action method converts it to a structured ToolResult failure.
+        """
+        try:
+            locator.select_option(value=value, timeout=2000)
+            return
+        except Exception:
+            pass
+        try:
+            locator.select_option(label=value, timeout=2000)
+            return
+        except Exception:
+            pass
+
+        # Last resort: read the actual options off the rendered DOM
+        # and pick the closest text match. Works for the QC-style
+        # state-dependent option lists where the recorded VALUE is no
+        # longer valid but a similar-meaning option does exist.
+        try:
+            opts = locator.evaluate(
+                "el => Array.from(el.options).map(o => "
+                "({ value: o.value, text: (o.textContent || '').trim() }))"
+            )
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"option_not_available: '{value}' is not a valid option "
+                f"and the option list could not be read ({e})"
+            ) from e
+
+        if not opts:
+            raise RuntimeError(
+                f"option_not_available: select element has no options"
+            )
+
+        best_score = 0.0
+        best_value = None
+        target = value.lower()
+        for o in opts:
+            txt = (o.get("text") or "").lower()
+            val = (o.get("value") or "").lower()
+            score = max(
+                difflib.SequenceMatcher(None, target, txt).ratio(),
+                difflib.SequenceMatcher(None, target, val).ratio(),
+            )
+            if score > best_score:
+                best_score = score
+                best_value = o.get("value")
+
+        if best_score < 0.7 or not best_value:
+            available_texts = ", ".join(
+                (o.get("text") or "").strip() for o in opts[:8]
+            )
+            raise RuntimeError(
+                f"option_not_available: no option matches {value!r} "
+                f"(closest score={best_score:.2f}). "
+                f"Available: [{available_texts}]"
+            )
+        self.audit.log(
+            "info",
+            (
+                f"select fuzzy-matched: recorded={value!r} -> "
+                f"chose value={best_value!r} (similarity={best_score:.2f})"
+            ),
+        )
+        locator.select_option(value=best_value)
+
+    def _materialize_fingerprint(
+        self, fp: ElementFingerprint
+    ) -> ElementFingerprint:
+        """If the fingerprint has templates, build a copy with the
+        current parameter values substituted into the templated fields.
+        Returns the original fingerprint if no templates apply.
+        """
+        if not fp.templates:
+            return fp
+        # model_copy with deep update so we don't mutate the skill in
+        # memory — the original templates stay intact for the next
+        # parameter set.
+        materialized = fp.model_copy(deep=True)
+        any_change = False
+        for field_name, template in fp.templates.items():
+            try:
+                resolved = template.format(**self.params)
+            except KeyError:
+                # Template references a param not provided this run —
+                # leave the literal value in place (L2/L3 will likely
+                # need to handle it).
+                continue
+            current = getattr(materialized, field_name, None)
+            if resolved != current:
+                setattr(materialized, field_name, resolved)
+                any_change = True
+        return materialized if any_change else fp
 
     def _fp_with_alternates(self, fp: ElementFingerprint):
         """Yield the original fingerprint, then each persisted alternate."""
@@ -541,6 +688,48 @@ class SkillRunner:
         return self._repair
 
     # ---- Heal post-condition ---------------------------------------------
+
+    # Common in-progress indicator patterns. Portals signal mid-action
+    # state via testids like ``status-saving``, ``status-applying``,
+    # ``loading-...``, ``spinner-...``, role=progressbar. We wait for
+    # any of these to clear before proceeding. This is a heuristic —
+    # if a portal uses different conventions, the wait is a no-op
+    # (returns immediately) and the existing 4-level fallback handles
+    # the failure case.
+    _SPINNER_SELECTOR = (
+        "[data-testid^='status-saving'],"
+        "[data-testid^='status-applying'],"
+        "[data-testid^='loading-'],"
+        "[data-testid^='spinner-'],"
+        "[data-testid='loading'],"
+        "[data-testid='spinner'],"
+        "[role='progressbar']"
+    )
+
+    def _wait_for_page_settle(self, max_ms: int = 4000) -> None:
+        """Wait briefly for the page to be ready for the next action.
+
+        Two-stage: short fixed pause (250ms) for synchronous state
+        propagation, then a bounded wait for any known in-progress
+        indicators to clear. Total bounded by ``max_ms``.
+        """
+        page = self.session.page
+        try:
+            page.wait_for_timeout(250)
+        except Exception:
+            return
+        try:
+            spinner = page.locator(self._SPINNER_SELECTOR)
+            if spinner.count() > 0:
+                # Wait for the spinner to disappear; if it doesn't,
+                # we just proceed and let the action's own auto-wait
+                # handle the fallout.
+                try:
+                    spinner.first.wait_for(state="hidden", timeout=max_ms)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _page_state_signature(self, page: Page) -> tuple[str, int, int]:
         """Cheap whole-page signature: (url, body innerText length, count

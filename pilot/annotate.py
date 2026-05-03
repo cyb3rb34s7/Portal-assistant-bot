@@ -263,7 +263,86 @@ def build_skill(
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
+    _derive_fingerprint_templates(skill)
     return skill
+
+
+def _derive_fingerprint_templates(skill: Skill) -> int:
+    """Scan every fingerprint in the skill for substrings matching any
+    recorded param value. Mark the matching fingerprint fields as
+    templated so they re-render correctly at replay time when a
+    different parameter value is supplied.
+
+    Real-world example: portal renders a row's testid as
+    ``row-{content_id}``. Operator records with content_id=A-9001 →
+    fingerprint has ``test_id="row-A-9001"``. Without templating, replay
+    with content_id=B-12345 looks for ``row-A-9001`` and fails. With
+    templating, the fingerprint stores ``templates={"test_id":
+    "row-{content_id}"}`` and the runner substitutes the current value
+    at replay time.
+
+    Returns the count of templated fingerprint fields detected.
+    """
+    # Gather every (param_name, recorded_value) pair from any step that
+    # has a param binding. A single content_id may show up in many
+    # steps' fingerprints (row testid, action button id, etc.), not
+    # just on the step that fills it.
+    pairs: list[tuple[str, str]] = []
+    for s in skill.steps:
+        if not s.param_binding:
+            continue
+        if s.value is None and s.file_path is None:
+            continue
+        recorded = s.value if s.value is not None else s.file_path
+        if not recorded:
+            continue
+        # Skip very short values: too risky for substring substitution
+        # (would match unrelated occurrences in unrelated DOM ids).
+        if len(str(recorded)) < 3:
+            continue
+        pairs.append((s.param_binding.name, str(recorded)))
+
+    # Dedup, then sort longest-value-first so substring matches prefer
+    # more specific params.
+    seen = set()
+    unique: list[tuple[str, str]] = []
+    for name, val in pairs:
+        if (name, val) in seen:
+            continue
+        seen.add((name, val))
+        unique.append((name, val))
+    unique.sort(key=lambda nv: -len(nv[1]))
+
+    # Fields we'll scan for substring matches. Keep this list in sync
+    # with skill_runner._materialize_fingerprint.
+    scan_fields = (
+        "test_id",
+        "element_id",
+        "css_path",
+        "xpath",
+        "accessible_name",
+        "text",
+    )
+
+    templated_count = 0
+    for s in skill.steps:
+        fp = s.fingerprint
+        if fp is None:
+            continue
+        for field in scan_fields:
+            literal = getattr(fp, field, None)
+            if not literal or not isinstance(literal, str):
+                continue
+            template = literal
+            for param_name, value in unique:
+                if value in template:
+                    template = template.replace(
+                        value, "{" + param_name + "}"
+                    )
+            if template != literal:
+                fp.templates[field] = template
+                templated_count += 1
+    return templated_count
 
 
 def _prompt_step(

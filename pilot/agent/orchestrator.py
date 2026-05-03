@@ -149,6 +149,9 @@ class OrchestratorConfig:
     sessions_dir: Path
     skills_dir: Path
     portal_context: PortalContext | None = None
+    portals_dir: Path = Path("portals")
+    """Where per-portal catalogs live. Loaded as
+    ``portals/<portal_id>/catalog.yaml`` if present."""
     intake_use_llm: bool = True
     auto_approve_plan: bool = False
     """If True, the operator approval step is bypassed. Used by the CLI's
@@ -226,6 +229,33 @@ class Orchestrator:
             await self._log(msg, level="warn", source="skill_loader")
         return skills
 
+    def _load_catalog_block(self, portal_id: str | None) -> str:
+        """Build the rendered-for-prompt catalog string for the portal,
+        if available. Empty string if no portal_id or no catalog file.
+
+        The catalog augments the planner with passively-observed portal
+        knowledge — pages, dropdown options, form fields — that the
+        portal_context.yaml might not have hand-authored. Used purely
+        as additional grounding text in the planner prompt.
+        """
+        if not portal_id:
+            return ""
+        try:
+            from pilot.agent.catalog import (
+                catalog_path,
+                load_catalog,
+                render_for_prompt as render_catalog,
+            )
+        except Exception:
+            return ""
+        if not catalog_path(self.config.portals_dir, portal_id).exists():
+            return ""
+        try:
+            cat = load_catalog(self.config.portals_dir, portal_id)
+            return render_catalog(cat)
+        except Exception:
+            return ""
+
     # ---- Run a task ----------------------------------------------------
 
     async def run_task(self, submit: TaskSubmit) -> None:
@@ -262,6 +292,7 @@ class Orchestrator:
                 attachments=submit.attachments,
                 use_llm=self.config.intake_use_llm,
                 model=self.config.intake_model,
+                portal=self.config.portal_context,
             )
             await self._emit(
                 IntakeExtracted(
@@ -277,6 +308,7 @@ class Orchestrator:
             skills = await self._load_skills()
             clarify_state = ClarifyState()
             goal_text = submit.goal
+            catalog_block = self._load_catalog_block(submit.portal_id)
 
             while True:
                 planner_out = await run_planner(
@@ -286,6 +318,7 @@ class Orchestrator:
                     skills=skills,
                     portal=self.config.portal_context,
                     model=self.config.planner_model,
+                    catalog_block=catalog_block,
                 )
 
                 if planner_out.plan is not None:
@@ -353,7 +386,25 @@ class Orchestrator:
                 )
             )
 
-            if not self.config.auto_approve_plan:
+            # Safety: auto-approve never bypasses approval when the plan
+            # contains an irreversible destructive action (publish, delete,
+            # archive, etc. with reversible=False). Operator MUST eyeball
+            # those even with --auto-approve set. Reversible saves are
+            # still auto-approveable.
+            irreversible_present = any(
+                not da.reversible for da in plan.destructive_actions
+            )
+            effective_auto_approve = self.config.auto_approve_plan and not irreversible_present
+            if self.config.auto_approve_plan and irreversible_present:
+                await self._log(
+                    "auto-approve requested but plan contains "
+                    f"{sum(1 for da in plan.destructive_actions if not da.reversible)} "
+                    "irreversible destructive action(s); requiring human approval",
+                    level="warn",
+                    source="auto_approve_safety",
+                )
+
+            if not effective_auto_approve:
                 cmd = await self._next_command_for_task()
                 if isinstance(cmd, TaskCancel):
                     return await self._cancel_task()

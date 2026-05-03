@@ -243,9 +243,16 @@ def _build_user_prompt(
     entities: IntakeEntities,
     portal: PortalContext | None,
     skills: list[SkillFile],
+    catalog_block: str = "",
 ) -> str:
     portal_block = (
         render_for_prompt(portal) if portal else "(no portal context provided)"
+    )
+    catalog_section = (
+        f"\nPortal catalog (passive observations during prior sessions):\n"
+        f"{catalog_block}\n"
+        if catalog_block
+        else ""
     )
     return f"""\
 Operator goal:
@@ -253,7 +260,7 @@ Operator goal:
 
 Portal context:
 {portal_block}
-
+{catalog_section}
 Available skills:
 {_summarise_skills(skills)}
 
@@ -329,6 +336,11 @@ def _validate_planner_output(
     plan_steps: list[PlanStep] = []
     rejected: list[str] = []
 
+    # AD-005 — required-param coverage: collect any step that's missing
+    # a required parameter so we can demote the whole plan to clarify
+    # rather than approve-and-crash-at-execute (P-010).
+    coverage_misses: list[tuple[int, str, list[str]]] = []  # (step_i, skill_id, missing)
+
     for i, cs in enumerate(candidate.plan_steps, start=1):
         skill = skills_by_id.get(cs.skill_id)
         if skill is None:
@@ -343,6 +355,19 @@ def _validate_planner_output(
             # We keep the step but strip unknown params, recording the
             # event in notes for transparency.
             cs.params = {k: v for k, v in cs.params.items() if k in valid_param_names}
+
+        # Check every required param has a non-empty value. Empty
+        # strings count as missing — a skill that needs a content_id
+        # gets nothing useful from value="".
+        required_names = [p.name for p in skill.parameters if p.required]
+        missing = [
+            name
+            for name in required_names
+            if not cs.params.get(name)
+        ]
+        if missing:
+            coverage_misses.append((i, cs.skill_id, missing))
+
         plan_steps.append(
             PlanStep(
                 idx=i,
@@ -352,6 +377,34 @@ def _validate_planner_output(
                 notes=cs.notes,
             )
         )
+
+    if coverage_misses:
+        # The plan is unusable as-is — at least one step is missing
+        # required input. Demote to a clarify question naming exactly
+        # what's missing, so the operator sees the gap before approval
+        # instead of after a runtime crash.
+        lines: list[str] = []
+        for step_i, skill_id, missing in coverage_misses:
+            lines.append(
+                f"Step {step_i} ({skill_id}) needs values for: "
+                + ", ".join(missing)
+            )
+        question_text = (
+            "I can't build a complete plan from your inputs. The chosen "
+            "skill(s) need more information than what I extracted from "
+            "your goal + attachments. Specifically:\n"
+            + "\n".join(f"  - {line}" for line in lines)
+            + "\n\nProvide the missing values, or pick a different "
+            "skill / layout that needs less data."
+        )
+        q = ClarifyQuestion(
+            id=f"q-{uuid.uuid4().hex[:6]}",
+            question=question_text,
+            options=[],
+            allow_custom_answer=True,
+            priority="high",
+        )
+        return None, [q], "; ".join(rejected) if rejected else None
 
     if not plan_steps:
         # Planner asked for a plan but it was unusable. Convert to a
@@ -390,6 +443,7 @@ async def run_planner(
     skills: list[SkillFile],
     portal: PortalContext | None,
     model: str | None = None,
+    catalog_block: str = "",
 ) -> PlannerOutput:
     """Run the planner stage.
 
@@ -428,6 +482,7 @@ async def run_planner(
                         entities=entities,
                         portal=portal,
                         skills=skills,
+                        catalog_block=catalog_block,
                     ),
                 ),
             ],

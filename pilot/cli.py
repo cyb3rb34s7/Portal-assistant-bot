@@ -106,6 +106,16 @@ def teach(
     ),
     cdp: str = typer.Option(DEFAULT_CDP_ENDPOINT, "--cdp"),
     sessions_dir: Path = typer.Option(Path("sessions"), "--sessions-dir"),
+    portal_id: Optional[str] = typer.Option(
+        None,
+        "--portal-id",
+        help=(
+            "Portal id (e.g. 'sample_portal'). When set, page snapshots "
+            "from this teach session merge into "
+            "portals/<portal_id>/catalog.yaml — the passive catalog."
+        ),
+    ),
+    portals_dir: Path = typer.Option(Path("portals"), "--portals-dir"),
 ) -> None:
     """Start a passive teach recording. Use the portal; press Ctrl+C to stop."""
     try:
@@ -114,6 +124,8 @@ def teach(
             base_url=base_url,
             cdp=cdp,
             sessions_dir=sessions_dir,
+            portal_id=portal_id,
+            portals_dir=portals_dir,
         )
         console.print(f"[green]Session complete:[/green] {sid}")
     except Exception as e:

@@ -95,30 +95,60 @@ function LayoutEditor() {
           className="btn-primary"
           data-testid="btn-save-layout"
           disabled={
+            state.isSaving ||
             draft.saved ||
             draft.slots.some((s) => !s.content_id || !s.image_uploaded) ||
             !draft.comment.trim()
           }
-          onClick={() => dispatch({ type: "SAVE_LAYOUT" })}
+          onClick={async () => {
+            dispatch({ type: "SAVE_LAYOUT_START" });
+            // Mimic a real backend commit (1.2s).
+            await new Promise((r) => setTimeout(r, 1200));
+            dispatch({ type: "SAVE_LAYOUT_COMPLETE" });
+          }}
         >
-          {draft.saved ? "Saved" : "Save Layout"}
+          {state.isSaving
+            ? "Saving..."
+            : draft.saved
+            ? "Saved"
+            : "Save Layout"}
         </button>
         <button
           className="btn-secondary"
           data-testid="btn-apply-layout"
-          disabled={!draft.saved || draft.applied}
-          onClick={() => dispatch({ type: "APPLY_LAYOUT" })}
+          disabled={state.isApplying || !draft.saved || draft.applied}
+          onClick={async () => {
+            dispatch({ type: "APPLY_LAYOUT_START" });
+            // Apply takes longer than save (1.5s) because the real
+            // analogue is a publish-style action.
+            await new Promise((r) => setTimeout(r, 1500));
+            dispatch({ type: "APPLY_LAYOUT_COMPLETE" });
+          }}
         >
-          {draft.applied ? "Applied" : "Apply Layout"}
+          {state.isApplying
+            ? "Applying..."
+            : draft.applied
+            ? "Applied"
+            : "Apply Layout"}
         </button>
       </div>
 
-      {draft.saved && (
+      {state.isSaving && (
+        <p className="muted" data-testid="status-saving">
+          Saving layout...
+        </p>
+      )}
+      {state.isApplying && (
+        <p className="muted" data-testid="status-applying">
+          Applying layout...
+        </p>
+      )}
+      {!state.isSaving && draft.saved && (
         <p className="success" data-testid="status-saved">
           Layout saved.
         </p>
       )}
-      {draft.applied && (
+      {!state.isApplying && draft.applied && (
         <p className="success" data-testid="status-applied">
           Layout applied.
         </p>

@@ -19,6 +19,12 @@ const empty = {
 
   // History of applied layouts (snapshot copies).
   appliedLayouts: [],
+
+  // Async operation flags. Mimics a real backend that takes 1-2s
+  // to commit. Save / Apply buttons toggle to a disabled "Saving..."
+  // / "Applying..." state during these.
+  isSaving: false,
+  isApplying: false,
 };
 
 function loadInitial() {
@@ -84,19 +90,33 @@ function reducer(state, action) {
       };
     }
 
-    case "SAVE_LAYOUT": {
+    case "SAVE_LAYOUT_START": {
       if (!state.draftLayout) return state;
+      return { ...state, isSaving: true };
+    }
+
+    case "SAVE_LAYOUT_COMPLETE": {
+      if (!state.draftLayout) return { ...state, isSaving: false };
       return {
         ...state,
+        isSaving: false,
         draftLayout: { ...state.draftLayout, saved: true },
       };
     }
 
-    case "APPLY_LAYOUT": {
+    case "APPLY_LAYOUT_START": {
       if (!state.draftLayout || !state.draftLayout.saved) return state;
+      return { ...state, isApplying: true };
+    }
+
+    case "APPLY_LAYOUT_COMPLETE": {
+      if (!state.draftLayout || !state.draftLayout.saved) {
+        return { ...state, isApplying: false };
+      }
       const snapshot = { ...state.draftLayout, applied: true };
       return {
         ...state,
+        isApplying: false,
         draftLayout: snapshot,
         appliedLayouts: [...state.appliedLayouts, snapshot],
       };

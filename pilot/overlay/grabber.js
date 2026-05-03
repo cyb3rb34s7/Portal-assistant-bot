@@ -431,9 +431,110 @@
     true
   );
 
+  // ---- Passive catalog: page snapshots ---------------------------------
+  // After every navigation (initial + SPA route change), wait briefly
+  // for the page to settle, then emit one ``page_snapshot`` event with
+  // a compact summary of the current page's interactables. The Python
+  // side aggregates these into a per-portal catalog.yaml that the
+  // planner reads for better clarify questions and feasibility checks.
+  // Debounced: only the *latest* navigation triggers a snapshot, so a
+  // burst of redirects doesn't flood the channel.
+
+  var _snapshotTimer = null;
+
+  function _collectPageSnapshot() {
+    function _trim(s, n) {
+      return (s == null ? "" : String(s)).replace(/\s+/g, " ").trim().slice(0, n);
+    }
+    var buttons = [];
+    var inputs = [];
+    var selects = [];
+    var links = [];
+
+    var btns = document.querySelectorAll("button, [role='button']");
+    for (var i = 0; i < btns.length && buttons.length < 80; i++) {
+      var el = btns[i];
+      var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      if (!rect || rect.width === 0 || rect.height === 0) continue;
+      buttons.push({
+        label: _trim(el.innerText || el.textContent || el.getAttribute("aria-label"), 80),
+        role: el.getAttribute("role") || "button",
+        testId: el.getAttribute("data-testid") || null,
+      });
+    }
+
+    var inps = document.querySelectorAll("input, textarea");
+    for (var j = 0; j < inps.length && inputs.length < 80; j++) {
+      var ie = inps[j];
+      var t = (ie.getAttribute("type") || "text").toLowerCase();
+      if (t === "hidden") continue;
+      var labelEl = ie.id ? document.querySelector("label[for='" + ie.id.replace(/'/g, "\\'") + "']") : null;
+      inputs.push({
+        name: ie.getAttribute("name") || null,
+        type: t,
+        label: labelEl ? _trim(labelEl.textContent, 60) : null,
+        placeholder: ie.getAttribute("placeholder") || null,
+        required: ie.required || false,
+        testId: ie.getAttribute("data-testid") || null,
+      });
+    }
+
+    var sels = document.querySelectorAll("select");
+    for (var k = 0; k < sels.length && selects.length < 40; k++) {
+      var se = sels[k];
+      var opts = [];
+      for (var m = 0; m < se.options.length && opts.length < 40; m++) {
+        var o = se.options[m];
+        opts.push({ value: o.value, text: _trim(o.textContent, 80) });
+      }
+      var slabelEl = se.id ? document.querySelector("label[for='" + se.id.replace(/'/g, "\\'") + "']") : null;
+      selects.push({
+        name: se.getAttribute("name") || null,
+        label: slabelEl ? _trim(slabelEl.textContent, 60) : null,
+        testId: se.getAttribute("data-testid") || null,
+        options: opts,
+      });
+    }
+
+    var lks = document.querySelectorAll("a[href]");
+    for (var n = 0; n < lks.length && links.length < 60; n++) {
+      var le = lks[n];
+      var href = le.getAttribute("href") || "";
+      if (href.startsWith("javascript:")) continue;
+      links.push({
+        href: href,
+        text: _trim(le.innerText || le.textContent, 80),
+        testId: le.getAttribute("data-testid") || null,
+      });
+    }
+
+    return {
+      kind: "page_snapshot",
+      page_url: location.href,
+      title: document.title || "",
+      buttons: buttons,
+      inputs: inputs,
+      selects: selects,
+      links: links,
+    };
+  }
+
+  function _scheduleSnapshot() {
+    if (_snapshotTimer) clearTimeout(_snapshotTimer);
+    _snapshotTimer = setTimeout(function () {
+      _snapshotTimer = null;
+      try {
+        post(_collectPageSnapshot());
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] snapshot failed", e);
+      }
+    }, 800);
+  }
+
   // Navigation — initial + SPA route changes
   function postNavigate() {
     post({ kind: "navigate", url: location.href, page_url: location.href });
+    _scheduleSnapshot();
   }
 
   if (document.readyState === "loading") {

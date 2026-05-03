@@ -42,6 +42,8 @@ class TeachRecorder:
         skill_name: str,
         console: Optional[Console] = None,
         capture_screenshots: bool = True,
+        portal_id: Optional[str] = None,
+        portals_dir: Optional[Path] = None,
     ):
         self.session = session
         self.sessions_dir = sessions_dir
@@ -53,6 +55,10 @@ class TeachRecorder:
         self.meta_path = self.session_dir / "meta.json"
         self.console = console or Console()
         self.capture_screenshots = capture_screenshots
+        self.portal_id = portal_id
+        self.portals_dir = portals_dir or Path("portals")
+        self._catalog = None  # lazy-loaded on first snapshot
+        self._catalog_dirty = False
 
         self._stop = threading.Event()
         self._events: list[TraceEvent] = []
@@ -184,6 +190,15 @@ class TeachRecorder:
             raw = json.loads(payload_json)
         except Exception:
             return
+
+        # page_snapshot events feed the passive catalog (one of the
+        # operator-records-as-they-go observations). Routed separately
+        # because they're not part of the recorded skill, they're
+        # ambient portal knowledge.
+        if raw.get("kind") == "page_snapshot":
+            self._handle_page_snapshot(raw)
+            return
+
         fp_raw = raw.get("fingerprint")
         try:
             fp = ElementFingerprint.model_validate(fp_raw) if fp_raw else None
@@ -217,6 +232,49 @@ class TeachRecorder:
     # Backwards-compatible alias in case external callers used _on_event.
     def _on_event(self, payload_json: str) -> None:
         self._process_payload(payload_json)
+
+    def _handle_page_snapshot(self, raw: dict) -> None:
+        """Merge a page_snapshot event into the per-portal catalog.
+
+        Only active when ``portal_id`` was passed in at construction.
+        Without a portal id, snapshots are dropped silently — they
+        wouldn't have a target file to land in.
+        """
+        if not self.portal_id:
+            return
+        try:
+            from pilot.agent.catalog import (
+                load_catalog,
+                merge_snapshot,
+                save_catalog,
+            )
+        except Exception:
+            return
+        if self._catalog is None:
+            self._catalog = load_catalog(
+                self.portals_dir,
+                self.portal_id,
+                base_url=raw.get("page_url") or "",
+            )
+        try:
+            merge_snapshot(self._catalog, raw)
+            self._catalog_dirty = True
+        except Exception:
+            pass
+
+    def _flush_catalog(self) -> None:
+        """Save the in-memory catalog to disk if it was modified.
+        Called from _finalize() so a recording session contributes its
+        observations even on Ctrl+C."""
+        if not self._catalog_dirty or self._catalog is None:
+            return
+        try:
+            from pilot.agent.catalog import save_catalog
+
+            save_catalog(self._catalog, self.portals_dir)
+            self._catalog_dirty = False
+        except Exception:
+            pass
 
     def _screenshot(self, label: str) -> Optional[str]:
         try:
@@ -336,6 +394,10 @@ class TeachRecorder:
         self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def _finalize(self) -> None:
+        # Persist any catalog observations from this session before we
+        # otherwise wrap up. Cheap; idempotent if nothing changed.
+        self._flush_catalog()
+
         meta: dict = {}
         if self.meta_path.exists():
             try:
@@ -378,10 +440,16 @@ def run_teach(
     base_url: str = "http://localhost:5173",
     cdp: str = "http://localhost:9222",
     sessions_dir: Path = Path("sessions"),
+    portal_id: Optional[str] = None,
+    portals_dir: Path = Path("portals"),
 ) -> str:
     """Connect to Chrome via CDP and record a teach session.
 
     Returns the session_id.
+
+    When ``portal_id`` is set, page snapshots seen during the session
+    are merged into ``portals/<portal_id>/catalog.yaml`` (the passive
+    catalog). Without it, snapshots are dropped.
     """
     console = Console()
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +462,8 @@ def run_teach(
             sessions_dir=sessions_dir,
             skill_name=skill_name,
             console=console,
+            portal_id=portal_id,
+            portals_dir=portals_dir,
         )
         recorder.start()
         return recorder.session_id

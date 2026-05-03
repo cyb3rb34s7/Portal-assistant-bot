@@ -75,6 +75,16 @@ class ElementFingerprint(BaseModel):
     # Persisted back to the skill JSON when a heal succeeds + verifies.
     alternates: list["ElementFingerprint"] = Field(default_factory=list)
 
+    # Param-templated fields. Keys are fingerprint field names that
+    # contain a parameter value as a substring (test_id, element_id,
+    # css_path, xpath, accessible_name, text). Values are template
+    # strings with ``{param_name}`` placeholders. Discovered at annotate
+    # time by scanning the literal fingerprint for matches against
+    # recorded param values, then substituted at replay time so a
+    # recording with testid="row-A-9001" replays correctly when
+    # content_id="B-12345" yields testid="row-B-12345".
+    templates: dict[str, str] = Field(default_factory=dict)
+
 
 class ParamBinding(BaseModel):
     """Binds a step's value (or a substring of it) to a named parameter."""

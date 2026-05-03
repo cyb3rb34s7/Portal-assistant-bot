@@ -9,6 +9,183 @@
 
 ---
 
+## 2026-05-04
+
+### Real-portal blockers + safety + passive catalog + fuzzy select-option
+
+**Commit:** _(this commit)_
+
+Outcome of an architectural conversation about why our pure-recording
+approach was failing on a real enterprise portal (the QC asset / status
+dropdown / checkbox case). Three classes of issue were identified:
+genuine bugs from prior tech debt, design gaps where the architecture
+needed extending, and a fundamental tension on whether to admit any
+LLM-in-execution. Everything in this commit is the bug-fix + design-
+extension half; the LLM-in-execution discussion remains parked behind
+the deterministic + catalog approach for now.
+
+**Sample portal — actual async lag**
+
+Save Layout and Apply Layout now have ``isSaving`` / ``isApplying``
+state with 1.2s / 1.5s artificial latency, ``Saving...`` /
+``Applying...`` button text during the wait, and ``status-saving`` /
+``status-applying`` testid'd transient banners. Replay must wait for
+these spinners to clear before the next step or it'll race. This is
+what the operator-portal was doing all along; the sample portal now
+exhibits the same shape so the wait-fix has something real to test
+against.
+
+**Safety: auto-approve refuses irreversible destructive actions**
+
+``--auto-approve`` no longer bypasses operator approval when the plan
+contains any destructive action with ``reversible=false`` (publish,
+delete, archive). The orchestrator emits an ``agent.log{level=warn,
+source=auto_approve_safety}`` and falls through to the normal approval
+flow. Reversible saves (the bulk of the catalog today) are still
+auto-approveable. ~15 LOC.
+
+**Tier 1 — real-portal blockers**
+
+- **1.1 Regex unhardcoding.** ``_ASSET_ID_RE = "A-NNNN"`` and
+  ``_ISO_DATE_RE`` in ``intake.py`` are hardcoded sample-portal
+  artifacts. Replaced with portal-context-driven lookup:
+  ``portals/<id>/context.yaml::field_conventions[*].format``
+  supplies the regex; permissive defaults
+  (``[A-Z]{1,4}[-_]?\d{3,8}``, ISO date) used when no portal
+  context exists. Aliases: ``content_id``, ``asset_id``, ``id`` all
+  match the same convention.
+- **1.2 Wait strategies.** ``page.goto`` now uses
+  ``wait_until="networkidle"`` (was ``domcontentloaded``); SPAs that
+  fetch data after mount actually finish before the next step's
+  locator resolves. Added ``_wait_for_page_settle`` heuristic that
+  waits up to 4s for any visible spinner / progressbar / known
+  in-progress testid (``status-saving``, ``status-applying``,
+  ``loading-*``, ``spinner-*``) to clear before each action.
+- **1.3 Checkbox bug fix.** Real bug found by code review:
+  ``_do_change`` called ``locator.fill()`` for checkboxes and radios.
+  Fill is for text inputs only. Now branches on
+  ``fingerprint.input_type in ("checkbox", "radio")`` and uses
+  ``locator.set_checked()`` with a string-to-bool coercion of common
+  truthy values.
+- **1.4 Fingerprint templating.** Largest single improvement for
+  enterprise portals. ``ElementFingerprint`` gains a
+  ``templates: dict[str, str]`` field. At annotate time
+  ``_derive_fingerprint_templates`` scans every fingerprint's
+  testid / element_id / css_path / xpath / accessible_name / text for
+  substring matches against any recorded param value, replacing
+  matches with ``{param_name}`` placeholders. At replay,
+  ``_materialize_fingerprint`` substitutes current param values
+  before locator resolution. So a recording with
+  ``test_id="row-A-9001"`` (param ``content_id=A-9001``) replays
+  cleanly when ``content_id=B-12345`` -> ``test_id="row-B-12345"``,
+  hitting L1 instead of falling through to L3 self-heal.
+
+**Tier 2.1 — AD-005 planner coverage validation**
+
+``_validate_planner_output`` already checks "unknown params" (strips
+them silently). Now also checks "missing required params" — every
+``required: true`` parameter on the chosen skill must have a non-empty
+value. If any required param is missing, the plan is demoted to a
+clarify question naming exactly which step needs which values. Closes
+P-010 — the carousel-with-4-row-CSV trick test now surfaces as a
+clarify pre-approval rather than a runtime crash.
+
+**Tier 2.2 — passive catalog**
+
+The grabber emits a ``page_snapshot`` event after every navigation
+(initial + SPA route changes), debounced 800ms. Snapshot contains
+URL, title, and compact summaries of buttons, inputs, selects + their
+options, and links. Python side (``pilot/agent/catalog.py``) merges
+these into ``portals/<portal_id>/catalog.yaml`` — a per-portal
+catalog of observed UI structure, **built passively from real
+operator activity** (no autonomous crawler, no risk of triggering
+destructive actions during discovery).
+
+The planner reads the catalog (when the portal_id is known) and
+includes a compact rendering in its prompt context, so it can offer
+better clarify questions ("the layouts I've seen on this portal are
+X, Y, Z; pick one") without hand-authored YAML.
+
+CLI: ``pilot teach <skill> --portal-id <id>`` activates catalog
+capture; without ``--portal-id`` the page snapshots are dropped
+silently (no portal to land in).
+
+**Tier 3 (minimum viable) — fuzzy select-option matching**
+
+The QC dropdown problem from the operator's real-portal session: a
+dropdown's options change based on current state; the recorded
+option-value may not exist on the next replay. The runner's select
+handling now falls back from exact value match to label match to
+**text-similarity match** across the dropdown's actual options. If
+similarity score >= 0.7 the closest text wins (logged in the audit
+trail with both the recorded value and the chosen value). If no
+candidate clears the threshold, fails with a structured
+``option_not_available`` error message naming the available options.
+
+This is purely deterministic — no LLM in the runtime. Full
+LLM-discovery widgets (``find_row_with``, ``select_option_matching``
+as first-class action types with annotate-LLM detection) are deferred;
+the seam is now in place so they can land in a follow-up.
+
+**Files added**
+
+- ``pilot/agent/catalog.py`` — passive catalog aggregator
+  (PortalCatalog + merge_snapshot + render_for_prompt + I/O)
+- ``tests/agent/test_fingerprint_templating.py`` — 4 tests: detect
+  DOM-id-encoding pattern, replay substitution, missing-param
+  handling, short-value skip
+
+**Files updated**
+
+- ``sample_portal/src/store/PortalStore.jsx`` — isSaving / isApplying
+  flags + START / COMPLETE actions
+- ``sample_portal/src/pages/Curation/index.jsx`` — async dispatch
+  flow with delays + spinner / disabled / status banners
+- ``pilot/skill_models.py`` — ``ElementFingerprint.templates``
+- ``pilot/skill_runner.py`` — ``_materialize_fingerprint``,
+  ``_select_option_with_fuzzy_fallback``, ``_wait_for_page_settle``,
+  navigate-via-networkidle, set_checked for checkboxes/radios
+- ``pilot/annotate.py`` — ``_derive_fingerprint_templates``
+- ``pilot/agent/intake.py`` — portal-context-driven regex; takes
+  ``portal`` parameter
+- ``pilot/agent/orchestrator.py`` — auto-approve safety; passes
+  portal to intake; catalog block to planner; new
+  ``_load_catalog_block``; ``portals_dir`` config
+- ``pilot/agent/planner.py`` — required-param coverage check
+  (P-010); accepts ``catalog_block``; includes it in the user prompt
+- ``pilot/teach.py`` — portal_id + portals_dir constructor params;
+  ``_handle_page_snapshot``; ``_flush_catalog`` from finalize
+- ``pilot/cli.py`` — ``pilot teach --portal-id``,
+  ``--portals-dir``
+- ``pilot/overlay/grabber.js`` — page_snapshot capture and emit
+
+**Verified**
+
+- 14/14 unit + integration tests PASS in 1.95s
+- 13/13 operator E2E tests PASS (with new portal lag exercising the
+  wait-strategy fix)
+
+**Architectural decisions captured (see CONTEXT.md §8)**
+
+- **AD-007 — Recordings are templated, not pinned.** When a recorded
+  fingerprint contains a substring of a recorded param value, that
+  substring is converted to a ``{param_name}`` placeholder at
+  annotate time. The deterministic L1 / L2 / L3 cascade resolves
+  against the materialized (substituted) fingerprint at replay.
+  Templating is annotate-time, deterministic, auditable.
+- **AD-008 — Passive catalog over autonomous crawler.** Per-portal
+  schema knowledge accumulates from real operator activity (page
+  snapshots emitted by the grabber whenever the operator navigates).
+  No dedicated crawler, no risk of triggering destructive actions
+  during discovery. The catalog informs the planner's clarify
+  questions and feasibility checks.
+- **AD-009 — Auto-approve never bypasses irreversible actions.**
+  ``--auto-approve`` is a developer / test convenience. For plans
+  containing any destructive action with ``reversible=false``, the
+  orchestrator forces human approval anyway and logs the override.
+
+---
+
 ## 2026-04-29
 
 ### dotenv + CDP IPv4 + tooling polish + executor `skill.id` fix; first end-to-end live operator demo against Groq

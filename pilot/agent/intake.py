@@ -51,9 +51,36 @@ from pilot.agent.schemas.protocol import Attachment
 # Deterministic helpers
 # ---------------------------------------------------------------------------
 
-_ASSET_ID_RE = re.compile(r"\bA-(\d{3,5})\b")
-_ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+# Permissive defaults used when a portal context doesn't override.
+# These are deliberately broad so something matches on most portals;
+# portal_context.field_conventions[].format can pin them to the actual
+# format the operator's portal uses (see _portal_id_pattern below).
+_DEFAULT_ASSET_ID_RE = re.compile(r"\b([A-Z]{1,4}[-_]?\d{3,8})\b")
+_DEFAULT_ISO_DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _THUMB_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _portal_pattern_for(
+    portal: Any, field_name: str, fallback: re.Pattern
+) -> re.Pattern:
+    """Pick a regex pattern from a PortalContext's field_conventions, or
+    fall back. ``portal`` may be a ``PortalContext`` or None.
+    Field name is matched flexibly: 'content_id', 'asset_id', 'id'
+    are all accepted aliases."""
+    if portal is None:
+        return fallback
+    aliases = {
+        "content_id": ("content_id", "asset_id", "id"),
+        "iso_date": ("iso_date", "schedule_dates", "release_date", "date"),
+    }.get(field_name, (field_name,))
+    for fc in getattr(portal, "field_conventions", []) or []:
+        if fc.field in aliases and fc.format:
+            try:
+                return re.compile(fc.format)
+            except re.error:
+                # Bad regex in portal context — log and use fallback.
+                pass
+    return fallback
 
 
 def _read_pptx_text(path: Path, *, max_chars: int = 8000) -> str:
@@ -117,19 +144,22 @@ def _read_text_file(path: Path, *, max_chars: int = 8000) -> str:
         return ""
 
 
-def _extract_asset_ids(text: str) -> list[str]:
+def _extract_asset_ids(text: str, pattern: re.Pattern) -> list[str]:
+    """Extract asset/content IDs using the portal-supplied (or default)
+    pattern. We use match.group(0) — the full match — so the caller's
+    regex captures the full id string, not a transformed group."""
     seen: list[str] = []
-    for m in _ASSET_ID_RE.finditer(text):
-        sid = f"A-{m.group(1)}"
+    for m in pattern.finditer(text):
+        sid = m.group(0)
         if sid not in seen:
             seen.append(sid)
     return seen
 
 
-def _extract_iso_dates(text: str) -> list[str]:
+def _extract_iso_dates(text: str, pattern: re.Pattern) -> list[str]:
     seen: list[str] = []
-    for m in _ISO_DATE_RE.finditer(text):
-        d = m.group(1)
+    for m in pattern.finditer(text):
+        d = m.group(0)
         if d not in seen:
             seen.append(d)
     return seen
@@ -152,9 +182,16 @@ class _PrepassFinding(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-def _prepass(attachments: list[Attachment]) -> _PrepassFinding:
+def _prepass(
+    attachments: list[Attachment],
+    *,
+    portal: Any = None,
+) -> _PrepassFinding:
     f = _PrepassFinding()
     text_blob = ""
+
+    asset_re = _portal_pattern_for(portal, "content_id", _DEFAULT_ASSET_ID_RE)
+    date_re = _portal_pattern_for(portal, "iso_date", _DEFAULT_ISO_DATE_RE)
 
     for att in attachments:
         path = Path(att.path)
@@ -195,8 +232,8 @@ def _prepass(attachments: list[Attachment]) -> _PrepassFinding:
                 "skipped (will not contribute to entities)."
             )
 
-    f.asset_ids = _extract_asset_ids(text_blob)
-    f.iso_dates = _extract_iso_dates(text_blob)
+    f.asset_ids = _extract_asset_ids(text_blob, asset_re)
+    f.iso_dates = _extract_iso_dates(text_blob, date_re)
     return f
 
 
@@ -350,6 +387,7 @@ async def run_intake(
     attachments: list[Attachment],
     use_llm: bool = True,
     model: str | None = None,
+    portal: Any = None,
 ) -> IntakeEntities:
     """Top-level intake entry point.
 
@@ -364,7 +402,7 @@ async def run_intake(
         IntakeEntities. Always returns; never raises for LLM trouble
         (falls back to the baseline silently and adds a warning).
     """
-    prepass = _prepass(attachments)
+    prepass = _prepass(attachments, portal=portal)
     baseline = _build_baseline_entities(prepass)
 
     if not use_llm:
