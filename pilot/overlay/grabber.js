@@ -22,6 +22,96 @@
   var DEBUG = !!window.__cp_debug;
   var INPUT_DEBOUNCE_MS = 400;
 
+  // ---- Quiescence watchers ------------------------------------------------
+  //
+  // The runner reads these globals at replay to decide when a step has
+  // settled enough to act on the next one. Because they expose *real*
+  // signals (last DOM mutation, in-flight fetch/XHR count) the runner
+  // pays no wait cost when the page is already idle -- it only waits if
+  // the page actually has activity.
+  //
+  // window.__cp_last_mutation_at  -- ms epoch of last DOM mutation
+  // window.__cp_inflight          -- count of fetch+XHR currently open
+  // window.__cp_last_request_at   -- ms epoch of most recent request
+  function _installQuiescenceWatchers() {
+    if (window.__cp_quiescence_installed) return;
+    window.__cp_quiescence_installed = true;
+    window.__cp_last_mutation_at = Date.now();
+    window.__cp_inflight = 0;
+    window.__cp_last_request_at = 0;
+
+    function bumpMutation() {
+      window.__cp_last_mutation_at = Date.now();
+    }
+
+    function _observe() {
+      var root = document.body || document.documentElement;
+      if (!root) {
+        // body not parsed yet; try again on the next microtask
+        return setTimeout(_observe, 50);
+      }
+      try {
+        var mo = new MutationObserver(bumpMutation);
+        mo.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+        });
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] MutationObserver failed", e);
+      }
+    }
+    _observe();
+
+    // fetch hook
+    if (window.fetch && !window.__cp_fetch_hooked) {
+      window.__cp_fetch_hooked = true;
+      var _origFetch = window.fetch.bind(window);
+      window.fetch = function () {
+        window.__cp_inflight = (window.__cp_inflight || 0) + 1;
+        window.__cp_last_request_at = Date.now();
+        var p;
+        try {
+          p = _origFetch.apply(this, arguments);
+        } catch (e) {
+          window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+          throw e;
+        }
+        return p.then(
+          function (r) {
+            window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+            window.__cp_last_request_at = Date.now();
+            return r;
+          },
+          function (e) {
+            window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+            window.__cp_last_request_at = Date.now();
+            throw e;
+          },
+        );
+      };
+    }
+
+    // XHR hook
+    if (window.XMLHttpRequest && !window.__cp_xhr_hooked) {
+      window.__cp_xhr_hooked = true;
+      var _origSend = window.XMLHttpRequest.prototype.send;
+      window.XMLHttpRequest.prototype.send = function () {
+        var self = this;
+        window.__cp_inflight = (window.__cp_inflight || 0) + 1;
+        window.__cp_last_request_at = Date.now();
+        function _done() {
+          window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+          window.__cp_last_request_at = Date.now();
+        }
+        self.addEventListener("loadend", _done);
+        return _origSend.apply(self, arguments);
+      };
+    }
+  }
+  _installQuiescenceWatchers();
+
   // ---- Transport -----------------------------------------------------------
 
   function post(payload) {

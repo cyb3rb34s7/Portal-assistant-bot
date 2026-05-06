@@ -3,12 +3,16 @@
 // WebSocket /api/events streams AgentEvents to subscribers.
 
 import type {
+  ActiveTaskResponse,
   AgentEvent,
   AnnotateResponse,
   DoctorResponse,
+  HostCommand,
   PortalState,
   SessionSummary,
   SkillSummary,
+  SubmitTaskArgs,
+  SubmitTaskResponse,
   TeachStartResponse,
   TeachStopResponse,
 } from "../protocol/types";
@@ -106,6 +110,43 @@ class WebBridge implements HostBridge {
 
   sessionScreenshotUrl(sessionId: string, filename: string): string {
     return `/api/sessions/${encodeURIComponent(sessionId)}/screenshots/${encodeURIComponent(filename)}`;
+  }
+
+  // ---- Replay tasks ----
+  async submitTask(args: SubmitTaskArgs): Promise<SubmitTaskResponse> {
+    const fd = new FormData();
+    fd.append("goal", args.goal);
+    if (args.portal_id) fd.append("portal_id", args.portal_id);
+    fd.append(
+      "auto_approve_plan",
+      args.auto_approve_plan ? "true" : "false",
+    );
+    for (const file of args.attachments || []) {
+      fd.append("attachments", file, file.name);
+    }
+    const r = await fetch("/api/tasks", { method: "POST", body: fd });
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try {
+        const body = await r.json();
+        if (body?.detail) msg = body.detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+    return r.json() as Promise<SubmitTaskResponse>;
+  }
+
+  submitCommand(cmd: HostCommand): Promise<{ ok: boolean; queued?: string }> {
+    return api<{ ok: boolean; queued?: string }>("/commands", {
+      method: "POST",
+      body: JSON.stringify({ v: 1, ...cmd }),
+    });
+  }
+
+  getActiveTask(): Promise<ActiveTaskResponse> {
+    return api<ActiveTaskResponse>("/tasks/active");
   }
 
   // ---- Live event stream ----

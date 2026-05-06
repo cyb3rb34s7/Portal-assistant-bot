@@ -22,3 +22,4 @@ sessions/
 # The portal uses npm; if pnpm is run by accident it produces this
 # lock file. Don't track it — package-lock.json is the source of truth.
 sample_portal/pnpm-lock.yaml
+curationpilot-app/pnpm-lock.yaml

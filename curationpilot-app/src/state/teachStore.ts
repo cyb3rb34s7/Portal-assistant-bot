@@ -45,7 +45,7 @@ export const useTeachStore = create<TeachState>((set, get) => ({
   session_id: null,
   skill_name: null,
   portal_id: null,
-  base_url: "http://localhost:5173",
+  base_url: "",
   event_count: 0,
   start_response: null,
   stop_response: null,
@@ -62,7 +62,7 @@ export const useTeachStore = create<TeachState>((set, get) => ({
       stop_response: null,
       skill_name: args.skill_name,
       portal_id: args.portal_id ?? null,
-      base_url: args.base_url ?? "http://localhost:5173",
+      base_url: args.base_url ?? "",
     });
     try {
       const r = await bridge.teachStart(args);

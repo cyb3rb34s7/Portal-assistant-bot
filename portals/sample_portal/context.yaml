@@ -8,7 +8,7 @@ schema_version: 1
 
 portal_id: sample_portal
 name: "CurationPilot Sample Portal"
-base_url: "http://localhost:5173"
+base_url: "http://localhost:5188"
 
 glossary:
   - term: "content"

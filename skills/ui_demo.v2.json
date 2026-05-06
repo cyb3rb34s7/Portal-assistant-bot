@@ -1,0 +1,32 @@
+{
+  "description": "Uploads a CSV file to the portal for further processing.",
+  "parameters": [
+    {
+      "name": "input_csv_file_path",
+      "semantic": "The path to the CSV file to be uploaded.",
+      "required": true,
+      "type": "file_path",
+      "source_hint": "CSV file path provided by the operator",
+      "default_hint": "batch.csv"
+    }
+  ],
+  "preconditions": [],
+  "destructive_actions": [
+    {
+      "step": 3,
+      "kind": "save",
+      "reversible": true,
+      "confirm_prompt": null
+    }
+  ],
+  "success_assertions": [
+    {
+      "type": "text_visible",
+      "text": "The CSV file is successfully uploaded to the portal.",
+      "scope": "page"
+    }
+  ],
+  "param_alias_map": {
+    "input_csv_file_path": "input_csv_file"
+  }
+}

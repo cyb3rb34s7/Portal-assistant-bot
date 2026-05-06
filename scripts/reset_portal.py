@@ -16,7 +16,7 @@ import sys
 from pilot.browser import connect_to_chrome
 
 
-PORTAL_BASE = "http://localhost:5173"
+PORTAL_BASE = "http://localhost:5188"
 
 
 def main() -> int:

@@ -8,8 +8,10 @@ type Step = 1 | 2 | 3 | 4 | 5;
 export default function TeachPage() {
   const [step, setStep] = useState<Step>(1);
   const [skillName, setSkillName] = useState("");
-  const [portalId, setPortalId] = useState("sample_portal");
-  const [baseUrl, setBaseUrl] = useState("http://localhost:5173");
+  // Default both empty — the operator must pick a portal (or override
+  // with a custom URL). No more "implicit localhost" baked into the UI.
+  const [portalId, setPortalId] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
   const [targetTab, setTargetTab] = useState<string | null>(null);
 
   return (
@@ -146,6 +148,36 @@ function Step1({
   const portal = usePortalStore();
   const ready = portal.state?.status === "running";
 
+  // Load portal contexts from /api/portals so the operator picks
+  // an existing portal instead of typing a URL by hand. The "Custom"
+  // option lets them override with an arbitrary URL when the portal
+  // hasn't been catalogued yet (e.g. first-time exploration).
+  const [portals, setPortals] = useState<
+    { id: string; name: string; base_url: string; page_count: number }[]
+  >([]);
+  const [customMode, setCustomMode] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/portals")
+      .then((r) => r.json())
+      .then((rows) => setPortals(rows))
+      .catch(() => setPortals([]));
+  }, []);
+
+  function handlePortalSelection(value: string) {
+    if (value === "__custom__") {
+      setCustomMode(true);
+      setPortalId("");
+      setBaseUrl("");
+      return;
+    }
+    const p = portals.find((x) => x.id === value);
+    if (!p) return;
+    setCustomMode(false);
+    setPortalId(p.id);
+    setBaseUrl(p.base_url);
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Field label="Skill name" hint="snake_case is conventional">
@@ -159,30 +191,57 @@ function Step1({
       </Field>
 
       <Field
-        label="Portal id (for the catalog)"
-        hint="passive observations get stored under portals/<id>/catalog.yaml"
+        label="Portal"
+        hint={
+          portals.length === 0
+            ? "no portals defined yet — see portals/<id>/context.yaml. Pick 'Custom' to enter a URL inline."
+            : "URL + catalog destination come from portals/<id>/context.yaml"
+        }
       >
-        <input
-          type="text"
-          value={portalId}
-          onChange={(e) => setPortalId(e.target.value)}
-          placeholder="e.g. tvplus, sample_portal"
+        <select
+          value={customMode ? "__custom__" : portalId}
+          onChange={(e) => handlePortalSelection(e.target.value)}
           style={{ width: "100%" }}
-        />
+        >
+          <option value="">— select a portal —</option>
+          {portals.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({p.base_url})
+            </option>
+          ))}
+          <option value="__custom__">Custom URL (no catalog)</option>
+        </select>
       </Field>
 
-      <Field
-        label="Portal URL to open in the dedicated browser"
-        hint="the operator authenticates here once; the runner attaches via CDP"
-      >
-        <input
-          type="text"
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="https://your-portal.example/upload"
-          style={{ width: "100%" }}
-        />
-      </Field>
+      {customMode && (
+        <>
+          <Field
+            label="Portal id (for the catalog)"
+            hint="creates portals/<id>/catalog.yaml as snapshots accumulate"
+          >
+            <input
+              type="text"
+              value={portalId}
+              onChange={(e) => setPortalId(e.target.value)}
+              placeholder="e.g. tvplus, internal_cms"
+              style={{ width: "100%" }}
+            />
+          </Field>
+
+          <Field
+            label="Portal URL"
+            hint="the dedicated Chrome opens here; sign in once, the runner inherits the session"
+          >
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://your-portal.example/upload"
+              style={{ width: "100%" }}
+            />
+          </Field>
+        </>
+      )}
 
       <div className="muted" style={{ fontSize: 13, lineHeight: 1.6 }}>
         Click Launch — a separate Chrome window opens with CDP debugging.
@@ -231,7 +290,7 @@ function Step1({
         <button
           className="btn btn-primary"
           onClick={onNext}
-          disabled={!skillName.trim() || !ready}
+          disabled={!skillName.trim() || !baseUrl.trim() || !ready}
         >
           Continue →
         </button>

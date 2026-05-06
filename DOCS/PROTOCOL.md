@@ -296,6 +296,33 @@ Present the plan for approval.
  ]}
 ```
 
+**About `error_details`.** Optional structured payload keyed by
+`error_kind`. The host renders an `error_kind`-specific UI when present
+and falls back to retry/skip/abort otherwise. Currently emitted by the
+runner:
+
+- `error_kind: "ambiguous_target"` — the recorded fingerprint was
+  templated (e.g. `test_id="row-{content_id}"`) and at replay the
+  materialized testid resolves to **multiple visible elements**. The
+  recording targeted one specific element, so the runner refuses to
+  silently click `.first`. `suggestions[0]` is `use_alternate` so the
+  host can render a row picker.
+
+  ```json
+  "error_details": {
+    "verb": "click",
+    "candidates": [
+      {"index": 0, "test_id": "search-row-A-9001",
+       "text": "A-9001 -- Spring Hero",  "role": null, "tag": "li"},
+      {"index": 1, "test_id": "search-row-A-9002",
+       "text": "A-9002 -- Spring Backdrop","role": null, "tag": "li"}
+    ]
+  }
+  ```
+
+  The host responds with `pause.resolve { action: "use_alternate",
+  payload: { candidate_index: N, candidate: {...} } }`.
+
 **About `step.healed`.** Emitted by the runner's L3 self-heal (see
 `pilot/agent/locator_repair.py`). Sent **between** `step.progress`
 and `step.succeeded` on a successful heal, or before `step.failed`

@@ -437,7 +437,7 @@ class TeachRecorder:
 
 def run_teach(
     skill_name: str,
-    base_url: str = "http://localhost:5173",
+    base_url: str = "http://localhost:5188",
     cdp: str = "http://localhost:9222",
     sessions_dir: Path = Path("sessions"),
     portal_id: Optional[str] = None,

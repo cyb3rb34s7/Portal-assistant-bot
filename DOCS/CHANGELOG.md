@@ -9,6 +9,196 @@
 
 ---
 
+## 2026-05-04 (evening)
+
+### Replay UI + targeted waits + ambiguity detection + sample portal real lag
+
+**Commit:** _(this commit)_
+
+End-to-end replay flow lands in the React UI, with the supporting
+infrastructure to make the runner's waiting strategy "wait only when
+the page is actually busy" instead of generic spinner heuristics, and
+to surface real-portal mismatch scenarios (one row in recording, many
+rows in replay) as an interactive operator decision instead of a
+silent first-match click.
+
+**Sample portal — real network lag, real component-render lag, search**
+
+The previous setTimeout-driven Save / Apply gave us spinner testids
+to detect "still saving," but the actual Network panel was empty -- so
+CDP `networkidle` and a fetch-aware runner had nothing to key off of.
+Replaced with a Vite middleware that mocks `/api/save` (~900ms),
+`/api/apply` (~1500ms), and a new `/api/search?q=...` endpoint that
+returns real rows from a seeded catalog. The Curation page now does
+real `fetch()` calls; CDP networkidle and the runner's network-aware
+wait actually wait. The new Search component exercises three things at
+once: real network latency, variable result count (so a partial query
+"A-90" returns 3 rows vs 1 for the full id "A-9001"), and a
+useTransition-driven mount stagger so the runner has to handle the
+"network done but DOM not yet rendered" gap. Stable seed catalog with
+intentional prefix overlaps gives a reproducible multi-result
+disambiguation scenario.
+
+**Grabber + runner -- DOM quiescence and in-flight network as wait signals**
+
+The grabber installs three quiescence watchers on every page load:
+
+  - `window.__cp_last_mutation_at` -- ms epoch updated by a
+    MutationObserver on `(childList | subtree | attributes |
+    characterData)`.
+  - `window.__cp_inflight` -- count of fetch + XHR currently open.
+    `window.fetch` and `XMLHttpRequest.prototype.send` get wrapped to
+    bump the counter on start and decrement on completion (resolve,
+    reject, or `loadend`).
+  - `window.__cp_last_request_at` -- ms epoch of most recent request
+    boundary, used as a sanity tiebreaker.
+
+The skill_runner mirrors the same install JS in `_WATCHER_INSTALL_JS`
+so replay against a portal that wasn't recorded with our grabber still
+gets the signals. `_wait_for_page_settle` now polls three predicates,
+each of which returns at the *first* poll if the page is already idle:
+
+  1. `(window.__cp_inflight || 0) === 0`
+  2. `Date.now() - window.__cp_last_mutation_at > 250`
+  3. Spinner-by-convention testids hidden (kept as a fallback).
+
+So: a click that triggers a real save waits ~900ms (the actual mock
+backend latency); a click that triggers nothing returns immediately.
+No global hardcoded sleeps, no fixed fallbacks -- the wait time tracks
+the page's real activity.
+
+**Ambiguity detection -- ambiguous_target as a first-class failure**
+
+`pilot.models.ToolResult` gains `error_kind` + `error_details` fields
+(both optional, additive). The skill_runner detects, *before* L1
+match, whether the templated fingerprint resolves to multiple visible
+elements. If so, `_resolve_locator` returns `(None, 0, None)` and
+stashes a `_pending_ambiguity` with up to 8 candidate summaries
+(test_id, id, role, tag, text). Each click / change / upload action
+method consumes the ambiguity flag and emits a structured failure:
+
+```json
+{
+  "error_kind": "ambiguous_target",
+  "error_details": {
+    "candidates": [
+      {"index": 0, "test_id": "search-row-A-9001", "text": "A-9001 -- Spring Hero"},
+      {"index": 1, "test_id": "search-row-A-9002", "text": "A-9002 -- Spring Backdrop"}
+    ],
+    "verb": "click"
+  }
+}
+```
+
+The orchestrator's `_handle_step_failure` propagates `error_details`
+into the `step.failed` event AND into the `paused.context`, and
+prepends a `use_alternate` suggestion so the UI lights up the
+row-picker mode. No LLM in any of this -- pure runner-level structural
+detection.
+
+**Backend -- POST /api/tasks + POST /api/commands + orchestrator-on-bus**
+
+`pilot/agent/web_server.py` gets the replay endpoints:
+
+  - `POST /api/tasks` -- multipart `goal` + `portal_id` +
+    `auto_approve_plan` + `attachments[]`. Saves attachments to
+    `sessions/_attachments/<task_id>/`, builds an Orchestrator with
+    `RealExecutor` when CDP is up (fallback `FakeExecutor`), spawns
+    `orchestrator.run_task` as an asyncio task, returns `task_id`.
+  - `POST /api/commands` -- forwards a JSON-RPC HostCommand
+    (`clarify.answer` / `plan.approve` / `plan.reject` /
+    `pause.resolve` / `task.cancel`) into the active task's command
+    queue. Validated through `parse_host_command` so malformed
+    payloads return 400.
+  - `GET /api/tasks/active` -- single-tenant; UI reads to know if
+    another task is in flight before submitting.
+  - `_pump_orch_events` -- background asyncio task that drains the
+    orchestrator's `ev_q` and republishes every event onto the
+    process-wide `_bus`, which the existing `/api/events` WebSocket
+    fans out. So the same WebSocket the UI already listens to for
+    `teach.event_count` now also carries replay events.
+
+A small janitor coro flips the active-task slot's `finished` flag and
+closes the AIClient when the runner task returns, freeing the slot
+for the next submission.
+
+**Replay UI -- goal -> plan -> live trace -> report**
+
+`curationpilot-app/src/routes/ReplayPage.tsx` (was a placeholder)
+becomes the full operator surface. `state/replayStore.ts` (Zustand)
+holds the task lifecycle:
+
+  - Stages: idle -> submitting -> intake -> clarifying ->
+    awaiting_plan_approval -> running -> paused -> completed |
+    failed | cancelled.
+  - Pre-seeds the steps map from `plan.proposed` so the trace pane
+    has rows to render before `step.started` fires.
+  - Live log feed (capped at 200 entries).
+  - Subscribes to `bridge.subscribeEvents` *before* posting
+    `/api/tasks` so the first events aren't missed.
+  - Cleans up `pending_clarify` / `pending_pause` on every terminal
+    transition (completed / failed / cancelled) so a stale modal
+    can't outlive its task.
+
+`ReplayPage` composes:
+
+  - `GoalForm` -- textarea + portal selector (loaded from
+    `/api/portals`) + drag/drop attachments + auto-approve toggle.
+  - `RunView` -- frozen goal summary + Cancel + the trace pane and
+    log pane.
+  - `TracePane` -- one row per plan step with state dot, params,
+    duration, the most recent `step.progress` action, an inline
+    amber heal banner per `step.healed`, and an inline red error
+    box per `step.failed`.
+  - `ClarifyModal` -- options as buttons + custom-answer textbox +
+    a belt-and-suspenders "Cancel task" so the modal can never
+    trap the operator (the page-level Cancel is hidden behind the
+    backdrop).
+  - `PlanApprovalModal` -- summary + irreversible-actions warning
+    panel + collapsible step list + Approve / Reject (with reason).
+  - `PausedModal` -- generic mode (retry / skip / abort) + a
+    specialized `ambiguous_target` mode that renders a row picker
+    from `error_details.candidates`. Picking a row sends
+    `pause.resolve { action: "use_alternate", payload: { candidate
+    } }`.
+  - `ReportPanel` -- fetches `/api/sessions/<id>/report` and shows
+    the markdown.
+
+The HostBridge interface (`host/bridge.ts`) gains `submitTask`,
+`submitCommand`, `getActiveTask`. `WebBridge` implements them
+against the new endpoints; multipart task submission uses native
+`FormData`.
+
+**Misc**
+
+  - `pyproject.toml` -- `websockets>=12.0` added to runtime deps.
+    Without it uvicorn returns 404 to the WebSocket upgrade and the
+    UI silently never sees events. Caught during live testing.
+  - `vite.config.ts` (curationpilot-app) -- `PILOT_API_URL` env var
+    overrides the proxy target so a test FastAPI on a non-default
+    port can be paired with a fresh React dev server without
+    fighting the operator's main session.
+  - `pilot/skill_runner.py` -- spinner selector now also matches
+    `status-searching` (sample portal's new state).
+
+**What's intentionally not in this commit**
+
+  - "Search returned different result count than recording" as a
+    *structural* check (separate from the locator-multi-match check
+    we have now) -- this needs a richer step pre/post-condition
+    schema; the multi-match path covers the same UX scenario for now.
+  - Unified network-call tracking on the recording side as part of
+    each step's expected_signals -- the watchers are installed but
+    the per-step capture-and-replay isn't yet plumbed into the
+    skill JSON. Today's network-aware wait uses live in-flight
+    counts, which is a strict superset for the "wait correctly"
+    requirement.
+  - find_row_with as a first-class action type for the structural
+    search -> click pattern -- still deferred; the seam (alternates,
+    error_kind, use_alternate) is in place.
+
+---
+
 ## 2026-05-04
 
 ### Real-portal blockers + safety + passive catalog + fuzzy select-option

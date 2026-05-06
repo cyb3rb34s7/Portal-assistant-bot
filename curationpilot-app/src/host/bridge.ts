@@ -4,12 +4,16 @@
 // goes through this interface so v2 is a drop-in port.
 
 import type {
+  ActiveTaskResponse,
   AgentEvent,
   AnnotateResponse,
   DoctorResponse,
+  HostCommand,
   PortalState,
   SessionSummary,
   SkillSummary,
+  SubmitTaskArgs,
+  SubmitTaskResponse,
   TeachStartResponse,
   TeachStopResponse,
 } from "../protocol/types";
@@ -40,6 +44,11 @@ export interface HostBridge {
   listSessions(): Promise<SessionSummary[]>;
   getSessionReport(id: string): Promise<string>;
   sessionScreenshotUrl(sessionId: string, filename: string): string;
+
+  // ---- Replay tasks ----
+  submitTask(args: SubmitTaskArgs): Promise<SubmitTaskResponse>;
+  submitCommand(cmd: HostCommand): Promise<{ ok: boolean; queued?: string }>;
+  getActiveTask(): Promise<ActiveTaskResponse>;
 
   // ---- Live event stream ----
   subscribeEvents(handler: (ev: AgentEvent) => void): () => void;

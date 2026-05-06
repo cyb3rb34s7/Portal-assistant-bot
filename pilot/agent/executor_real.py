@@ -317,6 +317,8 @@ class RealExecutor(StepExecutor):
         # Aggregate. Any non-success step => failed plan step.
         last_shot = None
         last_error = None
+        last_error_kind: str | None = None
+        last_error_details: dict[str, Any] | None = None
         any_failure = False
         heals: list[dict[str, Any]] = []
         # Persist successful, high-confidence heals back into the skill
@@ -329,6 +331,13 @@ class RealExecutor(StepExecutor):
             if not tool_result.success:
                 any_failure = True
                 last_error = tool_result.error or tool_result.action_taken
+                # Prefer a specific error_kind from the runner over the
+                # generic "skill_step_failed" we'd synthesize below.
+                if tool_result.error_kind:
+                    last_error_kind = tool_result.error_kind
+                if tool_result.error_details:
+                    last_error_details = dict(tool_result.error_details)
+                    last_error_details["sub_step_index"] = sub_step.index
             if tool_result.healed:
                 healed = dict(tool_result.healed)  # copy so we can mutate
                 healed.setdefault("step_index", sub_step.index)
@@ -362,8 +371,9 @@ class RealExecutor(StepExecutor):
             return StepResult(
                 succeeded=False,
                 duration_ms=duration_ms,
-                error_kind="skill_step_failed",
+                error_kind=last_error_kind or "skill_step_failed",
                 error_message=last_error or "one or more skill steps failed",
+                error_details=last_error_details,
                 screenshot_path=last_shot,
                 heals=heals,
             )

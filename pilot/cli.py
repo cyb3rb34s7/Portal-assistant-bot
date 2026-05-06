@@ -3,7 +3,7 @@
 Usage:
     python -m pilot doctor
     python -m pilot run sample_tasks/add_and_verify.json
-    python -m pilot teach my_skill --base-url http://localhost:5173
+    python -m pilot teach my_skill --base-url http://localhost:5188
     python -m pilot annotate <session_id> --auto
     python -m pilot run-skill skills/my_skill.json --param content_id=A-3001
 """
@@ -35,7 +35,7 @@ def run(
         ..., exists=True, readable=True, help="Path to a TaskList JSON file"
     ),
     base_url: str = typer.Option(
-        "http://localhost:5173",
+        "http://localhost:5188",
         "--base-url",
         help="Sample portal base URL",
     ),
@@ -99,10 +99,14 @@ def doctor(
 @app.command()
 def teach(
     skill_name: str = typer.Argument(..., help="Name of the skill to teach"),
-    base_url: str = typer.Option(
-        "http://localhost:5173",
+    base_url: Optional[str] = typer.Option(
+        None,
         "--base-url",
-        help="Portal base URL (used to pick the right Chrome tab)",
+        help=(
+            "Portal base URL — used to pick the right Chrome tab. "
+            "Either --base-url or --portal-id must be provided. If both, "
+            "--base-url wins."
+        ),
     ),
     cdp: str = typer.Option(DEFAULT_CDP_ENDPOINT, "--cdp"),
     sessions_dir: Path = typer.Option(Path("sessions"), "--sessions-dir"),
@@ -110,14 +114,31 @@ def teach(
         None,
         "--portal-id",
         help=(
-            "Portal id (e.g. 'sample_portal'). When set, page snapshots "
-            "from this teach session merge into "
-            "portals/<portal_id>/catalog.yaml — the passive catalog."
+            "Portal id (e.g. 'sample_portal'). Resolves base_url from "
+            "portals/<portal_id>/context.yaml. Page snapshots from this "
+            "session also merge into portals/<portal_id>/catalog.yaml."
         ),
     ),
     portals_dir: Path = typer.Option(Path("portals"), "--portals-dir"),
 ) -> None:
     """Start a passive teach recording. Use the portal; press Ctrl+C to stop."""
+    if not base_url and portal_id:
+        base_url = _resolve_portal_base_url(portals_dir, portal_id)
+        if not base_url:
+            console.print(
+                f"[red]Portal '{portal_id}' has no base_url[/red] in "
+                f"{portals_dir}/{portal_id}/context.yaml. Either fix the "
+                "context file or pass --base-url explicitly."
+            )
+            raise typer.Exit(code=2)
+    if not base_url:
+        console.print(
+            "[red]Specify either --portal-id or --base-url[/red]. "
+            "There is no default — CurationPilot drives any portal, so "
+            "the URL has to come from somewhere intentional."
+        )
+        raise typer.Exit(code=2)
+
     try:
         sid = run_teach(
             skill_name=skill_name,
@@ -131,6 +152,22 @@ def teach(
     except Exception as e:
         console.print(f"[red]Teach failed:[/red] {e}")
         raise typer.Exit(code=2)
+
+
+def _resolve_portal_base_url(portals_dir: Path, portal_id: str) -> Optional[str]:
+    """Read base_url from portals/<id>/context.yaml. Returns None if
+    the portal is unknown or has no base_url declared."""
+    path = portals_dir / portal_id / "context.yaml"
+    if not path.exists():
+        return None
+    try:
+        import yaml
+
+        ctx = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        url = ctx.get("base_url")
+        return url if isinstance(url, str) and url else None
+    except Exception:
+        return None
 
 
 @app.command()
@@ -171,11 +208,24 @@ def run_skill(
     params_file: Optional[Path] = typer.Option(
         None, "--params-file", help="JSON file of parameters"
     ),
-    base_url: str = typer.Option("http://localhost:5173", "--base-url"),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        help=(
+            "Override the skill's recorded base_url. Usually unnecessary — "
+            "skills/<name>.json already carries the URL the recording was "
+            "made against."
+        ),
+    ),
     cdp: str = typer.Option(DEFAULT_CDP_ENDPOINT, "--cdp"),
     sessions_dir: Path = typer.Option(Path("sessions"), "--sessions-dir"),
 ) -> None:
-    """Replay a learned skill with parameters."""
+    """Replay a learned skill with parameters.
+
+    The portal URL comes from the skill's own ``base_url`` field —
+    skills are tied to the portal they were recorded against. Override
+    only when you know what you're doing (e.g. replaying a staging-env
+    recording against prod)."""
     params: dict = {}
     if params_file and params_file.exists():
         params.update(json.loads(params_file.read_text(encoding="utf-8")))
@@ -187,10 +237,28 @@ def run_skill(
         params[k] = v
 
     try:
+        # Resolve base_url: explicit --base-url wins; otherwise read
+        # from the skill's own base_url. If neither is present, the
+        # runner will refuse — there's no implicit "sample portal"
+        # default any more.
+        effective_base_url = base_url
+        if not effective_base_url:
+            try:
+                skill_dict = json.loads(skill_path.read_text(encoding="utf-8"))
+                effective_base_url = skill_dict.get("base_url") or None
+            except Exception:
+                effective_base_url = None
+        if not effective_base_url:
+            console.print(
+                "[red]No base_url available[/red] — the skill JSON has none "
+                "and you didn't pass --base-url. Re-record or supply one."
+            )
+            raise typer.Exit(code=2)
+
         results = run_skill_from_file(
             skill_path=skill_path,
             params=params,
-            base_url=base_url,
+            base_url=effective_base_url,
             cdp=cdp,
             sessions_dir=sessions_dir,
         )

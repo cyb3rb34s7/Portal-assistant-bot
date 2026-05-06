@@ -86,6 +86,11 @@ class SkillRunner:
         self.takeover_fn = takeover_fn or _cli_takeover
         self._results: list[tuple[SkillStep, ToolResult, int]] = []
         self._repair = repair  # lazily built in _resolve_locator if None
+        # Set by _resolve_locator when L1 finds >1 match for a templated
+        # locator. Action methods read it to emit ambiguous_target
+        # instead of falling through to generic L4 takeover. Cleared on
+        # every step entry.
+        self._pending_ambiguity: list[dict[str, Any]] | None = None
 
     # ---- Public --------------------------------------------------------
 
@@ -150,6 +155,10 @@ class SkillRunner:
             f"step {step.index} {step.action}",
             data={"label": step.semantic_label},
         )
+
+        # Reset per-step state -- ambiguity flag from a previous step
+        # must never leak into the current one.
+        self._pending_ambiguity = None
 
         value = self._resolved_value(step)
 
@@ -242,6 +251,9 @@ class SkillRunner:
     def _do_click(self, step: SkillStep) -> tuple[ToolResult, int]:
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
+            ambig = self._consume_ambiguity()
+            if ambig is not None:
+                return self._build_ambiguous_result(step, ambig, "click")
             return self._fallback_human(step, "could not locate click target")
         page = self.session.page
         verified = self._execute_with_heal_check(
@@ -262,6 +274,9 @@ class SkillRunner:
     ) -> tuple[ToolResult, int]:
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
+            ambig = self._consume_ambiguity()
+            if ambig is not None:
+                return self._build_ambiguous_result(step, ambig, "change")
             return self._fallback_human(step, "could not locate input target")
         fp = step.fingerprint
         tag = (fp.tag if fp else "") or ""
@@ -306,6 +321,9 @@ class SkillRunner:
     ) -> tuple[ToolResult, int]:
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
+            ambig = self._consume_ambiguity()
+            if ambig is not None:
+                return self._build_ambiguous_result(step, ambig, "upload")
             return self._fallback_human(step, "could not locate file input")
         if not value:
             return (
@@ -434,6 +452,16 @@ class SkillRunner:
             return None, 4, None
         fp = self._materialize_fingerprint(fp)
 
+        # Ambiguity check: if the recording captured a SPECIFIC element
+        # (templated fingerprint) but at replay the materialized locator
+        # resolves to multiple visible elements, the recorded action was
+        # targeted at one of them -- we don't know which. Surface as
+        # ambiguous_target instead of silently picking .first.
+        ambig = self._detect_ambiguity(page, fp, step)
+        if ambig:
+            self._pending_ambiguity = ambig
+            return None, 0, None
+
         # --- Level 1 — exact stable attributes ----
         # Try the original fingerprint first, then any alternates persisted
         # by prior heals so a step that healed once is cheap forever after.
@@ -450,6 +478,82 @@ class SkillRunner:
 
         # --- Level 3 — self-heal via locator_repair ----
         return self._level3(page, fp, step.semantic_label)
+
+    def _detect_ambiguity(
+        self,
+        page: Page,
+        fp: ElementFingerprint,
+        step: SkillStep,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Return a list of candidate elements when the recording
+        captured one specific element but replay finds multiple.
+
+        Only fires when the fingerprint had templated fields *and* the
+        templated value at replay would resolve to >1 visible element.
+        Untemplated fingerprints are skipped -- "click first match"
+        was the recording's own behavior, so reproducing it is correct.
+        """
+        if not fp.templates:
+            return None
+
+        candidates_per_attr: list[list[dict[str, Any]]] = []
+
+        # Templated test_id is the most common case (e.g. row-{id}).
+        if fp.test_id and "test_id" in fp.templates:
+            try:
+                loc = page.get_by_test_id(fp.test_id)
+                count = loc.count()
+                if count > 1:
+                    visible = self._collect_candidate_summaries(loc, count)
+                    if len(visible) > 1:
+                        candidates_per_attr.append(visible)
+            except Exception:
+                pass
+
+        # Templated id (less common but possible).
+        if fp.element_id and "element_id" in fp.templates:
+            try:
+                loc = page.locator(f"#{_css_escape(fp.element_id)}")
+                count = loc.count()
+                if count > 1:
+                    visible = self._collect_candidate_summaries(loc, count)
+                    if len(visible) > 1:
+                        candidates_per_attr.append(visible)
+            except Exception:
+                pass
+
+        if not candidates_per_attr:
+            return None
+        # If multiple templated attrs are ambiguous, surface the first;
+        # they're usually pointing at the same elements anyway.
+        return candidates_per_attr[0]
+
+    def _collect_candidate_summaries(
+        self, locator: Locator, count: int
+    ) -> list[dict[str, Any]]:
+        """Build operator-readable summaries for each match. Used as the
+        candidates list in ambiguous_target.error_details so the UI can
+        render a row picker.
+        """
+        out: list[dict[str, Any]] = []
+        for i in range(min(count, 8)):  # cap at 8 — UI doesn't need more
+            try:
+                nth = locator.nth(i)
+                if not nth.is_visible(timeout=300):
+                    continue
+                summary = nth.evaluate(
+                    "el => ({"
+                    " test_id: el.getAttribute('data-testid'),"
+                    " id: el.id || null,"
+                    " text: (el.innerText || el.textContent || '').trim().slice(0, 120),"
+                    " role: el.getAttribute('role'),"
+                    " tag: el.tagName.toLowerCase()"
+                    "})"
+                )
+                out.append({"index": i, **summary})
+            except Exception:
+                continue
+        return out
 
     def _select_option_with_fuzzy_fallback(
         self, locator: Locator, value: str
@@ -689,16 +793,14 @@ class SkillRunner:
 
     # ---- Heal post-condition ---------------------------------------------
 
-    # Common in-progress indicator patterns. Portals signal mid-action
-    # state via testids like ``status-saving``, ``status-applying``,
-    # ``loading-...``, ``spinner-...``, role=progressbar. We wait for
-    # any of these to clear before proceeding. This is a heuristic —
-    # if a portal uses different conventions, the wait is a no-op
-    # (returns immediately) and the existing 4-level fallback handles
-    # the failure case.
+    # Spinner-style transient state indicators. Used as an *additional*
+    # signal alongside in-flight network and DOM-quiescence -- not the
+    # primary one. Portals that follow this convention get faster
+    # detection of "still saving"; portals that don't lose nothing.
     _SPINNER_SELECTOR = (
         "[data-testid^='status-saving'],"
         "[data-testid^='status-applying'],"
+        "[data-testid^='status-searching'],"
         "[data-testid^='loading-'],"
         "[data-testid^='spinner-'],"
         "[data-testid='loading'],"
@@ -706,26 +808,128 @@ class SkillRunner:
         "[role='progressbar']"
     )
 
-    def _wait_for_page_settle(self, max_ms: int = 4000) -> None:
-        """Wait briefly for the page to be ready for the next action.
+    # JS injected into the page on first wait. Mirrors the watchers the
+    # grabber installs during teach -- replay needs the same signals
+    # whether or not the operator ran teach with our overlay attached.
+    _WATCHER_INSTALL_JS = r"""
+    () => {
+      if (window.__cp_quiescence_installed) return true;
+      window.__cp_quiescence_installed = true;
+      window.__cp_last_mutation_at = Date.now();
+      window.__cp_inflight = 0;
+      window.__cp_last_request_at = 0;
+      const root = document.body || document.documentElement;
+      if (root) {
+        try {
+          new MutationObserver(() => {
+            window.__cp_last_mutation_at = Date.now();
+          }).observe(root, {
+            childList: true, subtree: true, attributes: true, characterData: true,
+          });
+        } catch (e) {}
+      }
+      if (window.fetch && !window.__cp_fetch_hooked) {
+        window.__cp_fetch_hooked = true;
+        const _f = window.fetch.bind(window);
+        window.fetch = function () {
+          window.__cp_inflight = (window.__cp_inflight || 0) + 1;
+          window.__cp_last_request_at = Date.now();
+          let p;
+          try { p = _f.apply(this, arguments); }
+          catch (e) {
+            window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+            throw e;
+          }
+          return p.then(
+            r => {
+              window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+              window.__cp_last_request_at = Date.now();
+              return r;
+            },
+            e => {
+              window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+              window.__cp_last_request_at = Date.now();
+              throw e;
+            }
+          );
+        };
+      }
+      if (window.XMLHttpRequest && !window.__cp_xhr_hooked) {
+        window.__cp_xhr_hooked = true;
+        const _send = window.XMLHttpRequest.prototype.send;
+        window.XMLHttpRequest.prototype.send = function () {
+          window.__cp_inflight = (window.__cp_inflight || 0) + 1;
+          window.__cp_last_request_at = Date.now();
+          this.addEventListener('loadend', () => {
+            window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+            window.__cp_last_request_at = Date.now();
+          });
+          return _send.apply(this, arguments);
+        };
+      }
+      return true;
+    }
+    """
 
-        Two-stage: short fixed pause (250ms) for synchronous state
-        propagation, then a bounded wait for any known in-progress
-        indicators to clear. Total bounded by ``max_ms``.
+    def _ensure_watchers(self, page: Page) -> None:
+        """Install the in-page quiescence watchers if they aren't already.
+
+        Idempotent -- safe to call before every wait. Failures here are
+        non-fatal; we just fall back to the simpler spinner check."""
+        try:
+            page.evaluate(self._WATCHER_INSTALL_JS)
+        except Exception:
+            pass
+
+    def _wait_for_page_settle(self, max_ms: int = 4000) -> None:
+        """Wait *only when needed* for the page to be ready for the next action.
+
+        Three signals, all of which return immediately when the page is
+        already idle:
+
+          1. In-flight fetch/XHR count == 0 (network done)
+          2. DOM has had no mutations for ~250ms (component-render done)
+          3. No visible spinners-by-convention left in the DOM
+
+        ``max_ms`` is a hard ceiling -- if any one signal is genuinely
+        stuck (e.g. an open long-poll connection) we move on and let
+        the next step's locator either succeed or raise. We never block
+        indefinitely.
         """
         page = self.session.page
+        self._ensure_watchers(page)
+
+        deadline_ms = max_ms
+
+        # 1) Network-idle: zero fetch/XHR in flight. If nothing is
+        # in flight RIGHT NOW the predicate returns at the first poll.
         try:
-            page.wait_for_timeout(250)
+            page.wait_for_function(
+                "() => (window.__cp_inflight || 0) === 0",
+                timeout=deadline_ms,
+            )
         except Exception:
-            return
+            pass
+
+        # 2) DOM quiescence: 250ms of no mutations. Returns at first
+        # poll if the DOM has already been quiet that long.
+        try:
+            page.wait_for_function(
+                "() => { const t = window.__cp_last_mutation_at || 0;"
+                "        return t > 0 && (Date.now() - t) > 250; }",
+                timeout=min(deadline_ms, 2000),
+            )
+        except Exception:
+            pass
+
+        # 3) Spinner fallback: if the watcher signals were unavailable
+        # (e.g. injection raced with a navigation) check for any of the
+        # known spinner testids and wait for them to hide.
         try:
             spinner = page.locator(self._SPINNER_SELECTOR)
             if spinner.count() > 0:
-                # Wait for the spinner to disappear; if it doesn't,
-                # we just proceed and let the action's own auto-wait
-                # handle the fallout.
                 try:
-                    spinner.first.wait_for(state="hidden", timeout=max_ms)
+                    spinner.first.wait_for(state="hidden", timeout=1500)
                 except Exception:
                     pass
         except Exception:
@@ -784,6 +988,46 @@ class SkillRunner:
         return passed
 
     # ---- Human takeover ----------------------------------------------------
+
+    def _consume_ambiguity(self) -> Optional[list[dict[str, Any]]]:
+        ambig = self._pending_ambiguity
+        self._pending_ambiguity = None
+        return ambig
+
+    def _build_ambiguous_result(
+        self,
+        step: SkillStep,
+        candidates: list[dict[str, Any]],
+        verb: str,
+    ) -> tuple[ToolResult, int]:
+        """Emit a step.failed-shaped ToolResult with structured candidates
+        for the orchestrator's pause flow + UI row picker."""
+        shot = self._screenshot(f"step_{step.index}_ambiguous")
+        self.audit.log(
+            "info",
+            f"step {step.index} ambiguous_target: {len(candidates)} candidates",
+            data={
+                "label": step.semantic_label,
+                "candidates": candidates,
+            },
+        )
+        return (
+            ToolResult(
+                success=False,
+                action_taken=(
+                    f"step {step.index} {verb} target ambiguous "
+                    f"({len(candidates)} matches)"
+                ),
+                error=(
+                    f"ambiguous_target: {len(candidates)} elements match the "
+                    "templated locator -- the recording targeted one specific element"
+                ),
+                error_kind="ambiguous_target",
+                error_details={"candidates": candidates, "verb": verb},
+                screenshot_path=shot,
+            ),
+            0,
+        )
 
     def _fallback_human(
         self, step: SkillStep, reason: str
@@ -907,7 +1151,7 @@ def _cli_takeover(step: SkillStep) -> bool:
 def run_skill_from_file(
     skill_path: Path,
     params: dict[str, Any],
-    base_url: str = "http://localhost:5173",
+    base_url: str = "http://localhost:5188",
     cdp: str = "http://localhost:9222",
     sessions_dir: Path = Path("sessions"),
 ) -> list[tuple[SkillStep, ToolResult, int]]:

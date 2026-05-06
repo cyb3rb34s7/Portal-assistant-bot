@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host --port 5173",
+    "dev": "vite --host --port 5188 --strictPort",
     "build": "vite build",
-    "preview": "vite preview --port 5173"
+    "preview": "vite preview --port 5188 --strictPort"
   },
   "dependencies": {
     "react": "^18.3.1",

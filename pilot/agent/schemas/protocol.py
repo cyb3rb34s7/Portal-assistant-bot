@@ -249,6 +249,10 @@ class StepFailedEvent(_Envelope):
     error_message: str
     screenshot_path: str | None = None
     suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    error_details: dict[str, Any] | None = None
+    """Structured payload keyed by ``error_kind``. For ``ambiguous_target``:
+    ``{candidates: [{index, test_id, text, ...}], verb: "click"}``. The UI
+    renders a row picker from candidates instead of generic retry/skip."""
 
 
 class Paused(_Envelope):

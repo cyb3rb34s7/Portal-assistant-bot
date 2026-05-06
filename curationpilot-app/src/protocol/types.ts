@@ -115,6 +115,20 @@ export interface StepFailedEvent extends AgentEventBase {
   error_message: string;
   screenshot_path?: string;
   suggestions?: { action: string; label: string; payload?: unknown }[];
+  // Structured payload keyed by error_kind. For "ambiguous_target":
+  //   { candidates: [{ index, test_id, text, ... }], verb: "click" }
+  // The PausedModal renders a row picker from these instead of just
+  // retry/skip/abort.
+  error_details?: Record<string, unknown>;
+}
+
+export interface AmbiguousCandidate {
+  index: number;
+  test_id?: string | null;
+  id?: string | null;
+  text?: string;
+  role?: string | null;
+  tag?: string;
 }
 
 export interface PausedEvent extends AgentEventBase {
@@ -219,6 +233,71 @@ export interface SkillSummary {
   path: string;
   updated_at: string;
 }
+
+// ---- /api/tasks (replay) ----------------------------------------------
+
+export interface SubmitTaskArgs {
+  goal: string;
+  portal_id?: string;
+  auto_approve_plan?: boolean;
+  attachments?: File[];
+}
+
+export interface SubmitTaskResponse {
+  task_id: string;
+  started_at: string;
+  attachments: string[];
+}
+
+export interface ActiveTaskResponse {
+  active: boolean;
+  task_id?: string;
+  portal_id?: string | null;
+  started_at?: string;
+}
+
+// ---- /api/commands -- HostCommand envelopes ---------------------------
+
+export interface ClarifyAnswerCmd {
+  type: "clarify.answer";
+  task_id: string;
+  question_id: string;
+  answer_value: string;
+  answer_label?: string | null;
+}
+
+export interface PlanApproveCmd {
+  type: "plan.approve";
+  task_id: string;
+  plan_id: string;
+}
+
+export interface PlanRejectCmd {
+  type: "plan.reject";
+  task_id: string;
+  plan_id: string;
+  reason?: string;
+}
+
+export interface PauseResolveCmd {
+  type: "pause.resolve";
+  task_id: string;
+  pause_id: string;
+  action: "retry" | "skip" | "abort" | "use_alternate";
+  payload?: Record<string, unknown> | null;
+}
+
+export interface TaskCancelCmd {
+  type: "task.cancel";
+  task_id: string;
+}
+
+export type HostCommand =
+  | ClarifyAnswerCmd
+  | PlanApproveCmd
+  | PlanRejectCmd
+  | PauseResolveCmd
+  | TaskCancelCmd;
 
 // ---- /api/sessions ----------------------------------------------------
 

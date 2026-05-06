@@ -80,6 +80,10 @@ class StepResult:
     duration_ms: int = 0
     error_kind: str | None = None
     error_message: str | None = None
+    error_details: dict[str, Any] | None = None
+    """Structured payload keyed by error_kind. For ambiguous_target carries
+    {candidates: [...], verb: ...} so the UI can render a row picker
+    instead of a generic retry/skip/abort."""
     screenshot_path: str | None = None
     heals: list[dict[str, Any]] = field(default_factory=list)
     """One entry per sub-step inside this plan step that the runner
@@ -558,6 +562,20 @@ class Orchestrator:
         skills_by_id: dict[str, SkillFile],
         emit_progress: Callable[[str, dict[str, Any]], None],
     ) -> None:
+        # Tailor suggestions to the failure shape. For ambiguous_target
+        # we add a use_alternate suggestion so the UI lights up the
+        # row-picker mode instead of just retry/skip/abort.
+        suggestions = [
+            {"action": "retry", "label": "Retry this step"},
+            {"action": "skip", "label": "Skip and continue"},
+            {"action": "abort", "label": "Abort the run"},
+        ]
+        if result.error_kind == "ambiguous_target":
+            suggestions = [
+                {"action": "use_alternate", "label": "Pick which to use"},
+                *suggestions,
+            ]
+
         await self._emit(
             StepFailedEvent(
                 task_id=self.task_id,  # type: ignore[arg-type]
@@ -565,21 +583,22 @@ class Orchestrator:
                 error_kind=result.error_kind or "step_failed",
                 error_message=result.error_message or "step failed",
                 screenshot_path=result.screenshot_path,
-                suggestions=[
-                    {"action": "retry", "label": "Retry this step"},
-                    {"action": "skip", "label": "Skip and continue"},
-                    {"action": "abort", "label": "Abort the run"},
-                ],
+                suggestions=suggestions,
+                error_details=result.error_details,
             )
         )
 
+        pause_context: dict[str, Any] = {"step_idx": step.idx}
+        if result.error_details:
+            pause_context["error_details"] = result.error_details
+            pause_context["error_kind"] = result.error_kind
         pause_id = f"pause-{uuid.uuid4().hex[:6]}"
         await self._emit(
             Paused(
                 task_id=self.task_id,  # type: ignore[arg-type]
                 pause_id=pause_id,
                 reason="step_failed",
-                context={"step_idx": step.idx},
+                context=pause_context,
             )
         )
 

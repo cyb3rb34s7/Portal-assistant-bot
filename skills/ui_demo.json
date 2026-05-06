@@ -1,0 +1,281 @@
+{
+  "name": "ui_demo",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "created_at": "2026-05-06T19:55:22.545810",
+  "updated_at": "2026-05-06T19:55:22.545813",
+  "base_url": null,
+  "params": [
+    {
+      "name": "input_csv_file",
+      "type": "file_path",
+      "description": "Value for step 3: upload_input_csv_file",
+      "example": "batch.csv",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/upload",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-05-06T19:54:39.720318",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "click",
+      "fingerprint": {
+        "test_id": null,
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "Choose CSV",
+        "text": "Choose CSV",
+        "placeholder": null,
+        "tag": "label",
+        "input_type": null,
+        "css_path": "div[data-testid='csv-upload-card'] > label",
+        "xpath": "/html/body/div/div/main/section/div[1]/label",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 109.0,
+          "width": 102.90625,
+          "height": 35.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_choose_csv",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-05-06T19:55:05.884424",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\f80b0a46742a\\screenshots\\20260506T195505884447_002_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 2,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "input-csv-file",
+        "element_id": "csv-input",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Choose CSV",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#csv-input",
+        "xpath": "/html/body/div/div/main/section/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 0.0,
+          "height": 0.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_input_csv_file",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-05-06T19:55:05.993918",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\f80b0a46742a\\screenshots\\20260506T195505993937_003_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 3,
+      "action": "upload",
+      "fingerprint": {
+        "test_id": "input-csv-file",
+        "element_id": "csv-input",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Choose CSV",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "file",
+        "css_path": "input#csv-input",
+        "xpath": "/html/body/div/div/main/section/div[1]/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "csv-upload-card",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "upload-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Upload Contents",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 0.0,
+          "height": 0.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": "batch.csv",
+      "wait_ms": null,
+      "semantic_label": "upload_input_csv_file",
+      "param_binding": {
+        "name": "input_csv_file",
+        "type": "file_path",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "captured_at": "2026-05-06T19:55:08.295616",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\f80b0a46742a\\screenshots\\20260506T195508295636_004_file_selected.png",
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "f80b0a46742a"
+}

@@ -31,6 +31,17 @@ class ToolResult(BaseModel):
     # reason, post_condition_passed, new_fingerprint (full).
     # Consumed by orchestrators to emit StepHealed + persist alternates.
     healed: Optional[dict[str, Any]] = None
+    # Structured failure tag so the orchestrator can route the step into
+    # a specific recovery path instead of parsing error strings. Common
+    # values: "ambiguous_target" (locator matched > 1 element where the
+    # recording matched 1), "row_not_found" (nothing matches),
+    # "option_not_available" (select option no longer valid),
+    # "post_condition_failed" (heal ran but page didn't change).
+    error_kind: Optional[str] = None
+    # Free-form structured detail keyed by error_kind. For
+    # ambiguous_target this carries {candidates: [{label, test_id, ...}]}
+    # which the UI's pause modal renders as a row picker.
+    error_details: Optional[dict[str, Any]] = None
 
 
 class Task(BaseModel):

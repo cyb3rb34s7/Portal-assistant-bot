@@ -1,0 +1,28 @@
+base_url: http://localhost:5188/upload
+pages:
+  /upload:
+    buttons: []
+    first_seen: '2026-05-06T19:54:40.706760'
+    inputs:
+    - label: Choose CSV
+      name: null
+      placeholder: null
+      required: false
+      test_id: input-csv-file
+      type: file
+    last_seen: '2026-05-06T19:55:04.913145'
+    links:
+    - href: /upload
+      test_id: nav-upload
+      text: Upload
+    - href: /curation
+      test_id: nav-curation
+      text: Curation
+    path: /upload
+    selects: []
+    titles:
+    - Sample Portal
+    url: http://localhost:5188/upload
+    visit_count: 2
+portal_id: sample_portal
+schema_version: 1

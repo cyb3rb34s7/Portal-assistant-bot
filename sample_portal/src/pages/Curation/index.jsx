@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { LAYOUTS, usePortal } from "../../store/PortalStore.jsx";
 
 export default function Curation() {
-  const { state, dispatch } = usePortal();
+  const { state } = usePortal();
 
   return (
     <section className="page" data-testid="curation-page">
@@ -12,6 +12,8 @@ export default function Curation() {
           Pick a layout, fill slots with uploaded contents, attach images, save, and apply.
         </p>
       </header>
+
+      <Search />
 
       {state.contents.length === 0 ? (
         <div className="card" data-testid="no-contents-warning">
@@ -26,6 +28,123 @@ export default function Curation() {
 
       {state.appliedLayouts.length > 0 && <AppliedLayoutsList />}
     </section>
+  );
+}
+
+// Search exercises two replay scenarios at once:
+//   (a) network call with real latency (the runner needs to wait for
+//       /api/search to come back before reading the result rows), and
+//   (b) variable result count -- partial queries return multiple matches.
+//       This is the disambiguation scenario where a recording captured
+//       a single specific row but replay is now ambiguous.
+//
+// Result rows use a useTransition-driven mount stagger so the runner
+// also has to handle the "network done but DOM not yet rendered" gap.
+function Search() {
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [renderReady, setRenderReady] = useState(false);
+  const [_isPending, startTransition] = useTransition();
+  const [error, setError] = useState(null);
+  const [lastQuery, setLastQuery] = useState("");
+
+  async function onSearch() {
+    if (!q.trim()) return;
+    setLoading(true);
+    setError(null);
+    setRenderReady(false);
+    setRows([]);
+    setLastQuery(q);
+    try {
+      const resp = await fetch(
+        `/api/search?q=${encodeURIComponent(q.trim())}`,
+      );
+      const data = await resp.json();
+      // Component-render lag: network done but rows are committed via
+      // a transition + a small mount-stagger. data-testid="search-results-ready"
+      // doesn't appear until the row mount is committed.
+      startTransition(() => {
+        setRows(data.rows || []);
+        setLoading(false);
+      });
+      // Tiny extra paint window so the runner can't get away with
+      // just waiting for networkidle.
+      setTimeout(() => setRenderReady(true), 250);
+    } catch (e) {
+      setError(String(e));
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="card" data-testid="search-card">
+      <h2>Search content</h2>
+      <div className="comment-row" style={{ gap: 8 }}>
+        <input
+          type="text"
+          data-testid="input-search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="content_id (e.g. A-9001)"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSearch();
+          }}
+        />
+        <button
+          className="btn-primary"
+          data-testid="btn-search"
+          onClick={onSearch}
+          disabled={loading || !q.trim()}
+        >
+          {loading ? "Searching..." : "Search"}
+        </button>
+      </div>
+
+      {loading && (
+        <p className="muted" data-testid="status-searching">
+          Searching for {q}...
+        </p>
+      )}
+
+      {error && (
+        <p style={{ color: "var(--err, #dc2626)" }} data-testid="status-search-error">
+          {error}
+        </p>
+      )}
+
+      {!loading && rows.length === 0 && lastQuery && !error && (
+        <p
+          className="muted"
+          data-testid="status-search-empty"
+        >
+          No rows matched “{lastQuery}”.
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <div data-testid="search-results">
+          <p className="muted">
+            {rows.length} result{rows.length === 1 ? "" : "s"} for “{lastQuery}”
+          </p>
+          <ul className="search-results-list">
+            {rows.map((row) => (
+              <li
+                key={row.content_id}
+                className="search-result-row"
+                data-testid={`search-row-${row.content_id}`}
+              >
+                <code>{row.content_id}</code>
+                <span> — {row.title}</span>
+              </li>
+            ))}
+          </ul>
+          {renderReady && (
+            <span data-testid="search-results-ready" style={{ display: "none" }} />
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -67,14 +186,7 @@ function LayoutEditor() {
       </h2>
       <div className="slots-grid" data-testid={`slots-${draft.layout_id}`}>
         {draft.slots.map((slot) => (
-          // Include layout_id in the key so React unmounts the previous
-          // layout's SlotCard DOM (and its uncontrolled file input)
-          // instead of reusing it. Without this, switching layouts
-          // leaves stale filenames in the file inputs of the new layout.
-          <SlotCard
-            key={`${draft.layout_id}-${slot.idx}`}
-            slot={slot}
-          />
+          <SlotCard key={`${draft.layout_id}-${slot.idx}`} slot={slot} />
         ))}
       </div>
 
@@ -102,9 +214,19 @@ function LayoutEditor() {
           }
           onClick={async () => {
             dispatch({ type: "SAVE_LAYOUT_START" });
-            // Mimic a real backend commit (1.2s).
-            await new Promise((r) => setTimeout(r, 1200));
-            dispatch({ type: "SAVE_LAYOUT_COMPLETE" });
+            try {
+              // Real network call — the Vite mock middleware adds
+              // server-side latency, so CDP networkidle and the runner's
+              // network-aware waits will actually wait.
+              await fetch("/api/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ layout: draft }),
+              });
+              dispatch({ type: "SAVE_LAYOUT_COMPLETE" });
+            } catch {
+              dispatch({ type: "SAVE_LAYOUT_COMPLETE" });
+            }
           }}
         >
           {state.isSaving
@@ -119,10 +241,16 @@ function LayoutEditor() {
           disabled={state.isApplying || !draft.saved || draft.applied}
           onClick={async () => {
             dispatch({ type: "APPLY_LAYOUT_START" });
-            // Apply takes longer than save (1.5s) because the real
-            // analogue is a publish-style action.
-            await new Promise((r) => setTimeout(r, 1500));
-            dispatch({ type: "APPLY_LAYOUT_COMPLETE" });
+            try {
+              await fetch("/api/apply", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ layout: draft }),
+              });
+              dispatch({ type: "APPLY_LAYOUT_COMPLETE" });
+            } catch {
+              dispatch({ type: "APPLY_LAYOUT_COMPLETE" });
+            }
           }}
         >
           {state.isApplying
@@ -162,7 +290,7 @@ function SlotCard({ slot }) {
   const used = new Set(
     state.draftLayout.slots
       .filter((s) => s.idx !== slot.idx && s.content_id)
-      .map((s) => s.content_id)
+      .map((s) => s.content_id),
   );
   const options = state.contents.filter((c) => !used.has(c.content_id));
 
@@ -174,7 +302,6 @@ function SlotCard({ slot }) {
   function onPickImage(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    // We don't actually need the bytes; we just record the upload happened.
     dispatch({ type: "UPLOAD_SLOT_IMAGE", idx: slot.idx });
   }
 
@@ -191,7 +318,6 @@ function SlotCard({ slot }) {
       >
         <option value="">— pick content —</option>
         {slot.content_id && !options.find((o) => o.content_id === slot.content_id) && (
-          // Keep the current selection visible even though it'd be filtered.
           <option value={slot.content_id}>{slot.content_id}</option>
         )}
         {options.map((c) => (
