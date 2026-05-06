@@ -32,9 +32,31 @@ drift, and an audit trail for every action.
 
 ```bash
 py -m venv .venv
-.venv/Scripts/python.exe -m pip install -e .
+.venv/Scripts/python.exe -m pip install -e .[groq]
 cd sample_portal && npm install && cd ..
+cd curationpilot-app && npm install && cd ..
+cp .env.example .env    # then fill in your API keys
 ```
+
+**Run with the UI (recommended):**
+
+```bash
+# Terminal A — FastAPI server (drives the agent + portal browser)
+.venv/Scripts/python.exe -m pilot serve
+
+# Terminal B — React UI (proxies /api/* to terminal A)
+cd curationpilot-app && npm run dev
+# Open http://localhost:5174
+```
+
+The UI's Teach tab walks you through launching the dedicated portal
+browser, signing in (Keycloak/SSO/2FA happens there), recording a
+workflow, annotating + LLM-enriching it, and reviewing the result —
+no terminal commands needed during the daily loop.
+
+**Or drive everything from the CLI** (still fully supported):
+
+
 
 **Run a session (three terminals):**
 

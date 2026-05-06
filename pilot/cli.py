@@ -203,5 +203,21 @@ def run_skill(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(5177, "--port"),
+) -> None:
+    """Start the CurationPilot UI server (FastAPI + WebSocket).
+
+    The React app at curationpilot-app/ proxies /api/* to this server
+    in dev (vite.config.ts). In prod, serve the built dist/ from the
+    same origin to avoid CORS.
+    """
+    from pilot.agent.web_server import serve as _serve
+
+    _serve(host=host, port=port)
+
+
 if __name__ == "__main__":
     app()

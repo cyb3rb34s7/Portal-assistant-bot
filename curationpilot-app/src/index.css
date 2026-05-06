@@ -1,0 +1,215 @@
+@import "tailwindcss";
+
+/* CurationPilot UI — minimal, dense, dev-tool feel.
+ * No shadcn runtime; we copy the tokens we need and use Tailwind utilities. */
+
+:root {
+  --bg: #0b0d12;
+  --bg-elev: #14171f;
+  --bg-card: #1a1e28;
+  --border: #252a36;
+  --text: #d3d6df;
+  --text-dim: #8b909e;
+  --text-bright: #f3f5fa;
+  --accent: #6aa3ff;
+  --accent-fg: #0b0d12;
+  --warn: #f4b96d;
+  --danger: #ef6c6c;
+  --ok: #71d59b;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+button {
+  font-family: inherit;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Utility classes used across the app — keep these short, compose
+ * with Tailwind. */
+
+.surface {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.surface-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-bright);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  background: #1d2230;
+  border-color: #2f3544;
+}
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #7eb1ff;
+  border-color: #7eb1ff;
+}
+.btn-warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.muted {
+  color: var(--text-dim);
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(106, 163, 255, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(106, 163, 255, 0.25);
+}
+.tag-warn {
+  background: rgba(244, 185, 109, 0.12);
+  color: var(--warn);
+  border-color: rgba(244, 185, 109, 0.25);
+}
+.tag-danger {
+  background: rgba(239, 108, 108, 0.12);
+  color: var(--danger);
+  border-color: rgba(239, 108, 108, 0.25);
+}
+.tag-ok {
+  background: rgba(113, 213, 155, 0.12);
+  color: var(--ok);
+  border-color: rgba(113, 213, 155, 0.25);
+}
+
+input[type="text"],
+input[type="search"],
+textarea,
+select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-bright);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+}
+input[type="text"]:focus,
+input[type="search"]:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid rgba(106, 163, 255, 0.4);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+
+.shell-grid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-link {
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 14px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sidebar-link:hover {
+  background: var(--bg-card);
+  color: var(--text-bright);
+}
+.sidebar-link.active {
+  background: rgba(106, 163, 255, 0.12);
+  color: var(--accent);
+}
+
+.main {
+  overflow: auto;
+  padding: 24px 28px;
+}
+
+.kbd {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--text-bright);
+}
+
+pre,
+code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+  overflow: auto;
+}
+
+a {
+  color: var(--accent);
+}
