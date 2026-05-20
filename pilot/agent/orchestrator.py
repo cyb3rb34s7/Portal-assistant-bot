@@ -496,7 +496,8 @@ class Orchestrator:
                 return
 
             # ---- Intake ----
-            await self._audit_external_llm("intake", self.config.intake_model)
+            # Audit emitted AFTER the call returns so failures don't show
+            # phantom external-LLM calls that never actually happened.
             entities = await run_intake(
                 client=self.client,
                 goal=submit.goal,
@@ -505,6 +506,8 @@ class Orchestrator:
                 model=self.config.intake_model,
                 portal=self.config.portal_context,
             )
+            if self.config.intake_use_llm:
+                await self._audit_external_llm("intake", self.config.intake_model)
             await self._emit(
                 IntakeExtracted(
                     task_id=self.task_id,
@@ -522,7 +525,6 @@ class Orchestrator:
             catalog_block = self._load_catalog_block(submit.portal_id)
 
             while True:
-                await self._audit_external_llm("planner", self.config.planner_model)
                 planner_out = await run_planner(
                     client=self.client,
                     goal=goal_text + clarify_state.to_goal_addendum(),
@@ -532,6 +534,15 @@ class Orchestrator:
                     model=self.config.planner_model,
                     catalog_block=catalog_block,
                 )
+                # Only audit when the planner actually called the LLM.
+                # The empty-skills early return (planner.py) emits a
+                # canned clarify question without invoking the model;
+                # auditing it would produce a phantom external-LLM
+                # entry in the session log.
+                if getattr(planner_out, "notes", None) != "empty_skill_library":
+                    await self._audit_external_llm(
+                        "planner", self.config.planner_model
+                    )
 
                 if planner_out.plan is not None:
                     plan = planner_out.plan
@@ -916,13 +927,21 @@ class Orchestrator:
         )
         if not isinstance(sub_step_index, int):
             return
+        # Without a candidate index there's no reliable way to compute
+        # negative candidates -- skip persistence instead of guessing.
+        # The runtime hint scoring still works on test_id/text alone,
+        # so a future operator-resolution that DOES carry an index
+        # will overwrite this skip.
+        chosen_index = candidate.get("index")
+        if chosen_index is None:
+            return
         all_candidates = (
             (original_result.error_details or {}).get("candidates") or []
         )
         negative = [
             c
             for c in all_candidates
-            if c.get("index") != candidate.get("index")
+            if c.get("index") != chosen_index
         ]
         hint = {
             "chosen_text": candidate.get("text"),
@@ -971,8 +990,7 @@ class Orchestrator:
 
     async def _build_report(self, plan: Plan) -> Path:
         assert self.session_dir is not None
-        await self._audit_external_llm("reporter", self.config.reporter_model)
-        return await write_report(
+        result = await write_report(
             session_dir=self.session_dir,
             session_id=self.session_id or "?",
             summary=self._compose_summary(plan),
@@ -981,6 +999,10 @@ class Orchestrator:
             client=self.client,
             model=self.config.reporter_model,
         )
+        # Audit AFTER the call returns so a reporter exception
+        # doesn't show up as a "called the LLM but it didn't" entry.
+        await self._audit_external_llm("reporter", self.config.reporter_model)
+        return result
 
     async def _cancel_task(self) -> None:
         await self._emit(TaskCancelled(task_id=self.task_id or "?"))

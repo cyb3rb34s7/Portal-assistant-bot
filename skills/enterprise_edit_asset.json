@@ -1,0 +1,202 @@
+{
+  "name": "enterprise_edit_asset",
+  "description": "Open an enterprise-portal asset, set its region/market/language (cascading) and categories (multi-select), then save. Demonstrates the new schema fields: expected_signals, assert_after, set_selection.",
+  "version": 1,
+  "created_at": "2026-05-21T12:00:00",
+  "updated_at": "2026-05-21T12:00:00",
+  "base_url": "http://localhost:5188",
+  "params": [
+    {
+      "name": "asset_id",
+      "type": "string",
+      "description": "The asset id to edit, e.g. A-9001.",
+      "example": "A-9001",
+      "required": true
+    },
+    {
+      "name": "region",
+      "type": "string",
+      "description": "Region code (AMER / EMEA / APAC).",
+      "example": "APAC",
+      "required": true
+    },
+    {
+      "name": "market",
+      "type": "string",
+      "description": "Market code (IN, US, GB, JP, etc.). Depends on region.",
+      "example": "IN",
+      "required": true,
+      "depends_on": "region",
+      "select_from_current_options": true
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "description": "Language tag (hi-IN, en-US, etc.). Depends on market.",
+      "example": "hi-IN",
+      "required": true,
+      "depends_on": "market",
+      "select_from_current_options": true
+    },
+    {
+      "name": "categories",
+      "type": "string_list",
+      "description": "List of category ids to assign (replace mode).",
+      "example": "sports,news",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "url": "http://localhost:5188/asset/{asset_id}",
+      "semantic_label": "open_asset_detail",
+      "assert_after": [
+        {
+          "kind": "visible",
+          "selector": "[data-testid='asset-edit-form']",
+          "timeout_ms": 6000
+        },
+        {
+          "kind": "text_contains",
+          "selector": "[data-testid='asset-status']",
+          "text": "draft",
+          "timeout_ms": 4000
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "select-region",
+        "tag": "select"
+      },
+      "value": "AMER",
+      "param_binding": { "name": "region", "mode": "whole" },
+      "semantic_label": "pick_region",
+      "expected_signals": {
+        "network": [
+          {
+            "url_pattern": "/api/markets",
+            "method": "GET",
+            "status": 200,
+            "max_ms": 5000,
+            "optional": false
+          }
+        ],
+        "dom": [
+          {
+            "kind": "options_changed",
+            "selector": "[data-testid='select-market'] option",
+            "stable_ms": 250,
+            "timeout_ms": 5000
+          }
+        ]
+      },
+      "assert_after": [
+        { "kind": "visible", "selector": "[data-testid='select-market']" }
+      ]
+    },
+    {
+      "index": 2,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "select-market",
+        "tag": "select"
+      },
+      "value": "US",
+      "param_binding": { "name": "market", "mode": "whole" },
+      "semantic_label": "pick_market",
+      "expected_signals": {
+        "network": [
+          {
+            "url_pattern": "/api/languages",
+            "method": "GET",
+            "status": 200,
+            "max_ms": 5000,
+            "optional": false
+          }
+        ],
+        "dom": [
+          {
+            "kind": "options_changed",
+            "selector": "[data-testid='select-language'] option",
+            "stable_ms": 250,
+            "timeout_ms": 5000
+          }
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "select-language",
+        "tag": "select"
+      },
+      "value": "en-US",
+      "param_binding": { "name": "language", "mode": "whole" },
+      "semantic_label": "pick_language"
+    },
+    {
+      "index": 4,
+      "action": "set_selection",
+      "semantic_label": "set_categories",
+      "set_selection": {
+        "mode": "replace",
+        "param": "categories",
+        "open_picker_fp": {
+          "test_id": "multiselect-categories-toggle"
+        },
+        "checkbox_template_fp": {
+          "test_id": "multiselect-categories-checkbox-{item}",
+          "templates": {
+            "test_id": "multiselect-categories-checkbox-{item}"
+          }
+        },
+        "commit_fp": {
+          "test_id": "multiselect-categories-toggle"
+        },
+        "current_items_selector": "[data-testid^='multiselect-categories-chip-'][data-testid$=][data-testid]:not([data-testid$='-remove'])",
+        "current_items_id_attr": "data-testid",
+        "current_items_id_prefix": "multiselect-categories-chip-"
+      },
+      "assert_after": [
+        {
+          "kind": "count_gte",
+          "selector": "[data-testid^='multiselect-categories-chip-']:not([data-testid$='-remove'])",
+          "n": 1,
+          "timeout_ms": 3000
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-save"
+      },
+      "semantic_label": "save_asset",
+      "expected_signals": {
+        "network": [
+          {
+            "url_pattern": "/api/assets/",
+            "method": "PATCH",
+            "status": 200,
+            "max_ms": 6000,
+            "optional": false
+          }
+        ]
+      },
+      "assert_after": [
+        {
+          "kind": "hidden",
+          "selector": "[data-testid='status-saving']",
+          "timeout_ms": 6000
+        }
+      ]
+    }
+  ]
+}

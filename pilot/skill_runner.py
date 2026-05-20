@@ -110,6 +110,7 @@ class SkillRunner:
         # noisy long-poll / notifications channels out of the in-flight
         # wait predicate.
         self.portal_network_ignore: list[str] = []
+        self.network_quiet_ms: int = 250
         # Disambiguation hints keyed by step.index. Carries operator
         # picks from prior runs so we can resolve ambiguity without
         # pausing again. Set externally by the executor reading the
@@ -525,7 +526,22 @@ class SkillRunner:
 
         target = self.params.get(spec.param)
         if not isinstance(target, list):
-            target = [t.strip() for t in str(target or "").split(",") if t.strip()]
+            # Tolerant CSV split is convenient for CLI invocations but
+            # the planner / agent layer is expected to pass a list. Log
+            # the coercion so a stray-comma bug doesn't masquerade as
+            # multiple items, and so an operator who passes "foo, bar"
+            # as ONE item sees a warning.
+            split = [t.strip() for t in str(target or "").split(",") if t.strip()]
+            if len(split) > 1:
+                self.audit.log(
+                    "warn",
+                    (
+                        f"set_selection: param {spec.param!r} arrived as a "
+                        f"string with commas; auto-split into {len(split)} items "
+                        "-- pass a list to be explicit"
+                    ),
+                )
+            target = split
         target_set = set(target)
 
         page = self.session.page
@@ -1377,6 +1393,19 @@ class SkillRunner:
       window.__cp_idem_installed = true;
       window.__cp_step_idem = window.__cp_step_idem || null;
 
+      // Strip query string + hash from URL when building the idempotency
+      // key -- two retries against the same logical endpoint should
+      // dedupe even if one sends a cursor param the other doesn't.
+      function _idemUrl(urlStr) {
+        if (!urlStr) return '';
+        let u = String(urlStr);
+        const q = u.indexOf('?');
+        if (q >= 0) u = u.slice(0, q);
+        const h = u.indexOf('#');
+        if (h >= 0) u = u.slice(0, h);
+        return u;
+      }
+
       function _augment(headers, method, urlStr) {
         const m = (method || 'GET').toUpperCase();
         if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return headers;
@@ -1384,7 +1413,7 @@ class SkillRunner:
         if (!ctx) return headers;
         const h = new Headers(headers || {});
         if (h.has('Idempotency-Key')) return h;
-        h.set('Idempotency-Key', ctx + ':' + (urlStr || ''));
+        h.set('Idempotency-Key', ctx + ':' + _idemUrl(urlStr));
         return h;
       }
 
@@ -1423,7 +1452,7 @@ class SkillRunner:
               !this.__cp_idem_already_set && window.__cp_step_idem
             ) {
               _setRH.call(this, 'Idempotency-Key',
-                          window.__cp_step_idem + ':' + url);
+                          window.__cp_step_idem + ':' + _idemUrl(url));
             }
           } catch (e) {}
           return _send.apply(this, arguments);
@@ -1442,14 +1471,23 @@ class SkillRunner:
           - the next replay run gets fresh keys (new session_id), so
             stale cache entries from yesterday don't leak.
         Failures here are non-fatal -- idempotency is a safety net,
-        not a correctness requirement."""
+        not a correctness requirement -- but we log them so a silent
+        regression doesn't go undetected when a real customer cares.
+        """
         try:
             ctx = f"replay:{self.session_id}:{step.index}"
             page.evaluate(
                 "(ctx) => { window.__cp_step_idem = ctx; }", ctx
             )
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            self.audit.log(
+                "warn",
+                (
+                    f"idempotency context not set for step {step.index} "
+                    f"({type(e).__name__}: {e}) -- retries of this step "
+                    "may double-write to destructive endpoints"
+                ),
+            )
 
     def _wait_for_page_settle(
         self,
@@ -1531,14 +1569,16 @@ class SkillRunner:
         """
         ignore_patterns = list(getattr(self, "portal_network_ignore", []) or [])
         ignore_js = json.dumps(ignore_patterns)
+        quiet_ms = int(getattr(self, "network_quiet_ms", 250) or 250)
         return (
             f"() => {{ const ignore = {ignore_js};"
+            f"  const QUIET_MS = {quiet_ms};"
             "  const inflight = window.__cp_inflight || 0;"
             "  if (ignore.length === 0) return inflight === 0;"
             "  const log = window.__cp_request_log || [];"
             "  const now = Date.now();"
             "  const recentNonIgnored = log.some(r =>"
-            "    (now - r.finished_ts) < 250 &&"
+            "    (now - r.finished_ts) < QUIET_MS &&"
             "    !ignore.some(p => (r.url || '').toLowerCase().includes(p.toLowerCase()))"
             "  );"
             "  if (recentNonIgnored) return false;"
@@ -1555,6 +1595,15 @@ class SkillRunner:
         """Wait for each declared network + DOM target. Required
         targets fail the step; optional targets log but don't fail.
         """
+        # Reset the per-step __cp_opt_seen tracker so a "stable count"
+        # observed during step N doesn't auto-pass during step N+1.
+        # Each step that declares options_changed/count_changed starts
+        # with a fresh "no count seen yet" state.
+        try:
+            page.evaluate("() => { window.__cp_opt_seen = {}; }")
+        except Exception:
+            pass
+
         # Network: poll the page's request log for matches.
         t0 = time.monotonic()
         for ne in expected.network:

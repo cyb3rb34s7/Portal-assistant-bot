@@ -613,7 +613,13 @@ async def get_session_diagnostics(session_id: str) -> list[dict]:
     as a per-step table so "L2/L3 never fire" is measurable instead of
     a hunch.
     """
-    p = _sessions_dir() / session_id / "audit.jsonl"
+    # The SkillRunner's AuditLogger writes to ``audit_log.jsonl``; the
+    # orchestrator writes to ``audit.jsonl``. Read either, prefer the
+    # runner's path since the diagnostics it emits are the per-step
+    # ``step_diagnostic`` records we surface.
+    p = _sessions_dir() / session_id / "audit_log.jsonl"
+    if not p.exists():
+        p = _sessions_dir() / session_id / "audit.jsonl"
     if not p.exists():
         raise HTTPException(status_code=404, detail="audit log not found")
     out: list[dict] = []
@@ -840,6 +846,9 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 target_url_substring=target_substring,
                 portal_network_ignore=list(
                     (portal_ctx.network_ignore or []) if portal_ctx else []
+                ),
+                network_quiet_ms=(
+                    portal_ctx.network_quiet_ms if portal_ctx else 250
                 ),
             )
         )

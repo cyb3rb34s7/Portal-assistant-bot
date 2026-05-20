@@ -110,6 +110,13 @@ class PortalContext(BaseModel):
     (case-insensitive) -- e.g. ``/api/notifications`` matches both
     ``/api/notifications?since=0`` and ``/api/notifications/stream``."""
 
+    network_quiet_ms: int = 250
+    """How long network has to be quiet (no non-ignored request
+    finishing) before the in-flight predicate returns true. Tune
+    upward for portals where requests dispatch in rapid bursts (UI
+    fires four GETs serially after a click) and we want to wait for
+    all of them. Tune downward for snappy portals."""
+
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

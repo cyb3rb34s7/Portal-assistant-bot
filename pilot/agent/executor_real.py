@@ -97,6 +97,10 @@ class RealExecutorConfig:
     -- /api/notifications, SSE channels, websockets. Sourced from
     PortalContext.network_ignore by the orchestrator at construction."""
 
+    network_quiet_ms: int = 250
+    """How long network has to be quiet before the wait predicate
+    returns. Sourced from PortalContext.network_quiet_ms."""
+
 
 class RealExecutor(StepExecutor):
     """Bridges the agent's PlanStep onto a full SkillRunner invocation."""
@@ -436,6 +440,7 @@ class RealExecutor(StepExecutor):
             runner.portal_network_ignore = list(
                 self.config.portal_network_ignore or []
             )
+            runner.network_quiet_ms = int(self.config.network_quiet_ms)
             results = runner.run()
         except Exception as e:  # noqa: BLE001
             # Drop the session on a crash; the next step will re-attach.
