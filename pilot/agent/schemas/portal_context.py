@@ -45,6 +45,32 @@ class SessionInfo(BaseModel):
     notes: str | None = None
 
 
+class AuthSignal(BaseModel):
+    """How to tell whether the portal is currently authenticated.
+
+    The pre-flight phase visits ``base_url`` and looks for any of
+    ``logged_in_when_visible`` (positive signals) AND/OR the absence of
+    ``logged_out_when_visible`` (negative signals). Either is enough on
+    its own; the operator picks the one their portal exposes.
+    """
+
+    logged_in_when_visible: list[str] = Field(
+        default_factory=list,
+        description=(
+            "CSS selectors / testids that appear ONLY when authenticated, "
+            "e.g. ['[data-testid=\"nav-user-menu\"]', '#sign-out-btn']."
+        ),
+    )
+    logged_out_when_visible: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Selectors that appear ONLY when NOT authenticated, e.g. "
+            "['form#login', '[data-testid=\"sign-in-btn\"]']."
+        ),
+    )
+    probe_timeout_ms: int = 5000
+
+
 class PortalContext(BaseModel):
     schema_version: int = PORTAL_CONTEXT_SCHEMA_VERSION
 
@@ -62,6 +88,18 @@ class PortalContext(BaseModel):
         description="Action verbs that should always be flagged as destructive.",
     )
     session: SessionInfo = Field(default_factory=SessionInfo)
+    auth_signal: AuthSignal = Field(default_factory=AuthSignal)
+    """How pre-flight detects whether the portal is authenticated.
+    Empty (default) means skip the auth probe -- portals without an
+    explicit signal fall back to "trust the operator launched a logged-
+    in tab"."""
+
+    external_llm_enabled: bool = True
+    """Per-portal kill switch for cloud LLM calls (intake / planner /
+    reporter / annotate / future vision). Defaults True since this is
+    a single-tenant local product today; set False when running against
+    portals whose data cannot leave the operator's machine. The
+    orchestrator audit-logs every external call regardless."""
 
     extra: dict[str, Any] = Field(default_factory=dict)
 

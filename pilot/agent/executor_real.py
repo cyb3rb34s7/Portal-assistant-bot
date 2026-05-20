@@ -50,7 +50,7 @@ from pilot.browser import (
 from pilot.skill_models import Skill
 from pilot.skill_runner import SkillRunner
 
-from pilot.agent.orchestrator import StepExecutor, StepResult
+from pilot.agent.orchestrator import PreflightResult, StepExecutor, StepResult
 from pilot.agent.schemas.domain import PlanStep
 from pilot.agent.schemas.skill import SkillFile
 
@@ -107,11 +107,122 @@ class RealExecutor(StepExecutor):
 
     # ---- Public API ----------------------------------------------------
 
+    async def preflight(
+        self,
+        base_url: str | None,
+        auth_signal: Any | None = None,
+    ) -> PreflightResult:
+        """Probe CDP + tab + auth before the orchestrator runs intake.
+
+        Runs on the worker pool so sync_playwright stays on its thread.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._pool, self._preflight_sync, base_url, auth_signal
+        )
+
+    def _preflight_sync(
+        self,
+        base_url: str | None,
+        auth_signal: Any | None,
+    ) -> PreflightResult:
+        # 1) CDP probe.
+        try:
+            session = self._ensure_session(base_url)
+        except Exception as e:  # noqa: BLE001
+            self._session = None
+            return PreflightResult(
+                cdp_reachable=False,
+                diagnostic=(
+                    f"could not attach to Chrome at {self.config.cdp_endpoint}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
+
+        # 2) Tab probe. Find a page whose URL contains base_url (already
+        #    done inside connect_to_chrome, but we surface the URL here).
+        matching_url: str | None = None
+        try:
+            for page in session.context.pages:
+                if base_url and base_url in page.url:
+                    matching_url = page.url
+                    break
+            else:
+                # No matching tab; fall back to the active page so the
+                # caller at least sees what's open.
+                if session.context.pages:
+                    matching_url = session.context.pages[0].url
+        except Exception:
+            pass
+
+        # 3) Auth probe. Only fires when the portal context declared
+        #    auth_signal with at least one selector.
+        if auth_signal is None:
+            return PreflightResult(
+                cdp_reachable=True,
+                matching_tab_url=matching_url,
+                auth_status="unknown",
+                diagnostic="no auth_signal configured on portal context",
+            )
+
+        logged_in = list(getattr(auth_signal, "logged_in_when_visible", []) or [])
+        logged_out = list(getattr(auth_signal, "logged_out_when_visible", []) or [])
+        timeout = int(getattr(auth_signal, "probe_timeout_ms", 5000) or 5000)
+        if not logged_in and not logged_out:
+            return PreflightResult(
+                cdp_reachable=True,
+                matching_tab_url=matching_url,
+                auth_status="unknown",
+                diagnostic="auth_signal present but no selectors declared",
+            )
+
+        page = session.page
+        # Either positive OR negative signal is enough on its own.
+        if logged_in:
+            for sel in logged_in:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout):
+                        return PreflightResult(
+                            cdp_reachable=True,
+                            matching_tab_url=matching_url,
+                            auth_status="ok",
+                            diagnostic=f"auth ok: positive signal {sel!r} visible",
+                        )
+                except Exception:
+                    continue
+        if logged_out:
+            for sel in logged_out:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout):
+                        return PreflightResult(
+                            cdp_reachable=True,
+                            matching_tab_url=matching_url,
+                            auth_status="missing",
+                            diagnostic=f"auth missing: negative signal {sel!r} visible",
+                        )
+                except Exception:
+                    continue
+
+        # Neither matched -- treat as missing so the operator gets a
+        # chance to log in. Conservative: false-positive "missing" only
+        # costs a Resume click; false-positive "ok" runs against an
+        # unauthenticated portal and fails halfway through.
+        return PreflightResult(
+            cdp_reachable=True,
+            matching_tab_url=matching_url,
+            auth_status="missing",
+            diagnostic=(
+                "auth signals configured but none matched -- "
+                "treating as not authenticated"
+            ),
+        )
+
     async def execute(
         self,
         step: PlanStep,
         skill: SkillFile,
         emit_progress: Callable[[str, dict[str, Any]], None],
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
         skill_path = self._locate_skill_file(skill.id)
         if skill_path is None:
@@ -170,6 +281,7 @@ class RealExecutor(StepExecutor):
             runtime_params,
             skill.base_url,
             skill_path,
+            sub_step_overrides,
         )
 
     def close(self) -> None:
@@ -276,6 +388,7 @@ class RealExecutor(StepExecutor):
         params: dict[str, Any],
         default_base_url: str | None,
         skill_path: Path | None = None,
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
         start = time.time()
         try:
@@ -303,6 +416,7 @@ class RealExecutor(StepExecutor):
                 if self.config.auto_approve_gates
                 else None,
                 takeover_fn=lambda _step: False,  # never block in agent flow
+                sub_step_overrides=sub_step_overrides,
             )
             results = runner.run()
         except Exception as e:  # noqa: BLE001

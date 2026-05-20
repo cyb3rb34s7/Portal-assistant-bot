@@ -9,6 +9,108 @@
 
 ---
 
+## 2026-05-21
+
+### Day-1 sprint: use_alternate fix + pre-flight + LLM audit + per-step diagnostics
+
+**Commit:** _(this commit)_
+
+Architecture pivot decision: stay on the additive path (no chunker / no
+cross-skill composition rewrite) and ship targeted enrichments against
+the existing skill JSON schema. Reviewed by GPT 5.5 via ``droid exec``;
+key feedback folded in. Spec at ``tmp/spec_for_review.md``, raw review
+at ``tmp/gpt55_review_raw.txt``.
+
+**Bug fix: ``use_alternate`` actually consumes the operator's pick**
+
+Before this commit the ``PausedModal`` row-picker shipped yesterday was
+a lie -- the orchestrator's ``pause.resolve { action: "use_alternate" }``
+branch fell through to a plain retry and the candidate payload was
+silently dropped. Now plumbed through:
+
+  - ``StepExecutor.execute`` (interface + Fake + Real) gains
+    ``sub_step_overrides: dict[int, dict[str, Any]] | None``.
+  - ``SkillRunner.__init__`` takes the same dict. On each step,
+    ``_resolve_locator`` pops the override matching ``step.index`` and
+    runs ``_apply_locator_override`` to wipe templated identifying
+    fields (test_id / element_id / name) and substitute the picked
+    candidate's identity. Ambiguity detection is skipped when an
+    override is in play -- the override IS the disambiguation.
+  - Orchestrator's ``_handle_step_failure`` builds the override from
+    ``cmd.payload.candidate`` + ``error_details.sub_step_index`` and
+    passes it to ``executor.execute``.
+
+Unit tests in ``tests/agent/test_use_alternate.py`` lock the override
+helper's behavior (test_id replacement clears stale element_id; id-only
+override clears stale test_id; overrides are single-use per step).
+
+**Pre-flight + auth gate (orchestrator phase before intake)**
+
+New ``_preflight_phase`` runs before intake spends LLM tokens:
+
+  - CDP doctor: can we attach to Chrome? If not, ``task.failed`` with
+    ``error_kind="cdp_unreachable"`` + an operator-actionable message.
+  - Tab probe: surface which open tab matches ``portal.base_url``.
+  - Auth probe: if ``portal.auth_signal`` is configured, run the
+    selectors. Positive signal (``logged_in_when_visible``) or absence
+    of negative signal (``logged_out_when_visible``) = ok. Negative
+    signal visible = ``paused { reason: "auth_required" }`` and wait
+    for operator to sign in, then re-probe ONCE. Second failure flips
+    to ``task.failed`` so we don't loop on a broken portal.
+
+Schema additions in ``pilot/agent/schemas/portal_context.py``:
+``AuthSignal`` model with ``logged_in_when_visible``,
+``logged_out_when_visible``, ``probe_timeout_ms``. Portals without an
+``auth_signal`` block (the current sample portal) get
+``auth_status="unknown"`` and the phase proceeds -- backwards-
+compatible by design.
+
+``RealExecutor.preflight`` runs the probe on the worker pool so
+sync_playwright thread affinity holds. ``FakeExecutor`` returns the
+default "looks fine" so CLI smoke tests don't need a live browser.
+
+**External-LLM audit log + per-portal toggle**
+
+``PortalContext.external_llm_enabled: bool = True`` (default true; this
+is single-tenant local product today). When false, the orchestrator
+emits ``task.failed { error_kind: "external_llm_disabled" }`` at the
+start of the task instead of silently calling cloud models.
+
+Every cloud-LLM call (intake, planner, reporter) is now preceded by
+``_audit_external_llm(stage, model)`` which emits
+``agent.log { source: "external_llm_call", stage, model, client,
+portal_id }``. Visibility-only -- no redaction yet, but every external
+call is discoverable in the session log so an auditor can count them.
+Future enterprise mode gates the call by ``allow_external_llm`` and
+runs a redaction pass on the payload.
+
+**Per-step diagnostics (the "I never see L2/L3 fire" hole)**
+
+The runner now collects a structured ``_diag`` dict per step:
+``levels_attempted`` (which of L1/L2/L3 were tried), ``final_level``,
+``ambiguity_candidate_count``, ``waits_ms`` (separate buckets for
+network / dom / spinner), ``post_condition_passed``, ``heal_backend``,
+``heal_confidence``, ``used_operator_override``, ``error_kind``,
+``success``. Persisted as ``audit.log("step_diagnostic", data=_diag)``
+to the session's ``audit.jsonl``.
+
+New endpoint ``GET /api/sessions/<id>/diagnostics`` reads the audit
+log, filters to ``step_diagnostic`` rows, and returns the structured
+records flat for the UI to render. The Sessions tab panel that
+consumes this is a follow-up commit -- the data layer + API is here.
+
+This is the single most important addition for measuring whether the
+deferred composition pivot ever earns its place: every failed replay
+now produces a classified diagnostic; you can grep ``audit.jsonl`` and
+see exactly which level resolved each step and where the waits land.
+
+**Tests**
+
+15/15 passing (12 prior + 3 new). New ``tests/agent/test_use_alternate.py``
+covers the override helper.
+
+---
+
 ## 2026-05-04 (evening)
 
 ### Replay UI + targeted waits + ambiguity detection + sample portal real lag

@@ -602,6 +602,42 @@ async def list_sessions() -> list[dict]:
     return out
 
 
+@app.get("/api/sessions/{session_id}/diagnostics")
+async def get_session_diagnostics(session_id: str) -> list[dict]:
+    """Return per-step diagnostic records for a finished session.
+
+    Reads ``sessions/<id>/audit.jsonl`` and filters for entries with
+    ``kind == "step_diagnostic"``. Each record has the structured shape
+    the skill_runner writes (levels_attempted, final_level, waits_ms,
+    heal info, ambiguity counts). The UI's Sessions tab renders this
+    as a per-step table so "L2/L3 never fire" is measurable instead of
+    a hunch.
+    """
+    p = _sessions_dir() / session_id / "audit.jsonl"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="audit log not found")
+    out: list[dict] = []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("kind") != "step_diagnostic":
+                    continue
+                # Flatten the structured payload onto the record so the
+                # UI doesn't have to dig into rec["data"]["data"].
+                data = rec.get("data") or {}
+                out.append({"ts": rec.get("timestamp"), **data})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"diagnostics read failed: {e}")
+    return out
+
+
 @app.get("/api/sessions/{session_id}/report")
 async def get_session_report(session_id: str) -> PlainTextResponse:
     p = _sessions_dir() / session_id / "report.md"

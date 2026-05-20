@@ -23,3 +23,7 @@ sessions/
 # lock file. Don't track it — package-lock.json is the source of truth.
 sample_portal/pnpm-lock.yaml
 curationpilot-app/pnpm-lock.yaml
+
+# Scratch directory for transient artifacts (review prompts, etc.)
+# Anything worth keeping should be moved into DOCS/reviews/.
+tmp/

@@ -70,11 +70,22 @@ class SkillRunner:
         takeover_fn: Optional[Callable[[SkillStep], bool]] = None,
         console: Optional[Console] = None,
         repair: Optional[Any] = None,
+        sub_step_overrides: Optional[dict[int, dict[str, Any]]] = None,
     ):
         """``repair`` is an optional pilot.agent.locator_repair.LocatorRepair
         instance. When None, the runner builds a default deterministic
         repair on first use (no LLM). Pass an LLM-backed repair when
-        you want self-heal to use the model."""
+        you want self-heal to use the model.
+
+        ``sub_step_overrides`` is keyed by sub-step ``index`` and carries
+        an override locator (e.g. ``{12: {"test_id": "search-row-A-9002"}}``).
+        When a step's index matches, the override replaces the materialized
+        fingerprint's identifying fields BEFORE L1 resolution -- so the
+        operator's disambiguation pick from a previous failed run goes
+        straight through as an L1 hit instead of fighting the templated
+        testid that produced ambiguity in the first place. Only honored
+        once per step: after the action runs, the override is consumed.
+        """
         self.session = session
         self.skill = skill
         self.params = params
@@ -86,6 +97,7 @@ class SkillRunner:
         self.takeover_fn = takeover_fn or _cli_takeover
         self._results: list[tuple[SkillStep, ToolResult, int]] = []
         self._repair = repair  # lazily built in _resolve_locator if None
+        self._sub_step_overrides = dict(sub_step_overrides or {})
         # Set by _resolve_locator when L1 finds >1 match for a templated
         # locator. Action methods read it to emit ambiguous_target
         # instead of falling through to generic L4 takeover. Cleared on
@@ -127,6 +139,15 @@ class SkillRunner:
                     continue
 
             result, level = self._execute_step(step)
+            # Finalize + emit the diagnostic. final_level + error_kind get
+            # filled here because they're only known after the action ran.
+            diag = getattr(self, "_diag", None)
+            if diag is not None:
+                diag["final_level"] = level
+                diag["success"] = bool(result.success)
+                if not result.success:
+                    diag["error_kind"] = result.error_kind or "step_failed"
+                self.audit.log("step_diagnostic", "", data=diag)
             self._results.append((step, result, level))
             if not result.success:
                 self.audit.log(
@@ -159,6 +180,26 @@ class SkillRunner:
         # Reset per-step state -- ambiguity flag from a previous step
         # must never leak into the current one.
         self._pending_ambiguity = None
+
+        # Per-step diagnostic record. Built up by the L1/L2/L3 paths and
+        # the wait helpers, then emitted as one structured audit entry
+        # at the end of the step so /api/sessions/<id>/diagnostics can
+        # surface "which level resolved this step, did it heal, how long
+        # did each wait take" without parsing free-text log lines.
+        self._diag = {
+            "step_index": step.index,
+            "action": step.action,
+            "label": step.semantic_label,
+            "levels_attempted": [],  # filled by _level1/2/3
+            "final_level": None,  # 1/2/3/4 or 0 (ambiguous)
+            "ambiguity_candidate_count": 0,
+            "waits_ms": {"network": 0, "dom": 0, "spinner": 0},
+            "post_condition_passed": None,
+            "heal_backend": None,
+            "heal_confidence": None,
+            "used_operator_override": False,
+            "error_kind": None,
+        }
 
         value = self._resolved_value(step)
 
@@ -452,31 +493,60 @@ class SkillRunner:
             return None, 4, None
         fp = self._materialize_fingerprint(fp)
 
+        # Operator override path: if a previous run failed with
+        # ambiguous_target and the operator picked a specific candidate,
+        # the orchestrator threads that pick down to us as
+        # sub_step_overrides[step.index]. Apply it BEFORE ambiguity
+        # detection so the override doesn't itself trip the multi-match
+        # check (the override IS the disambiguation).
+        override = self._sub_step_overrides.pop(step.index, None)
+        if override:
+            fp = self._apply_locator_override(fp, override)
+            self.audit.log(
+                "info",
+                f"step {step.index} using operator-picked locator override",
+                data={"override": override},
+            )
+            diag = getattr(self, "_diag", None)
+            if diag is not None:
+                diag["used_operator_override"] = True
+
         # Ambiguity check: if the recording captured a SPECIFIC element
         # (templated fingerprint) but at replay the materialized locator
         # resolves to multiple visible elements, the recorded action was
         # targeted at one of them -- we don't know which. Surface as
-        # ambiguous_target instead of silently picking .first.
-        ambig = self._detect_ambiguity(page, fp, step)
-        if ambig:
-            self._pending_ambiguity = ambig
-            return None, 0, None
+        # ambiguous_target instead of silently picking .first. Skipped
+        # when an override is in play -- the override is the answer to
+        # the ambiguity.
+        if not override:
+            ambig = self._detect_ambiguity(page, fp, step)
+            if ambig:
+                self._pending_ambiguity = ambig
+                if diag := getattr(self, "_diag", None):
+                    diag["ambiguity_candidate_count"] = len(ambig)
+                return None, 0, None
+
+        diag = getattr(self, "_diag", None)
 
         # --- Level 1 — exact stable attributes ----
-        # Try the original fingerprint first, then any alternates persisted
-        # by prior heals so a step that healed once is cheap forever after.
+        if diag is not None:
+            diag["levels_attempted"].append(1)
         for candidate in self._fp_with_alternates(fp):
             l1 = self._level1(page, candidate)
             if l1 is not None:
                 return l1, 1, None
 
         # --- Level 2 — semantic ----
+        if diag is not None:
+            diag["levels_attempted"].append(2)
         for candidate in self._fp_with_alternates(fp):
             l2 = self._level2(page, candidate)
             if l2 is not None:
                 return l2, 2, None
 
         # --- Level 3 — self-heal via locator_repair ----
+        if diag is not None:
+            diag["levels_attempted"].append(3)
         return self._level3(page, fp, step.semantic_label)
 
     def _detect_ambiguity(
@@ -670,6 +740,33 @@ class SkillRunner:
         for alt in fp.alternates or []:
             yield alt
 
+    def _apply_locator_override(
+        self, fp: ElementFingerprint, override: dict[str, Any]
+    ) -> ElementFingerprint:
+        """Return a copy of ``fp`` with identifying fields replaced by
+        ``override`` so L1 resolution targets the operator's pick directly.
+
+        Strongest-first: if the override carries a test_id, it wipes the
+        original test_id AND clears element_id/name/aria_label so they
+        don't keep matching the wrong element. If the override only has
+        an element_id, use that. The fallback chain (L2 semantic, L3
+        heal) still runs on the override, so a stale pick still has
+        recovery -- it just no longer fires ambiguous_target since the
+        operator already disambiguated.
+        """
+        out = fp.model_copy(deep=True)
+        if override.get("test_id"):
+            out.test_id = override["test_id"]
+            out.element_id = None
+            out.name = None
+        elif override.get("id"):
+            out.element_id = override["id"]
+            out.test_id = None
+        # Wipe templates so _materialize_fingerprint doesn't re-substitute
+        # the param value over the override on the next loop iteration.
+        out.templates = {}
+        return out
+
     def _level1(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
         if fp.test_id:
             loc = page.get_by_test_id(fp.test_id)
@@ -777,6 +874,9 @@ class SkillRunner:
                 f"({result.confidence}, {result.backend})"
             ),
         )
+        if diag := getattr(self, "_diag", None):
+            diag["heal_backend"] = result.backend
+            diag["heal_confidence"] = result.confidence
         return result.locator, 3, heal_info
 
     def _get_repair(self):
@@ -894,15 +994,16 @@ class SkillRunner:
         ``max_ms`` is a hard ceiling -- if any one signal is genuinely
         stuck (e.g. an open long-poll connection) we move on and let
         the next step's locator either succeed or raise. We never block
-        indefinitely.
+        indefinitely. Each branch records the time it actually spent
+        into self._diag so we can see per-step where the waits land.
         """
         page = self.session.page
         self._ensure_watchers(page)
-
+        diag = getattr(self, "_diag", None)
         deadline_ms = max_ms
 
-        # 1) Network-idle: zero fetch/XHR in flight. If nothing is
-        # in flight RIGHT NOW the predicate returns at the first poll.
+        # 1) Network-idle: zero fetch/XHR in flight.
+        t0 = time.monotonic()
         try:
             page.wait_for_function(
                 "() => (window.__cp_inflight || 0) === 0",
@@ -910,9 +1011,11 @@ class SkillRunner:
             )
         except Exception:
             pass
+        if diag is not None:
+            diag["waits_ms"]["network"] = int((time.monotonic() - t0) * 1000)
 
-        # 2) DOM quiescence: 250ms of no mutations. Returns at first
-        # poll if the DOM has already been quiet that long.
+        # 2) DOM quiescence: 250ms of no mutations.
+        t0 = time.monotonic()
         try:
             page.wait_for_function(
                 "() => { const t = window.__cp_last_mutation_at || 0;"
@@ -921,10 +1024,11 @@ class SkillRunner:
             )
         except Exception:
             pass
+        if diag is not None:
+            diag["waits_ms"]["dom"] = int((time.monotonic() - t0) * 1000)
 
-        # 3) Spinner fallback: if the watcher signals were unavailable
-        # (e.g. injection raced with a navigation) check for any of the
-        # known spinner testids and wait for them to hide.
+        # 3) Spinner fallback.
+        t0 = time.monotonic()
         try:
             spinner = page.locator(self._SPINNER_SELECTOR)
             if spinner.count() > 0:
@@ -934,6 +1038,8 @@ class SkillRunner:
                     pass
         except Exception:
             pass
+        if diag is not None:
+            diag["waits_ms"]["spinner"] = int((time.monotonic() - t0) * 1000)
 
     def _page_state_signature(self, page: Page) -> tuple[str, int, int]:
         """Cheap whole-page signature: (url, body innerText length, count
@@ -985,6 +1091,8 @@ class SkillRunner:
         after = self._page_state_signature(page)
         passed = before != after
         heal_info["post_condition_passed"] = passed
+        if diag := getattr(self, "_diag", None):
+            diag["post_condition_passed"] = passed
         return passed
 
     # ---- Human takeover ----------------------------------------------------
