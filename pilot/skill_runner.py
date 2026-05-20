@@ -43,7 +43,14 @@ from rich.table import Table
 from .audit import AuditLogger
 from .browser import BrowserSession, connect_to_chrome
 from .models import ToolResult
-from .skill_models import ElementFingerprint, ParamBinding, Skill, SkillStep
+from .skill_models import (
+    ElementFingerprint,
+    ExpectedSignals,
+    ParamBinding,
+    Skill,
+    SkillStep,
+    StepAssertion,
+)
 
 
 LEVEL_LABELS = {
@@ -98,6 +105,16 @@ class SkillRunner:
         self._results: list[tuple[SkillStep, ToolResult, int]] = []
         self._repair = repair  # lazily built in _resolve_locator if None
         self._sub_step_overrides = dict(sub_step_overrides or {})
+        # Portal-level URL ignore list, set by the caller (the agent
+        # executor reads it off PortalContext.network_ignore). Filters
+        # noisy long-poll / notifications channels out of the in-flight
+        # wait predicate.
+        self.portal_network_ignore: list[str] = []
+        # Disambiguation hints keyed by step.index. Carries operator
+        # picks from prior runs so we can resolve ambiguity without
+        # pausing again. Set externally by the executor reading the
+        # skill's .hints.json sidecar.
+        self.disambiguation_hints: dict[int, dict[str, Any]] = {}
         # Set by _resolve_locator when L1 finds >1 match for a templated
         # locator. Action methods read it to emit ambiguous_target
         # instead of falling through to generic L4 takeover. Cleared on
@@ -181,6 +198,11 @@ class SkillRunner:
         # must never leak into the current one.
         self._pending_ambiguity = None
 
+        # Set the idempotency context for any destructive API calls
+        # this step triggers. Retries of the same step within the run
+        # will reuse the same key, so the backend dedupes.
+        self._set_step_idem_context(self.session.page, step)
+
         # Per-step diagnostic record. Built up by the L1/L2/L3 paths and
         # the wait helpers, then emitted as one structured audit entry
         # at the end of the step so /api/sessions/<id>/diagnostics can
@@ -204,47 +226,71 @@ class SkillRunner:
         value = self._resolved_value(step)
 
         # Allow framework state + effects to settle between steps, and
-        # flush any pending async work. Plus: wait for known
-        # in-progress indicators ("Saving...", "Applying...", spinners)
-        # to disappear before we act on the next step. Catches the most
-        # common race where a recorded "click Apply" fires while the
-        # previous Save is still committing on the server.
-        self._wait_for_page_settle()
+        # flush any pending async work. When step.expected_signals is
+        # declared, wait specifically for those targets (network URL
+        # patterns + DOM conditions). Otherwise fall back to the
+        # generic in-flight + DOM-quiescence heuristic.
+        self._wait_for_page_settle(expected=step.expected_signals)
 
         try:
             if step.action == "navigate":
-                return self._do_navigate(step)
-            if step.action == "submit":
+                result, level = self._do_navigate(step)
+            elif step.action == "submit":
                 # A form submit fires implicitly when the submit button is
                 # clicked. Our traces always include a click on the submit
                 # button immediately before the submit event, so replaying
                 # submit as an extra click tends to mis-target. Treat as
                 # implicit success.
-                return (
+                result, level = (
                     ToolResult(
                         success=True,
-                        action_taken=f"submit (implicit after click)",
+                        action_taken="submit (implicit after click)",
                     ),
                     1,
                 )
-            if step.action == "click":
-                return self._do_click(step)
-            if step.action == "change":
-                return self._do_change(step, value)
-            if step.action == "upload":
-                return self._do_upload(step, value)
-            if step.action == "key":
-                return self._do_key(step, value)
-            if step.action == "wait":
-                return self._do_wait(step)
-            return (
-                ToolResult(
-                    success=False,
-                    action_taken=f"Unknown action {step.action}",
-                    error="unsupported action",
-                ),
-                0,
-            )
+            elif step.action == "click":
+                result, level = self._do_click(step)
+            elif step.action == "change":
+                result, level = self._do_change(step, value)
+            elif step.action == "upload":
+                result, level = self._do_upload(step, value)
+            elif step.action == "key":
+                result, level = self._do_key(step, value)
+            elif step.action == "wait":
+                result, level = self._do_wait(step)
+            elif step.action == "set_selection":
+                result, level = self._do_set_selection(step)
+            else:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"Unknown action {step.action}",
+                        error="unsupported action",
+                    ),
+                    0,
+                )
+
+            # Declarative post-condition check. A "successful" action
+            # whose post-condition fails is reclassified as failed with
+            # error_kind="post_condition_failed" so the orchestrator's
+            # pause/heal flow can recover.
+            if result.success and step.assert_after:
+                ok, desc = self._verify_assertions(step)
+                if not ok:
+                    shot = self._screenshot(f"step_{step.index}_post_cond_fail")
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=result.action_taken,
+                            error=f"post-condition failed: {desc}",
+                            error_kind="post_condition_failed",
+                            error_details={"assertion": desc},
+                            screenshot_path=shot,
+                            healed=result.healed,
+                        ),
+                        level,
+                    )
+            return result, level
         except Exception as e:
             shot = self._screenshot(f"step_{step.index}_error")
             return (
@@ -452,6 +498,225 @@ class SkillRunner:
             1,
         )
 
+    def _do_set_selection(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """Reconcile a multi-select picker to the operator's target list.
+
+        Reads the current selection from current_items_selector, computes
+        the diff vs the target list per mode, then opens the picker,
+        searches + clicks the needed items, and closes the picker.
+
+        Failure modes that surface as step.failed:
+          - target param is not a list
+          - current_items_selector resolves nothing (picker structure
+            changed) AND mode=replace needs to read current state
+          - a target item's checkbox can't be found at L1/L2/L3
+        """
+        spec = step.set_selection
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="set_selection",
+                    error="set_selection step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        target = self.params.get(spec.param)
+        if not isinstance(target, list):
+            target = [t.strip() for t in str(target or "").split(",") if t.strip()]
+        target_set = set(target)
+
+        page = self.session.page
+
+        # Read current selection.
+        current_ids: list[str] = []
+        if spec.current_items_selector:
+            try:
+                attr = spec.current_items_id_attr or "data-testid"
+                prefix = spec.current_items_id_prefix or ""
+                # Evaluate inside the page to read attribute values from all matches.
+                current_ids = page.evaluate(
+                    "([sel, attr, prefix]) => {"
+                    " const out = [];"
+                    " document.querySelectorAll(sel).forEach(el => {"
+                    "  const v = el.getAttribute(attr) || '';"
+                    "  out.push(prefix ? v.replace(prefix, '') : v);"
+                    " });"
+                    " return out; }",
+                    [spec.current_items_selector, attr, prefix],
+                )
+            except Exception:
+                current_ids = []
+
+        current_set = set(current_ids)
+
+        # Compute add / remove based on mode.
+        to_add: set[str] = set()
+        to_remove: set[str] = set()
+        if spec.mode == "replace":
+            to_add = target_set - current_set
+            to_remove = current_set - target_set
+        elif spec.mode == "add":
+            to_add = target_set - current_set
+        elif spec.mode == "remove":
+            to_remove = target_set & current_set
+        elif spec.mode == "preserve":
+            if not (current_set & target_set):
+                to_add = target_set - current_set
+
+        # Nothing to do? success.
+        if not to_add and not to_remove:
+            return (
+                ToolResult(
+                    success=True,
+                    action_taken=(
+                        f"set_selection({spec.mode}, {spec.param}) no-op "
+                        f"-- current already matches target"
+                    ),
+                ),
+                1,
+            )
+
+        # Open picker if a fingerprint was recorded for it.
+        if spec.open_picker_fp:
+            try:
+                loc = self._locate_via_template(spec.open_picker_fp, {})
+                if loc:
+                    loc.click(timeout=4000)
+                    self._wait_for_page_settle(max_ms=2000)
+            except Exception as e:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"set_selection: open_picker failed: {e}",
+                        error_kind="set_selection_open_failed",
+                    ),
+                    0,
+                )
+
+        # For each item to add: search (if search_fp recorded) then click checkbox.
+        for item in sorted(to_add):
+            if spec.search_fp:
+                try:
+                    search_loc = self._locate_via_template(spec.search_fp, {})
+                    if search_loc:
+                        search_loc.fill(item)
+                        # Wait for the filter to apply; the list re-renders.
+                        page.wait_for_timeout(150)
+                except Exception:
+                    pass  # search is a convenience; the checkbox locator below is what matters
+            if spec.checkbox_template_fp is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"set_selection: no checkbox_template_fp",
+                        error_kind="bad_step",
+                    ),
+                    0,
+                )
+            try:
+                loc = self._locate_via_template(
+                    spec.checkbox_template_fp, {"item": item}
+                )
+                if loc is None:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=(
+                                f"set_selection: no checkbox match for "
+                                f"item={item!r}"
+                            ),
+                            error_kind="set_selection_item_not_found",
+                            error_details={"item": item},
+                        ),
+                        0,
+                    )
+                loc.click(timeout=3000)
+            except Exception as e:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=(
+                            f"set_selection: click failed for item={item!r}: {e}"
+                        ),
+                        error_kind="set_selection_click_failed",
+                        error_details={"item": item},
+                    ),
+                    0,
+                )
+
+        # For each item to remove: same checkbox click (toggle semantics).
+        for item in sorted(to_remove):
+            if spec.checkbox_template_fp is None:
+                break
+            try:
+                loc = self._locate_via_template(
+                    spec.checkbox_template_fp, {"item": item}
+                )
+                if loc is not None:
+                    loc.click(timeout=3000)
+            except Exception:
+                # Removal failures are softer -- if we can't find a chip
+                # to remove it may already be gone.
+                continue
+
+        # Commit (close picker) if recorded.
+        if spec.commit_fp:
+            try:
+                loc = self._locate_via_template(spec.commit_fp, {})
+                if loc:
+                    loc.click(timeout=3000)
+            except Exception:
+                pass
+
+        return (
+            ToolResult(
+                success=True,
+                action_taken=(
+                    f"set_selection({spec.mode}, {spec.param}): "
+                    f"+{len(to_add)} -{len(to_remove)}"
+                ),
+            ),
+            1,
+        )
+
+    def _locate_via_template(
+        self,
+        fp: ElementFingerprint,
+        extra_params: dict[str, str],
+    ) -> Optional[Locator]:
+        """Resolve a fingerprint with an extra one-shot template
+        substitution (e.g. ``{"item": "sports"}``). Used by set_selection
+        to materialize the per-item checkbox without mutating the
+        skill's parameter context.
+
+        Reuses the L1->L2 cascade. Doesn't trigger ambiguity detection
+        because the body of a set_selection loop is by construction
+        per-item; multiple matches at L1 mean the picker's testids
+        aren't unique enough for the selection to be safe -- we just
+        click .first in that case.
+        """
+        try:
+            substituted = fp.model_copy(deep=True)
+            if fp.templates:
+                merged = dict(self.params)
+                merged.update(extra_params)
+                for field, tmpl in fp.templates.items():
+                    try:
+                        resolved = tmpl.format(**merged)
+                    except KeyError:
+                        continue
+                    setattr(substituted, field, resolved)
+            page = self.session.page
+            loc = self._level1(page, substituted)
+            if loc is not None:
+                return loc
+            return self._level2(page, substituted)
+        except Exception:
+            return None
+
     # ---- Parameter resolution ----------------------------------------------
 
     def _resolved_value(self, step: SkillStep) -> Optional[str]:
@@ -521,10 +786,36 @@ class SkillRunner:
         if not override:
             ambig = self._detect_ambiguity(page, fp, step)
             if ambig:
-                self._pending_ambiguity = ambig
-                if diag := getattr(self, "_diag", None):
-                    diag["ambiguity_candidate_count"] = len(ambig)
-                return None, 0, None
+                # If we have a persisted disambiguation hint for this
+                # step (operator picked one of these candidates on a
+                # prior run), score the current candidates against the
+                # hint. A clear winner short-circuits the pause; the
+                # ambiguity gets resolved automatically. This is the
+                # learning loop.
+                hint = self.disambiguation_hints.get(step.index)
+                resolved = (
+                    self._resolve_with_hint(page, hint, ambig)
+                    if hint
+                    else None
+                )
+                if resolved is not None:
+                    self.audit.log(
+                        "info",
+                        (
+                            f"step {step.index} ambiguity auto-resolved by hint: "
+                            f"{resolved.get('test_id') or resolved.get('id') or '?'}"
+                        ),
+                    )
+                    if diag := getattr(self, "_diag", None):
+                        diag["used_operator_override"] = True
+                        diag["ambiguity_candidate_count"] = len(ambig)
+                    fp = self._apply_locator_override(fp, resolved)
+                    # Fall through to L1 below with the hint-resolved fp.
+                else:
+                    self._pending_ambiguity = ambig
+                    if diag := getattr(self, "_diag", None):
+                        diag["ambiguity_candidate_count"] = len(ambig)
+                    return None, 0, None
 
         diag = getattr(self, "_diag", None)
 
@@ -548,6 +839,60 @@ class SkillRunner:
         if diag is not None:
             diag["levels_attempted"].append(3)
         return self._level3(page, fp, step.semantic_label)
+
+    def _resolve_with_hint(
+        self,
+        page: Page,
+        hint: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> Optional[dict[str, str]]:
+        """Pick a candidate that matches the persisted hint, or None.
+
+        Strict-first matching:
+          1. test_id exact match
+          2. text substring match (case-insensitive)
+          3. negative candidates exclusion -- if the current candidates
+             contain all of the previously-rejected ones plus one new
+             one, the new one is the winner by elimination.
+
+        Returns a small dict {test_id?, id?} suitable for
+        ``_apply_locator_override``, or None if no candidate wins
+        confidently. We err conservative: ambiguity is better than
+        silently picking the wrong row.
+        """
+        # 1) test_id exact match.
+        chosen_id = hint.get("chosen_test_id")
+        if chosen_id:
+            for c in candidates:
+                if c.get("test_id") == chosen_id:
+                    return {"test_id": chosen_id}
+
+        # 2) text substring match.
+        chosen_text = (hint.get("chosen_text") or "").strip().lower()
+        if chosen_text:
+            for c in candidates:
+                ctext = (c.get("text") or "").strip().lower()
+                if ctext and chosen_text in ctext:
+                    if c.get("test_id"):
+                        return {"test_id": c["test_id"]}
+                    if c.get("id"):
+                        return {"id": c["id"]}
+
+        # 3) Negative-candidate elimination. If the current candidate
+        # set is exactly (previously-rejected ∪ {one new}), the new
+        # one is the answer. Conservative: requires the previously-
+        # rejected to all be present in current candidates.
+        neg = hint.get("negative_candidates") or []
+        if neg:
+            neg_ids = {n.get("test_id") for n in neg if n.get("test_id")}
+            current_ids = {
+                c.get("test_id") for c in candidates if c.get("test_id")
+            }
+            new_ones = current_ids - neg_ids
+            if neg_ids.issubset(current_ids) and len(new_ones) == 1:
+                only = next(iter(new_ones))
+                return {"test_id": only}
+        return None
 
     def _detect_ambiguity(
         self,
@@ -911,6 +1256,16 @@ class SkillRunner:
     # JS injected into the page on first wait. Mirrors the watchers the
     # grabber installs during teach -- replay needs the same signals
     # whether or not the operator ran teach with our overlay attached.
+    # Maintains:
+    #   __cp_inflight       count of active fetch+XHR requests
+    #   __cp_last_request_at ms epoch of most recent request boundary
+    #   __cp_last_mutation_at ms epoch of most recent DOM mutation
+    #   __cp_request_log    ring buffer of the last ~50 completed
+    #                       requests: { url, method, status, ts, finished_ts }
+    # The request log is what makes expected_signals.network matching
+    # possible at runtime -- the runner asks the page "have you seen
+    # any /api/markets request finish in the last N seconds?" without
+    # needing CDP-level network interception.
     _WATCHER_INSTALL_JS = r"""
     () => {
       if (window.__cp_quiescence_installed) return true;
@@ -918,6 +1273,13 @@ class SkillRunner:
       window.__cp_last_mutation_at = Date.now();
       window.__cp_inflight = 0;
       window.__cp_last_request_at = 0;
+      window.__cp_request_log = [];
+      const LOG_CAP = 50;
+      function _logRequest(entry) {
+        const log = window.__cp_request_log;
+        log.push(entry);
+        if (log.length > LOG_CAP) log.shift();
+      }
       const root = document.body || document.documentElement;
       if (root) {
         try {
@@ -931,24 +1293,30 @@ class SkillRunner:
       if (window.fetch && !window.__cp_fetch_hooked) {
         window.__cp_fetch_hooked = true;
         const _f = window.fetch.bind(window);
-        window.fetch = function () {
+        window.fetch = function (input, init) {
+          const url = typeof input === 'string' ? input : (input && input.url) || '';
+          const method = (init && init.method) || (input && input.method) || 'GET';
+          const started_ts = Date.now();
           window.__cp_inflight = (window.__cp_inflight || 0) + 1;
-          window.__cp_last_request_at = Date.now();
+          window.__cp_last_request_at = started_ts;
           let p;
           try { p = _f.apply(this, arguments); }
           catch (e) {
             window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+            _logRequest({ url, method, status: 0, started_ts, finished_ts: Date.now(), error: true });
             throw e;
           }
           return p.then(
             r => {
               window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
               window.__cp_last_request_at = Date.now();
+              _logRequest({ url, method, status: r.status, started_ts, finished_ts: Date.now() });
               return r;
             },
             e => {
               window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
               window.__cp_last_request_at = Date.now();
+              _logRequest({ url, method, status: 0, started_ts, finished_ts: Date.now(), error: true });
               throw e;
             }
           );
@@ -956,15 +1324,28 @@ class SkillRunner:
       }
       if (window.XMLHttpRequest && !window.__cp_xhr_hooked) {
         window.__cp_xhr_hooked = true;
+        const _open = window.XMLHttpRequest.prototype.open;
         const _send = window.XMLHttpRequest.prototype.send;
+        window.XMLHttpRequest.prototype.open = function (method, url) {
+          this.__cp_method = method;
+          this.__cp_url = url;
+          return _open.apply(this, arguments);
+        };
         window.XMLHttpRequest.prototype.send = function () {
+          const self = this;
+          const started_ts = Date.now();
           window.__cp_inflight = (window.__cp_inflight || 0) + 1;
-          window.__cp_last_request_at = Date.now();
-          this.addEventListener('loadend', () => {
+          window.__cp_last_request_at = started_ts;
+          self.addEventListener('loadend', () => {
             window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
             window.__cp_last_request_at = Date.now();
+            _logRequest({
+              url: self.__cp_url || '', method: self.__cp_method || 'GET',
+              status: self.status || 0, started_ts, finished_ts: Date.now(),
+              error: self.status === 0,
+            });
           });
-          return _send.apply(this, arguments);
+          return _send.apply(self, arguments);
         };
       }
       return true;
@@ -978,35 +1359,134 @@ class SkillRunner:
         non-fatal; we just fall back to the simpler spinner check."""
         try:
             page.evaluate(self._WATCHER_INSTALL_JS)
+            page.evaluate(self._IDEMPOTENCY_INSTALL_JS)
         except Exception:
             pass
 
-    def _wait_for_page_settle(self, max_ms: int = 4000) -> None:
+    # JS that installs a fetch+XHR shim adding an Idempotency-Key header
+    # derived from window.__cp_step_idem (set by _set_step_idem_context
+    # before each step). The shim only fires on state-changing methods
+    # (POST/PATCH/PUT/DELETE) and never overrides an existing key that
+    # the app already chose. Combined with the sample portal's
+    # Idempotency-Key middleware, this means two retry attempts of the
+    # same step issue the same key for the same URL and the second
+    # attempt returns the cached response -- no double-publish.
+    _IDEMPOTENCY_INSTALL_JS = r"""
+    () => {
+      if (window.__cp_idem_installed) return true;
+      window.__cp_idem_installed = true;
+      window.__cp_step_idem = window.__cp_step_idem || null;
+
+      function _augment(headers, method, urlStr) {
+        const m = (method || 'GET').toUpperCase();
+        if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return headers;
+        const ctx = window.__cp_step_idem;
+        if (!ctx) return headers;
+        const h = new Headers(headers || {});
+        if (h.has('Idempotency-Key')) return h;
+        h.set('Idempotency-Key', ctx + ':' + (urlStr || ''));
+        return h;
+      }
+
+      if (window.fetch && !window.__cp_idem_fetch_wrapped) {
+        window.__cp_idem_fetch_wrapped = true;
+        const _f = window.fetch.bind(window);
+        window.fetch = function (input, init) {
+          try {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            const method = (init && init.method) || (input && input.method) || 'GET';
+            const init2 = init ? Object.assign({}, init) : {};
+            init2.headers = _augment(init.headers || {}, method, url);
+            return _f.call(this, input, init2);
+          } catch (e) {
+            return _f.apply(this, arguments);
+          }
+        };
+      }
+
+      if (window.XMLHttpRequest && !window.__cp_idem_xhr_wrapped) {
+        window.__cp_idem_xhr_wrapped = true;
+        const _setRH = window.XMLHttpRequest.prototype.setRequestHeader;
+        const _send = window.XMLHttpRequest.prototype.send;
+        window.XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
+          if (k && k.toLowerCase() === 'idempotency-key') {
+            this.__cp_idem_already_set = true;
+          }
+          return _setRH.apply(this, arguments);
+        };
+        window.XMLHttpRequest.prototype.send = function () {
+          try {
+            const method = (this.__cp_method || 'GET').toUpperCase();
+            const url = this.__cp_url || '';
+            if (
+              method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' &&
+              !this.__cp_idem_already_set && window.__cp_step_idem
+            ) {
+              _setRH.call(this, 'Idempotency-Key',
+                          window.__cp_step_idem + ':' + url);
+            }
+          } catch (e) {}
+          return _send.apply(this, arguments);
+        };
+      }
+      return true;
+    }
+    """
+
+    def _set_step_idem_context(self, page: Page, step: SkillStep) -> None:
+        """Set the per-step idempotency context on the page.
+
+        Combines the runner's session_id with the step.index so:
+          - retries of the SAME step within the SAME run share the key
+            (the backend's Idempotency-Key middleware dedupes them)
+          - the next replay run gets fresh keys (new session_id), so
+            stale cache entries from yesterday don't leak.
+        Failures here are non-fatal -- idempotency is a safety net,
+        not a correctness requirement."""
+        try:
+            ctx = f"replay:{self.session_id}:{step.index}"
+            page.evaluate(
+                "(ctx) => { window.__cp_step_idem = ctx; }", ctx
+            )
+        except Exception:
+            pass
+
+    def _wait_for_page_settle(
+        self,
+        max_ms: int = 4000,
+        expected: Optional["ExpectedSignals"] = None,
+    ) -> None:
         """Wait *only when needed* for the page to be ready for the next action.
 
-        Three signals, all of which return immediately when the page is
-        already idle:
+        When ``expected`` is provided (per-step expected_signals from
+        the skill), we wait specifically for those network + DOM
+        targets. When it isn't, we fall back to the generic in-flight
+        + DOM-quiescence heuristic.
 
-          1. In-flight fetch/XHR count == 0 (network done)
-          2. DOM has had no mutations for ~250ms (component-render done)
-          3. No visible spinners-by-convention left in the DOM
+        Either path is bounded by ``max_ms`` and returns immediately
+        when conditions are already satisfied.
 
-        ``max_ms`` is a hard ceiling -- if any one signal is genuinely
-        stuck (e.g. an open long-poll connection) we move on and let
-        the next step's locator either succeed or raise. We never block
-        indefinitely. Each branch records the time it actually spent
-        into self._diag so we can see per-step where the waits land.
+        ``portal_network_ignore`` (read off self.portal_network_ignore
+        if set by the caller) lets the runner skip URLs that match a
+        portal-level ignore list -- noisy notifications channels, SSE,
+        etc. -- so they don't keep ``inflight`` artificially high.
         """
         page = self.session.page
         self._ensure_watchers(page)
         diag = getattr(self, "_diag", None)
+
+        # Path A: targeted waits driven by the skill's expected_signals.
+        if expected is not None:
+            self._wait_for_expected_signals(page, expected, diag, max_ms)
+            return
+
+        # Path B: generic heuristic for skills that don't have signals yet.
         deadline_ms = max_ms
 
-        # 1) Network-idle: zero fetch/XHR in flight.
         t0 = time.monotonic()
         try:
             page.wait_for_function(
-                "() => (window.__cp_inflight || 0) === 0",
+                self._inflight_predicate_js(),
                 timeout=deadline_ms,
             )
         except Exception:
@@ -1014,7 +1494,6 @@ class SkillRunner:
         if diag is not None:
             diag["waits_ms"]["network"] = int((time.monotonic() - t0) * 1000)
 
-        # 2) DOM quiescence: 250ms of no mutations.
         t0 = time.monotonic()
         try:
             page.wait_for_function(
@@ -1027,7 +1506,6 @@ class SkillRunner:
         if diag is not None:
             diag["waits_ms"]["dom"] = int((time.monotonic() - t0) * 1000)
 
-        # 3) Spinner fallback.
         t0 = time.monotonic()
         try:
             spinner = page.locator(self._SPINNER_SELECTOR)
@@ -1040,6 +1518,220 @@ class SkillRunner:
             pass
         if diag is not None:
             diag["waits_ms"]["spinner"] = int((time.monotonic() - t0) * 1000)
+
+    def _inflight_predicate_js(self) -> str:
+        """Build the JS predicate "all current network is idle".
+
+        Honors portal_network_ignore: requests whose URLs match any
+        substring in the ignore list don't count. Since __cp_inflight
+        is a raw counter we can't filter inside it; instead we look at
+        __cp_request_log to *also* require "no non-ignored request
+        finished in the last 250ms," which catches both the in-flight
+        and the very-recently-finished cases.
+        """
+        ignore_patterns = list(getattr(self, "portal_network_ignore", []) or [])
+        ignore_js = json.dumps(ignore_patterns)
+        return (
+            f"() => {{ const ignore = {ignore_js};"
+            "  const inflight = window.__cp_inflight || 0;"
+            "  if (ignore.length === 0) return inflight === 0;"
+            "  const log = window.__cp_request_log || [];"
+            "  const now = Date.now();"
+            "  const recentNonIgnored = log.some(r =>"
+            "    (now - r.finished_ts) < 250 &&"
+            "    !ignore.some(p => (r.url || '').toLowerCase().includes(p.toLowerCase()))"
+            "  );"
+            "  if (recentNonIgnored) return false;"
+            "  return inflight === 0; }"
+        )
+
+    def _wait_for_expected_signals(
+        self,
+        page: Page,
+        expected: "ExpectedSignals",
+        diag: Optional[dict[str, Any]],
+        max_ms: int,
+    ) -> None:
+        """Wait for each declared network + DOM target. Required
+        targets fail the step; optional targets log but don't fail.
+        """
+        # Network: poll the page's request log for matches.
+        t0 = time.monotonic()
+        for ne in expected.network:
+            pattern = ne.url_pattern.lower()
+            timeout_ms = min(ne.max_ms, max_ms)
+            try:
+                page.wait_for_function(
+                    "([pat, method, statusFilter]) => {"
+                    " const log = window.__cp_request_log || [];"
+                    " return log.some(r =>"
+                    "   (r.url || '').toLowerCase().includes(pat) &&"
+                    "   (!method || (r.method || 'GET').toUpperCase() === method.toUpperCase()) &&"
+                    "   (statusFilter === null || r.status === statusFilter) &&"
+                    "   r.finished_ts > 0"
+                    " ); }",
+                    arg=[pattern, ne.method, ne.status],
+                    timeout=timeout_ms,
+                )
+                self.audit.log(
+                    "info",
+                    f"expected_signal matched: {ne.method} {ne.url_pattern}",
+                )
+            except Exception:
+                if not ne.optional:
+                    self.audit.log(
+                        "warn",
+                        (
+                            f"expected_signal MISSING (required): "
+                            f"{ne.method} {ne.url_pattern} -- "
+                            f"step may have raced"
+                        ),
+                    )
+        if diag is not None:
+            diag["waits_ms"]["network"] = int((time.monotonic() - t0) * 1000)
+
+        # DOM: poll for the declared condition.
+        t0 = time.monotonic()
+        for de in expected.dom:
+            try:
+                if de.kind in ("visible", "hidden"):
+                    state = "visible" if de.kind == "visible" else "hidden"
+                    page.locator(de.selector).first.wait_for(
+                        state=state, timeout=de.timeout_ms
+                    )
+                elif de.kind == "options_changed":
+                    # Wait until the option count is different from
+                    # whatever we observed first time we looked.
+                    page.wait_for_function(
+                        "([sel, stable]) => {"
+                        " const els = document.querySelectorAll(sel);"
+                        " if (els.length === 0) return false;"
+                        " const now = Date.now();"
+                        " window.__cp_opt_seen = window.__cp_opt_seen || {};"
+                        " const last = window.__cp_opt_seen[sel];"
+                        " if (last == null) {"
+                        "   window.__cp_opt_seen[sel] = { count: els.length, ts: now };"
+                        "   return false;"
+                        " }"
+                        " if (els.length !== last.count) {"
+                        "   window.__cp_opt_seen[sel] = { count: els.length, ts: now };"
+                        "   return false;"
+                        " }"
+                        " return (now - last.ts) >= stable; }",
+                        arg=[de.selector, de.stable_ms],
+                        timeout=de.timeout_ms,
+                    )
+                elif de.kind == "count_changed":
+                    # Same pattern -- count-based detection.
+                    page.wait_for_function(
+                        "([sel, stable]) => {"
+                        " const els = document.querySelectorAll(sel);"
+                        " const now = Date.now();"
+                        " window.__cp_opt_seen = window.__cp_opt_seen || {};"
+                        " const last = window.__cp_opt_seen[sel];"
+                        " if (last == null) {"
+                        "   window.__cp_opt_seen[sel] = { count: els.length, ts: now };"
+                        "   return false;"
+                        " }"
+                        " if (els.length !== last.count) {"
+                        "   window.__cp_opt_seen[sel] = { count: els.length, ts: now };"
+                        "   return false;"
+                        " }"
+                        " return (now - last.ts) >= stable; }",
+                        arg=[de.selector, de.stable_ms],
+                        timeout=de.timeout_ms,
+                    )
+            except Exception:
+                self.audit.log(
+                    "warn",
+                    f"expected dom signal missing: kind={de.kind} sel={de.selector}",
+                )
+        if diag is not None:
+            diag["waits_ms"]["dom"] = int((time.monotonic() - t0) * 1000)
+
+    def _verify_assertions(self, step: SkillStep) -> tuple[bool, Optional[str]]:
+        """Run step.assert_after assertions in order.
+
+        Returns (ok, failing_description). ok=True if all pass or no
+        assertions declared. Failure returns ok=False and a short
+        operator-readable description of which assertion missed.
+        """
+        if not step.assert_after:
+            return True, None
+        page = self.session.page
+        for a in step.assert_after:
+            try:
+                ok = self._check_one_assertion(page, a)
+            except Exception as e:
+                return False, f"{a.kind}: exception {e}"
+            if not ok:
+                return False, self._describe_assertion(a)
+        return True, None
+
+    def _check_one_assertion(
+        self, page: Page, a: "StepAssertion"
+    ) -> bool:
+        if a.kind == "visible" and a.selector:
+            try:
+                page.locator(a.selector).first.wait_for(
+                    state="visible", timeout=a.timeout_ms
+                )
+                return True
+            except Exception:
+                return False
+        if a.kind == "hidden" and a.selector:
+            try:
+                page.locator(a.selector).first.wait_for(
+                    state="hidden", timeout=a.timeout_ms
+                )
+                return True
+            except Exception:
+                return False
+        if a.kind in ("count_eq", "count_gte", "count_lte") and a.selector:
+            try:
+                count = page.locator(a.selector).count()
+            except Exception:
+                return False
+            expected = a.n or 0
+            if a.kind == "count_eq":
+                return count == expected
+            if a.kind == "count_gte":
+                return count >= expected
+            return count <= expected
+        if a.kind == "text_contains" and a.text:
+            try:
+                if a.selector:
+                    el_text = page.locator(a.selector).first.inner_text(
+                        timeout=a.timeout_ms
+                    )
+                else:
+                    el_text = page.locator("body").inner_text(
+                        timeout=a.timeout_ms
+                    )
+                return a.text.lower() in (el_text or "").lower()
+            except Exception:
+                return False
+        if a.kind == "url_contains" and a.text:
+            return a.text.lower() in (page.url or "").lower()
+        if a.kind == "attr_equals" and a.selector and a.attr:
+            try:
+                val = page.locator(a.selector).first.get_attribute(
+                    a.attr, timeout=a.timeout_ms
+                )
+                return val == a.text
+            except Exception:
+                return False
+        return False
+
+    def _describe_assertion(self, a: "StepAssertion") -> str:
+        parts = [a.kind]
+        if a.selector:
+            parts.append(f"selector={a.selector!r}")
+        if a.text:
+            parts.append(f"text={a.text!r}")
+        if a.n is not None:
+            parts.append(f"n={a.n}")
+        return " ".join(parts)
 
     def _page_state_signature(self, page: Page) -> tuple[str, int, int]:
         """Cheap whole-page signature: (url, body innerText length, count

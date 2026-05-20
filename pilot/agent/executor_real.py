@@ -37,7 +37,7 @@ import asyncio
 import concurrent.futures
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -91,6 +91,11 @@ class RealExecutorConfig:
     level approval gate at the orchestrator's plan-approval step; we
     don't want a second confirmation per destructive sub-step inside
     one plan step."""
+
+    portal_network_ignore: list[str] = field(default_factory=list)
+    """URL substrings the runner's wait predicate should treat as noise
+    -- /api/notifications, SSE channels, websockets. Sourced from
+    PortalContext.network_ignore by the orchestrator at construction."""
 
 
 class RealExecutor(StepExecutor):
@@ -418,6 +423,19 @@ class RealExecutor(StepExecutor):
                 takeover_fn=lambda _step: False,  # never block in agent flow
                 sub_step_overrides=sub_step_overrides,
             )
+            # Wire the persisted disambiguation hints from the skill's
+            # .hints.json sidecar. Failures here are non-fatal -- the
+            # runner just falls back to pausing on ambiguity.
+            if skill_path is not None:
+                try:
+                    runner.disambiguation_hints = self._load_hints_sidecar(
+                        skill_path
+                    )
+                except Exception:
+                    runner.disambiguation_hints = {}
+            runner.portal_network_ignore = list(
+                self.config.portal_network_ignore or []
+            )
             results = runner.run()
         except Exception as e:  # noqa: BLE001
             # Drop the session on a crash; the next step will re-attach.
@@ -497,6 +515,66 @@ class RealExecutor(StepExecutor):
             screenshot_path=last_shot,
             heals=heals,
         )
+
+    # ---- Disambiguation hints (sidecar read + write) -------------------
+
+    @staticmethod
+    def _hints_sidecar_path(skill_path: Path) -> Path:
+        return skill_path.with_suffix(".hints.json")
+
+    def _load_hints_sidecar(self, skill_path: Path) -> dict[int, dict[str, Any]]:
+        """Read skills/<name>.hints.json, return a dict keyed by
+        sub-step index. Empty dict if the sidecar doesn't exist or is
+        malformed -- the system continues to work, it just won't
+        auto-resolve ambiguity."""
+        p = self._hints_sidecar_path(skill_path)
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                out[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def persist_disambiguation_hint(
+        self,
+        skill_id: str,
+        sub_step_index: int,
+        hint: dict[str, Any],
+    ) -> bool:
+        """Merge a new disambiguation hint into the skill's sidecar.
+
+        Idempotent: writes-then-renames so an interrupted write can't
+        corrupt the sidecar. Returns True if persisted, False on any
+        failure (we never raise to callers -- learning is best-effort).
+        """
+        skill_path = self._locate_skill_file(skill_id)
+        if skill_path is None:
+            return False
+        try:
+            existing = self._load_hints_sidecar(skill_path)
+        except Exception:
+            existing = {}
+        existing[sub_step_index] = hint
+        sidecar = self._hints_sidecar_path(skill_path)
+        try:
+            sidecar.write_text(
+                json.dumps(
+                    {str(k): v for k, v in existing.items()},
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return True
+        except Exception:
+            return False
 
     # ---- Skill JSON write-back -----------------------------------------
 

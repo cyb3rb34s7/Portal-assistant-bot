@@ -838,6 +838,9 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 sessions_dir=_sessions_dir(),
                 cdp_endpoint=_launcher.state.cdp_url,
                 target_url_substring=target_substring,
+                portal_network_ignore=list(
+                    (portal_ctx.network_ignore or []) if portal_ctx else []
+                ),
             )
         )
 

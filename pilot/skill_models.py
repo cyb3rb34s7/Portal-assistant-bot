@@ -31,6 +31,7 @@ ActionType = Literal[
     "upload",         # file input selection
     "wait",           # explicit wait / sleep
     "assert",         # post-condition assertion
+    "set_selection",  # multi-select reconciliation (replace/add/remove items in a picker)
 ]
 
 
@@ -104,6 +105,169 @@ class PostCondition(BaseModel):
     timeout_ms: int = 5000
 
 
+class StepAssertion(BaseModel):
+    """Declarative post-condition checked after the step's action runs.
+
+    Lightweight and action-specific by design. The runner verifies each
+    assertion in order; the first failure flips the step to failed with
+    error_kind="post_condition_failed" and recovery kicks in.
+
+    The expected_signals field on the step handles WAITING; this field
+    handles VERIFYING. Keep them separate -- one is "be patient", the
+    other is "we are at the right page state."
+    """
+
+    kind: Literal[
+        "visible",
+        "hidden",
+        "count_eq",
+        "count_gte",
+        "count_lte",
+        "text_contains",
+        "url_contains",
+        "attr_equals",
+    ]
+    selector: Optional[str] = None
+    """CSS selector. Required for visible / hidden / count_* / attr_equals."""
+    n: Optional[int] = None
+    """For count_* kinds: the expected count."""
+    text: Optional[str] = None
+    """For text_contains: substring expected somewhere on the page or
+    inside ``selector`` if provided. For url_contains: substring expected
+    in the current URL."""
+    attr: Optional[str] = None
+    """For attr_equals: attribute name."""
+    timeout_ms: int = 4000
+
+
+class NetworkExpectation(BaseModel):
+    """One network call the runner should wait for after the action.
+
+    URL match is a case-insensitive substring (NOT regex) so portal
+    URLs with query params are still easy to match. ``optional`` means
+    "wait if it appears within max_ms, but don't fail if it doesn't" --
+    used for stale GET requests that may be cached at replay.
+    """
+
+    url_pattern: str
+    method: Literal["GET", "POST", "PATCH", "PUT", "DELETE"] = "GET"
+    status: Optional[int] = None
+    """Expected status code. If set, the call only counts as 'completed
+    correctly' when this status is observed. None = any 2xx."""
+    max_ms: int = 5000
+    optional: bool = False
+
+
+class DomExpectation(BaseModel):
+    """One DOM condition the runner should wait for after the action."""
+
+    kind: Literal[
+        "visible",
+        "hidden",
+        "options_changed",  # for cascading dropdowns: the option list mutated
+        "count_changed",
+    ]
+    selector: str
+    stable_ms: int = 250
+    """How long the condition must hold before we proceed. Prevents
+    flicker -- a dropdown that briefly empties then refills shouldn't
+    falsely satisfy options_changed."""
+    timeout_ms: int = 5000
+
+
+class ExpectedSignals(BaseModel):
+    """Per-step hints the runner uses to wait *only when needed*.
+
+    Generic in-flight network counting fails on portals that have
+    long-poll / SSE channels (in-flight is never 0). Per-step
+    expected_signals lets the recording teach the runner exactly what
+    to wait for -- e.g. "after Region click, wait for
+    /api/markets?region=* to complete AND the market dropdown to
+    refresh its options."
+    """
+
+    network: list[NetworkExpectation] = Field(default_factory=list)
+    dom: list[DomExpectation] = Field(default_factory=list)
+
+
+class DisambiguationHint(BaseModel):
+    """Features captured when an operator resolved an ambiguous_target.
+
+    Persisted onto the step that produced the ambiguity. Next replay,
+    the runner scores candidates against the hint BEFORE pausing for
+    operator input; if there's an unambiguous winner the click goes
+    straight through.
+
+    Includes negative_candidates -- the operator's rejected picks --
+    because "the operator chose B over A and C" is stronger evidence
+    than "B looked like this."
+    """
+
+    chosen_text: Optional[str] = None
+    chosen_test_id: Optional[str] = None
+    chosen_neighbors: list[str] = Field(default_factory=list)
+    """Visible text from sibling rows/cells, helps tie-break by context."""
+    chosen_section: Optional[str] = None
+    """Landmark / section name the chosen element lived in."""
+    negative_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    """The candidate dicts the operator did NOT pick. Each carries the
+    same shape as the ambiguous_target candidates payload."""
+
+
+class SetSelectionSpec(BaseModel):
+    """Specification for a multi-select reconciliation step.
+
+    The recording captured the operator opening the picker, searching
+    once per item, checking the box, and closing the picker. The
+    annotator collapses that into one step with this spec, parameterized
+    by a list (the desired set of items). At replay, the runner:
+
+      1. Reads the *current* selected items from current_items_selector.
+      2. Computes the diff vs the target list, modulated by ``mode``:
+          - "replace": uncheck items not in target, check items in target
+          - "add": only check items in target; leave others alone
+          - "remove": only uncheck items in target
+          - "preserve": no-op if any current items overlap target;
+            otherwise behave as "add". Used for "keep what the operator
+            already had if it's relevant."
+      3. For each item to check: open picker (if needed), use
+         search_template to filter, click the materialized checkbox.
+      4. For each item to uncheck: open picker, click the materialized
+         chip-x (or checkbox-template again -- toggle semantics).
+      5. Close picker.
+    """
+
+    mode: Literal["replace", "add", "remove", "preserve"]
+    param: str
+    """Name of the list parameter. Resolved to ``list[str]`` at replay."""
+
+    open_picker_fp: Optional[ElementFingerprint] = None
+    """Click target to open the dropdown. Optional -- some pickers stay
+    open between actions, in which case this can be omitted."""
+    search_fp: Optional[ElementFingerprint] = None
+    """Input inside the picker to filter the list. Optional -- some
+    pickers don't have search and just display all options at once."""
+    checkbox_template_fp: Optional[ElementFingerprint] = None
+    """Checkbox template with a {item} placeholder in testid /
+    element_id. Used to materialize the per-item click target."""
+    commit_fp: Optional[ElementFingerprint] = None
+    """Click to close/commit the picker. Optional."""
+    current_items_selector: Optional[str] = None
+    """CSS selector that returns the chips/badges of currently selected
+    items at this moment. Used to read current state. Each match must
+    carry a stable identifier we can map to a target item (typically
+    via a data-* attribute on the chip). Example:
+    ``[data-testid^='multiselect-categories-chip-']``."""
+    current_items_id_attr: str = "data-testid"
+    """Attribute on the matched chips that carries the item's id, used
+    to compute the diff. The value is the testid string; we strip a
+    known prefix to get just the item id."""
+    current_items_id_prefix: Optional[str] = None
+    """If set, strip this prefix from the chip's id attribute to get
+    the raw item id. E.g. for testid='multiselect-categories-chip-sports',
+    prefix='multiselect-categories-chip-' yields 'sports'."""
+
+
 class SkillStep(BaseModel):
     """One step of an operator demonstration."""
 
@@ -126,6 +290,29 @@ class SkillStep(BaseModel):
     gate_reason: Optional[str] = None
     post_condition: Optional[PostCondition] = None
 
+    # New (2026-05-21): targeted wait + declarative verification +
+    # learning. Each field is optional and additive -- skills without
+    # them keep working via the existing fallback heuristics.
+    expected_signals: Optional[ExpectedSignals] = None
+    """Per-step wait targets. Replaces generic in-flight-count wait
+    when present -- the runner waits ONLY for these specific signals.
+    Mostly populated by annotate-LLM observing the network activity
+    during recording."""
+
+    assert_after: list[StepAssertion] = Field(default_factory=list)
+    """Declarative post-condition checks. Run after the action; failure
+    flips the step to ``error_kind="post_condition_failed"`` and
+    triggers recovery. Action-specific by design (don't AX-tree-diff)."""
+
+    disambiguation_hint: Optional[DisambiguationHint] = None
+    """Features from a prior operator resolution of ambiguous_target.
+    Runner scores candidates against this before pausing again."""
+
+    set_selection: Optional[SetSelectionSpec] = None
+    """Spec for action='set_selection' steps. Carries the picker
+    open/close fingerprints, the search/checkbox templates, and the
+    reconciliation mode."""
+
     # Debug / context
     captured_at: Optional[datetime] = None
     screenshot_path: Optional[str] = None
@@ -136,10 +323,32 @@ class SkillParam(BaseModel):
     """Declared parameter of a skill."""
 
     name: str
-    type: Literal["string", "number", "date", "file_path"] = "string"
+    type: Literal[
+        "string",
+        "number",
+        "date",
+        "file_path",
+        "string_list",  # multi-value (categories, tags)
+    ] = "string"
     description: str = ""
     example: Optional[str] = None
     required: bool = True
+
+    depends_on: Optional[str] = None
+    """Another param this one depends on. The runner uses this signal
+    in two ways:
+      (1) At replay, the dependent param's value is selected from the
+          CURRENT dropdown options (not the recorded one), because the
+          dropdown contents change based on the dependency's value
+          (Country -> State, Region -> Market).
+      (2) For wait scheduling: the dependent's network call won't fire
+          until the dependency's call has completed.
+    None means independent."""
+
+    select_from_current_options: bool = False
+    """Force "ignore recorded value, pick from current options" behavior
+    even for non-dependent params. Useful when the option set is
+    inherently dynamic (e.g. asset status transitions)."""
 
 
 class Skill(BaseModel):

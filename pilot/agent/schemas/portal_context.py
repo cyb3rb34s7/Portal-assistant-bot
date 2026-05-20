@@ -101,6 +101,15 @@ class PortalContext(BaseModel):
     portals whose data cannot leave the operator's machine. The
     orchestrator audit-logs every external call regardless."""
 
+    network_ignore: list[str] = Field(default_factory=list)
+    """URL substring patterns the runner's expected_signals wait should
+    *ignore* when computing 'is the network busy?'. Portals with
+    long-poll notifications, SSE, or WebSocket channels keep at least
+    one fetch in flight forever; without this list, every wait would
+    burn the full timeout. Match is a simple substring check
+    (case-insensitive) -- e.g. ``/api/notifications`` matches both
+    ``/api/notifications?since=0`` and ``/api/notifications/stream``."""
+
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

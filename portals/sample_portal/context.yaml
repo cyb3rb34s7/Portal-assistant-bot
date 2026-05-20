@@ -9,56 +9,92 @@ schema_version: 1
 portal_id: sample_portal
 name: "CurationPilot Sample Portal"
 base_url: "http://localhost:5188"
+external_llm_enabled: true
 
 glossary:
-  - term: "content"
+  - term: "asset"
     meaning: >
       A piece of media tracked by a stable identifier of the form
-      A-NNNN. Operators receive a CSV listing 4-5 contents per drop,
-      each with title, image_path, category, and release_date.
-    aliases: ["asset", "item"]
+      A-NNNN, B-NNNN, etc. Each asset has a title, categories
+      (multi-select), tags (multi-select), and a publishing region.
+    aliases: ["content", "item"]
 
-  - term: "layout"
+  - term: "category"
     meaning: >
-      One of three pre-built arrangements of content slots:
-      grid-2x2 (4 slots), featured-row (4 slots), carousel (5 slots).
-      The operator picks one layout per curation session.
-    aliases: ["template"]
+      A coarse classification like Sports, News, Entertainment.
+      Assets can have multiple categories; the catalog filter is
+      by single category.
 
-  - term: "slot"
+  - term: "region / market / language"
     meaning: >
-      A position in the chosen layout. Slots are 1-indexed. Each slot
-      holds one content (picked from the dropdown of uploaded contents)
-      and one image (uploaded from disk).
-    aliases: ["position"]
+      Cascading geographic and locale taxonomy. Region (Americas,
+      EMEA, APAC) determines Market (US, GB, IN, etc.). Market
+      determines Language (en-US, en-GB, hi-IN, etc.). Each asset
+      is published to one region+market+language combination.
 
-  - term: "curation"
+  - term: "workflow"
     meaning: >
-      The end-to-end workflow: upload CSV, pick layout, fill slots
-      with contents+images, comment, save, apply.
+      An asset moves: draft -> in_review -> (approved | back to draft
+      via reject) -> published. Each transition is a separate API
+      call with its own idempotency key.
+
+  - term: "layout / slot / curation"
+    meaning: >
+      Legacy curation flow (still supported). Pick one of three
+      layouts (grid-2x2, featured-row, carousel), fill its slots with
+      uploaded CSV contents + images, save + apply.
 
 page_map:
+  - path: "/login"
+    role: "auth"
+    notes: >
+      Single-page login. Any non-empty username + password authenticates.
+      The auth_signal probe looks for nav-user-menu after login.
+
+  - path: "/catalog"
+    role: "primary_workflow"
+    notes: >
+      Asset search + filter. Search field is substring-like, so a partial
+      query (e.g. "A-90") can return multiple results -- the multi-result
+      disambiguation scenario.
+
+  - path: "/asset/:id"
+    role: "primary_workflow"
+    notes: >
+      Asset edit form. Cascading dropdowns (region -> market -> language)
+      and multi-select (categories, tags). Workflow buttons are
+      state-gated (Submit only on draft, Approve/Reject only on
+      in_review, Publish only on approved).
+
   - path: "/upload"
     role: "intake"
     notes: >
-      CSV upload tab. Requires columns: content_id, title, image_path,
-      category, release_date. Renders the parsed table for visual
-      confirmation. Must run before /curation.
+      CSV upload tab (legacy curation flow).
 
   - path: "/curation"
     role: "primary_workflow"
     notes: >
-      Single-screen workflow. (1) pick a layout from three options;
-      (2) fill each slot with a content (dropdown sourced from the
-      uploaded CSV); (3) upload each slot's image; (4) write a
-      comment; (5) save; (6) apply.
+      Legacy curation flow.
 
 field_conventions:
-  - field: "content_id"
-    format: "A-NNNN"
-    examples: ["A-9001", "A-9042", "A-7777"]
+  - field: "asset_id"
+    format: "letter-NNNN"
+    examples: ["A-9001", "B-2001", "D-4002"]
+    aliases: ["content_id", "id"]
 
-  - field: "release_date"
+  - field: "region"
+    format: "one of: AMER, EMEA, APAC"
+    examples: ["AMER", "EMEA", "APAC"]
+
+  - field: "market"
+    format: "ISO-2 country code"
+    examples: ["US", "GB", "IN", "JP"]
+
+  - field: "language"
+    format: "IETF language tag"
+    examples: ["en-US", "hi-IN", "ja-JP"]
+
+  - field: "publish_at"
     format: "YYYY-MM-DD"
     timezone: "UTC"
 
@@ -66,17 +102,33 @@ field_conventions:
     format: "one of: grid-2x2, featured-row, carousel"
     examples: ["grid-2x2", "featured-row", "carousel"]
 
-  - field: "image_path"
-    format: "absolute or repo-relative path to a PNG / JPG"
-    examples: ["tests/fixtures/images/A-9001.png"]
-
 destructive_actions:
-  - "save_layout"   # writes a saved draft to local storage
-  - "apply_layout"  # commits the saved draft to the applied list
+  - "submit_review"  # changes asset state, gates further editing
+  - "approve"        # changes asset state
+  - "reject"         # changes asset state, allows re-edit
+  - "publish"        # irreversible -- makes the asset live
+  - "save_layout"    # legacy curation
+  - "apply_layout"   # legacy curation
 
 session:
-  login_url: ""
-  session_duration_minutes: null
+  login_url: "/login"
+  session_duration_minutes: 60
   sso_provider: "none"
   notes: >
-    Sample portal has no authentication.
+    Bearer-token auth via /api/auth/login. Token stored in
+    sessionStorage. /api/auth/me probes session validity.
+
+auth_signal:
+  # Pre-flight phase probes for these. The nav-user-menu only renders
+  # when authenticated; the login form only renders when not.
+  logged_in_when_visible:
+    - "[data-testid='nav-user-menu']"
+  logged_out_when_visible:
+    - "[data-testid='login-form']"
+  probe_timeout_ms: 4000
+
+# Portal-level network ignore -- the runner's expected_signals waits
+# treat any URL matching these as "noise" and don't include them in
+# in-flight checks. Empty for now since the sample portal has no
+# long-poll / SSE channels; included as documentation of the field.
+network_ignore: []

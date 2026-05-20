@@ -866,6 +866,18 @@ class Orchestrator:
         status = "succeeded" if retry.succeeded else "failed"
         await self._record_step(step, status=status, duration_ms=retry.duration_ms)
         if retry.succeeded:
+            # Learning loop: persist the operator's pick as a
+            # disambiguation hint on the skill's sidecar so future runs
+            # can auto-resolve the same ambiguity. Only fires on
+            # use_alternate (when overrides is set) AND retry success;
+            # other retries (plain re-execute) don't carry candidate
+            # info to persist.
+            if (
+                overrides
+                and cmd.action == "use_alternate"
+                and cmd.payload
+            ):
+                await self._persist_disambiguation_hint(skill, cmd, result)
             await self._emit(
                 StepSucceededEvent(
                     task_id=self.task_id,  # type: ignore[arg-type]
@@ -882,6 +894,61 @@ class Orchestrator:
                     error_message=retry.error_message or "retry failed",
                 )
             )
+
+    async def _persist_disambiguation_hint(
+        self,
+        skill: SkillFile,
+        cmd: Any,  # PauseResolve
+        original_result: StepResult,
+    ) -> None:
+        """Write the operator's pick to the skill's hints sidecar.
+
+        The chosen candidate + the rejected candidates from the original
+        failure become the persistent record. Best-effort -- if the
+        sidecar write fails, we just log it; the immediate retry already
+        succeeded, so the operator's experience is unaffected.
+        """
+        payload = cmd.payload or {}
+        candidate = payload.get("candidate") or {}
+        sub_step_index = (
+            payload.get("sub_step_index")
+            or (original_result.error_details or {}).get("sub_step_index")
+        )
+        if not isinstance(sub_step_index, int):
+            return
+        all_candidates = (
+            (original_result.error_details or {}).get("candidates") or []
+        )
+        negative = [
+            c
+            for c in all_candidates
+            if c.get("index") != candidate.get("index")
+        ]
+        hint = {
+            "chosen_text": candidate.get("text"),
+            "chosen_test_id": candidate.get("test_id"),
+            "chosen_neighbors": [],  # populated by future enrichment step
+            "chosen_section": None,
+            "negative_candidates": negative,
+        }
+        persist = getattr(self.executor, "persist_disambiguation_hint", None)
+        if not callable(persist):
+            return
+        try:
+            ok = persist(skill.id, sub_step_index, hint)
+        except Exception:
+            ok = False
+        await self._log(
+            (
+                "persisted disambiguation hint"
+                if ok
+                else "failed to persist disambiguation hint (continuing)"
+            ),
+            level="info" if ok else "warn",
+            source="disambiguation_hint",
+            skill_id=skill.id,
+            sub_step_index=sub_step_index,
+        )
 
     async def _record_step(self, step: PlanStep, *, status: str, duration_ms: int) -> None:
         self._step_records.append(
