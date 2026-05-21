@@ -1,0 +1,15 @@
+- generic [ref=e1] clickable [onclick]
+  - main
+    - generic
+      - sectionheader
+        - heading "Sign in" [level=1, ref=e2]
+        - paragraph
+          - StaticText "Any non-empty username + password works (sample portal)."
+      - generic
+        - LabelText
+          - StaticText "Username"
+        - textbox "Username" [ref=e3]
+        - LabelText
+          - StaticText "Password"
+        - textbox "Password" [ref=e4]
+        - button "Sign in" [disabled, ref=e5]

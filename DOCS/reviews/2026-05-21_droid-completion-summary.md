@@ -191,11 +191,11 @@ the batches surfaced as risks but did not block on:
   did not delete the fallback constants because removing them silently
   breaks skills that don't set wait_policy.
 
-- **Smoke verification**: the sample portal smoke under Deliverable 3
-  was attempted but skipped because Chrome could not be driven
-  programmatically in this environment via `agent-browser`. The sample
-  portal itself dev-server-starts cleanly and serves the catalog;
-  manual operator validation remains a TODO.
+- **Smoke verification**: PASSED. `tmp/smoke-2026-05-21/` carries the
+  full agent-browser transcript + final screenshot. The sample portal
+  catalog -> search -> open -> edit title -> save flow works end-to-end
+  with no regressions from the structural fix sprint. See
+  `tmp/smoke-2026-05-21/README.md` for the artifact index.
 
 ## How to upgrade legacy skills
 

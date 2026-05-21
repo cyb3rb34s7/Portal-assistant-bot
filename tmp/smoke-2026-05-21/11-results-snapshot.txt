@@ -1,0 +1,53 @@
+- generic [ref=e1] clickable [onclick]
+  - complementary "Primary"
+    - StaticText "Sample Portal"
+    - navigation "Main menu" [ref=e2]
+      - list
+        - listitem [level=1]
+          - link "Catalog" [ref=e9]
+        - listitem [level=1]
+          - link "Upload" [ref=e10]
+        - listitem [level=1]
+          - link "Curation" [ref=e11]
+        - listitem [level=1]
+          - StaticText "File ▾"
+    - generic "Account"
+      - StaticText "smoke-operator"
+      - button "Sign out" [ref=e3]
+  - main
+    - generic
+      - sectionheader
+        - heading "Catalog" [level=1, ref=e5]
+        - paragraph
+          - StaticText "Search for an asset to edit or schedule."
+      - textbox "Asset ID or title..." [ref=e6]: A-9003
+        - StaticText "A-9003"
+      - combobox [expanded=false, ref=e7]: All categories
+        - MenuListPopup
+          - option "All categories" [selected, ref=e16]
+          - option "Sports" [ref=e17]
+          - option "News" [ref=e18]
+          - option "Entertainment" [ref=e19]
+          - option "Kids" [ref=e20]
+          - option "Documentary" [ref=e21]
+          - option "Drama" [ref=e22]
+          - option "Comedy" [ref=e23]
+          - option "Music" [ref=e24]
+      - button "Search" [ref=e8]
+      - heading "1 result" [level=2, ref=e4]
+        - StaticText "1 result"
+      - table
+        - rowgroup
+          - row
+            - columnheader "ID" [ref=e25]
+            - columnheader "Title" [ref=e26]
+            - columnheader "Status" [ref=e27]
+            - columnheader
+        - row
+          - cell "A-9003" [ref=e12]
+            - code
+              - StaticText "A-9003"
+          - cell "Spring Cup Preview" [ref=e13]
+          - cell "DRAFT" [ref=e14]
+          - cell "Open" [ref=e15]
+            - button "Open" [ref=e28]
