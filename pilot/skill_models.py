@@ -656,6 +656,75 @@ class StepProvenance(BaseModel):
     detection_method: Optional[Literal["deterministic", "llm", "operator"]] = None
 
 
+class SemanticCluster(BaseModel):
+    """WI-12: intermediate representation produced by the annotator's
+    semantic clustering pipeline.
+
+    The annotator runs in passes:
+      (1) normalize raw events (WI-02 _assign_synthetic_ids)
+      (2) build causality graph (WI-02 build_causality_graph)
+      (3) detect widget clusters -- THIS model is the output
+      (4) bind params + provenance (WI-11 _derive_provenance_templates)
+      (5) produce semantic steps (cluster -> SkillStep)
+      (6) emit expected_signals / assertions from observed effects
+
+    Each cluster carries the raw events that compose it, the cluster
+    kind (single_event, fill_submit, set_selection, ...), the primary
+    target's fingerprint, optional folded effects, and a confidence
+    score reflecting how certain the detection is. ``confidence=1.0``
+    is reserved for deterministic detections; LLM-suggested clusters
+    carry lower confidence and require operator review (future WI-31).
+
+    The cluster is the BASIS for the SkillStep but isn't itself a
+    step. The annotator converts each cluster into a SkillStep with
+    StepProvenance.raw_event_ids = cluster.raw_event_ids. This split
+    lets future WIs add cluster kinds (WI-15 fill_submit, WI-17
+    select_option, WI-19 set_selection) without re-shaping the step
+    schema each time -- the cluster carries the detection metadata,
+    the step carries the runner contract.
+
+    ``annotate_mode="linear"`` (legacy) skips this pipeline and emits
+    one step per non-observed event. ``annotate_mode="semantic"``
+    (default for new annotations) runs the full pipeline. Legacy traces
+    can still be re-annotated in semantic mode; the LLM enrichment
+    layer (WI-31) consumes the structured cluster list.
+    """
+
+    raw_event_ids: list[str] = Field(default_factory=list)
+    """Event IDs (TraceEvent.event_id) that compose this cluster, in
+    causal / sequence order. Always at least one; observed-event ids
+    (network_request, dom_mutation) that contributed to the cluster
+    are included so the audit log can reconstruct the recording."""
+    cluster_kind: str
+    """One of: ``single_event``, ``click_with_navigation`` (WI-08),
+    ``fill_submit`` (WI-15), ``select_option`` (WI-17),
+    ``select_autocomplete`` (WI-16), ``cascading_select`` (WI-18),
+    ``set_selection`` (WI-19), ``modal_open`` / ``modal_close`` (WI-34),
+    ``toggle_state`` (WI-33), ``date_select`` (WI-21),
+    ``slider_set`` (WI-28), ``drag_drop`` (WI-30),
+    ``rich_text_set`` (WI-39), ``download_click`` (WI-45),
+    ``popup_open`` (WI-35), ``scroll_until`` (WI-38)."""
+    primary_target_event_id: Optional[str] = None
+    """The event the cluster ROOTS at. For a click-with-navigation
+    cluster, the click event id; the navigate is a child. For a
+    fill_submit cluster, the LAST input_change before the submit
+    trigger. Used by the step-construction pass to pick the
+    fingerprint + binding."""
+    effects: Optional["StepEffect"] = None
+    """Folded effects observed during this cluster's interaction
+    window (navigation / network / dom / popup / etc). Lifted onto
+    the SkillStep at step-construction time."""
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    """0.0 - 1.0. 1.0 = deterministic detection. < 1.0 = LLM-suggested
+    or heuristic; runner / UI may treat lower-confidence clusters as
+    advisory until operator confirms."""
+    alternatives_considered: list[str] = Field(default_factory=list)
+    """Other cluster_kinds the detector evaluated and rejected. Empty
+    for trivial clusters; populated when the detector picked between
+    e.g. set_selection vs select_option for the same sequence. Useful
+    for the LLM enrichment pass (WI-31) and operator review UI."""
+
+
 class DisambiguationHint(BaseModel):
     """Features captured when an operator resolved an ambiguous_target.
 
@@ -1148,6 +1217,25 @@ class Skill(BaseModel):
     consecutive click + standalone navigate steps that were collapsed
     into click + effects.navigation at validate time. The runner /
     audit log can surface this to the operator."""
+
+    annotate_mode: Literal["linear", "semantic"] = "semantic"
+    """WI-12: which annotator pipeline produced this skill. ``linear``
+    is the legacy event-to-step path preserved for back-compat with
+    pre-WI-12 traces. ``semantic`` (default for new annotations) runs
+    the full cluster pipeline (normalize -> causality -> cluster ->
+    bind params -> produce steps -> emit signals). The runner does
+    not branch on this field; it's informational + audit. Legacy
+    skills loaded from JSON default to ``semantic`` unless explicitly
+    written -- safe because the semantic pipeline degrades to one
+    cluster per event when no widget pattern is detected."""
+
+    semantic_clusters: list["SemanticCluster"] = Field(default_factory=list)
+    """WI-12: structured cluster intermediate representation, retained
+    alongside the materialized SkillSteps. Empty for legacy ``linear``
+    skills and for skills loaded without re-annotation. Audit log +
+    LLM enrichment (WI-31) consume this to reason about cluster
+    boundaries / detection alternatives without re-deriving from raw
+    events."""
 
     @model_validator(mode="before")
     @classmethod

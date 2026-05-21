@@ -16,7 +16,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -30,6 +30,7 @@ from .skill_models import (
     ExpectedSignals,
     NavigationEffect,
     ParamBinding,
+    SemanticCluster,
     Skill,
     SkillParam,
     SkillStep,
@@ -464,6 +465,127 @@ def _derive_url_template(
     return (templated, source)
 
 
+# ---- WI-12: semantic clustering pipeline -----------------------------------
+
+
+# Observed events that contribute to a cluster's audit trail but are not
+# themselves user-facing steps. These get folded into the owning cluster's
+# raw_event_ids (so the audit log shows "this fill_submit step came from
+# input + input + submit + 2 network responses") but never produce
+# standalone clusters / steps.
+_OBSERVED_EVENT_KINDS: frozenset[str] = frozenset({
+    "dom_mutation", "network_request", "network_response",
+    "popup", "download", "visibility_change",
+})
+
+
+def detect_semantic_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+) -> list[SemanticCluster]:
+    """WI-12 cluster detection pass.
+
+    Walks the (already-normalized + caused) event list and emits one
+    ``SemanticCluster`` per coherent operator interaction.
+
+    Current detectors (deterministic, additive):
+      - ``click_with_navigation``: a user click whose causality.children_of
+        includes a navigate event. The navigate folds in (WI-08).
+      - ``single_event``: every remaining user-action event (click,
+        change, key, submit, navigate, file_selected, upload, wait).
+        This is the floor -- the pipeline always produces at least
+        one cluster per non-observed event.
+
+    Future WIs add detectors WITHOUT touching this signature:
+      - WI-15 ``fill_submit``: input_change+ Enter/submit on same form
+      - WI-16 ``select_autocomplete``: input + result option click
+      - WI-17 ``select_option``: select change with options snapshot
+      - WI-18 ``cascading_select``: select A -> request -> select B
+      - WI-19 ``set_selection``: multi-select open/search/check/close
+      - WI-21 ``date_select``: native date or calendar grid
+      - WI-28 ``slider_set``: range input drag burst
+      - WI-30 ``drag_drop``: dragstart/dragover/drop sequence
+      - WI-33 ``toggle_state``: accordion / aria-expanded transitions
+      - WI-34 ``modal_open`` / ``modal_close``: dialog visibility
+      - WI-35 ``popup_open``: window.open / target=_blank
+      - WI-38 ``scroll_until``: scroll followed by DOM growth
+      - WI-39 ``rich_text_set``: contenteditable input bursts
+      - WI-45 ``download_click``: click that triggers a download effect
+
+    Observed events (network_request, dom_mutation, ...) are NOT
+    emitted as their own clusters. They live as raw_event_ids on the
+    cluster that caused them (via TraceEvent.caused_by). The cluster
+    detector finds them by walking causality.children_of[user_id].
+    """
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    children_of: dict[str, list[str]] = causality.get("children_of") or {}
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+
+    # Track which event ids have been folded into a cluster already so
+    # we don't emit duplicates (e.g. a caused navigate that folded into
+    # its click must not produce its own single_event cluster).
+    folded_ids: set[str] = set()
+
+    clusters: list[SemanticCluster] = []
+    for ev in events:
+        if not ev.event_id or ev.event_id in folded_ids:
+            continue
+        # Observed events that haven't been claimed by a parent cluster
+        # are dropped from cluster output but their raw_event_ids still
+        # belong to whatever caused them. The annotator only emits
+        # clusters from USER ACTIONS (events with caused_by=None or
+        # events the grabber marked as root via _rootAttribution).
+        if ev.kind in _OBSERVED_EVENT_KINDS:
+            continue
+        if ev.event_id not in user_actions:
+            # This is a child event whose parent is some other user
+            # action -- it will be folded into that parent. Don't emit
+            # a separate cluster for it. (Today this is mostly caused
+            # navigates; future WIs may produce other child kinds.)
+            continue
+
+        # Click that caused a navigate -> click_with_navigation cluster.
+        child_ids = children_of.get(ev.event_id, [])
+        caused_nav_id: Optional[str] = None
+        if ev.kind == "click":
+            for cid in child_ids:
+                ce = by_id.get(cid)
+                if ce is not None and ce.kind == "navigate":
+                    caused_nav_id = cid  # last child wins (router chain)
+        # Build the cluster.
+        raw_ids: list[str] = [ev.event_id]
+        if caused_nav_id is not None:
+            raw_ids.append(caused_nav_id)
+            folded_ids.add(caused_nav_id)
+        # Fold in any observed children (network / dom_mutation) so the
+        # audit log carries them on the same cluster. They don't become
+        # steps but they DO contribute to the provenance trail.
+        for cid in child_ids:
+            if cid == caused_nav_id:
+                continue
+            ce = by_id.get(cid)
+            if ce is None:
+                continue
+            if ce.kind in _OBSERVED_EVENT_KINDS:
+                raw_ids.append(cid)
+                folded_ids.add(cid)
+
+        kind = (
+            "click_with_navigation"
+            if caused_nav_id is not None
+            else "single_event"
+        )
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind=kind,
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+            )
+        )
+    return clusters
+
+
 # ---- Build Skill ----------------------------------------------------------
 
 
@@ -476,6 +598,7 @@ def build_skill(
     auto: bool = False,
     console: Optional[Console] = None,
     session_id: Optional[str] = None,
+    annotate_mode: Literal["linear", "semantic"] = "semantic",
 ) -> Skill:
     console = console or Console()
 
@@ -487,6 +610,26 @@ def build_skill(
     # collapsing, WI-12 semantic clustering) can read it without
     # re-walking the event list.
     causality = build_causality_graph(events)
+
+    # WI-12: produce the cluster intermediate representation when in
+    # ``semantic`` mode. The cluster list is attached to the Skill for
+    # audit / LLM enrichment; the existing per-event loop below still
+    # produces steps (with the cluster-aware raw_event_ids stamped
+    # onto each step.provenance). When ``linear`` mode is requested
+    # (legacy compatibility for pre-WI-12 traces), we skip the cluster
+    # pipeline and emit an empty list -- steps still get raw_event_ids
+    # from their own event ids since WI-02 backfill ran.
+    clusters: list[SemanticCluster] = (
+        detect_semantic_clusters(events, causality)
+        if annotate_mode == "semantic" else []
+    )
+    # Index clusters by primary target event id so the step loop can
+    # pull raw_event_ids onto each step without re-walking causality.
+    clusters_by_target: dict[str, SemanticCluster] = {
+        c.primary_target_event_id: c
+        for c in clusters
+        if c.primary_target_event_id
+    }
 
     # WI-08: index navigate events by the user action that caused them.
     # A click whose event_id matches a caused-navigate's caused_by gets
@@ -601,6 +744,28 @@ def build_skill(
                 dom=list(readiness_by_cause[ev.event_id])
             )
 
+        # WI-12: prefer cluster-derived raw_event_ids when the cluster
+        # pipeline ran (semantic mode). The cluster has already folded
+        # in caused navigates AND observed children (network_request /
+        # dom_mutation) so the audit trail is complete. Linear-mode
+        # falls back to the WI-08 inline computation for back-compat.
+        cluster_for_step: Optional[SemanticCluster] = (
+            clusters_by_target.get(ev.event_id) if ev.event_id else None
+        )
+        if cluster_for_step is not None:
+            step_raw_ids = list(cluster_for_step.raw_event_ids)
+            step_cluster_kind = cluster_for_step.cluster_kind
+        else:
+            step_raw_ids = (
+                [ev.event_id, folded_nav.event_id]  # type: ignore[list-item]
+                if ev.event_id and folded_nav and folded_nav.event_id
+                else ([ev.event_id] if ev.event_id else [])
+            )
+            step_cluster_kind = (
+                "click_with_navigation"
+                if folded_nav is not None
+                else "single_event"
+            )
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -615,21 +780,13 @@ def build_skill(
             screenshot_path=ev.screenshot_path,
             effects=effects,
             expected_signals=expected_signals,
-            # WI-02 + WI-08: link the step back to its source raw event.
-            # When a navigate is folded, BOTH the click and the navigate
-            # event ids become raw_event_ids so the audit trail shows
-            # which raw events the semantic step came from.
+            # WI-02 + WI-08 + WI-12: link the step back to its source
+            # raw events. The cluster pipeline (semantic mode) supplies
+            # the complete list including folded observed children;
+            # linear mode falls back to the click+nav pair.
             provenance=StepProvenance(
-                raw_event_ids=(
-                    [ev.event_id, folded_nav.event_id]  # type: ignore[list-item]
-                    if ev.event_id and folded_nav and folded_nav.event_id
-                    else ([ev.event_id] if ev.event_id else [])
-                ),
-                cluster_kind=(
-                    "click_with_navigation"
-                    if folded_nav is not None
-                    else "single_event"
-                ),
+                raw_event_ids=step_raw_ids,
+                cluster_kind=step_cluster_kind,
                 detection_method="deterministic",
             ),
         )
@@ -700,6 +857,11 @@ def build_skill(
         source_session_id=session_id,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
+        # WI-12: stamp the cluster pipeline output so audit / LLM
+        # enrichment (WI-31) can see the cluster boundaries the
+        # annotator chose without re-deriving from raw events.
+        annotate_mode=annotate_mode,
+        semantic_clusters=clusters,
     )
     # WI-11: strong-provenance templates first (row_key / operator_input);
     # legacy substring pass fills only the fields the strong pass left
@@ -1169,6 +1331,7 @@ def run_annotate(
     auto: bool = False,
     sessions_dir: Path = Path("sessions"),
     skills_dir: Path = Path("skills"),
+    annotate_mode: Literal["linear", "semantic"] = "semantic",
 ) -> Path:
     console = Console()
     session_dir = sessions_dir / session_id
@@ -1211,6 +1374,7 @@ def run_annotate(
         auto=auto,
         console=console,
         session_id=session_id,
+        annotate_mode=annotate_mode,
     )
     out = save_skill(skill, skills_dir)
 
