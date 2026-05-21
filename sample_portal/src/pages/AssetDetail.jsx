@@ -43,6 +43,10 @@ export default function AssetDetail() {
     comment: "",
     // WI-28: priority slider 0-100. Drives the publish queue weighting.
     priority: 50,
+    // WI-39: contenteditable rich-text description. textContent is
+    // tracked here; the editor renders from asset.description_html on
+    // mount (uncontrolled afterward to avoid React caret-jump bugs).
+    description: "",
   });
 
   // WI-33: accordion expand-state for the advanced-settings panel.
@@ -87,6 +91,8 @@ export default function AssetDetail() {
           language: a.language || "",
           publish_at: a.publish_at || "",
           comment: a.comment || "",
+          priority: a.priority != null ? a.priority : 50,
+          description: a.description || "",
         });
       })
       .catch((e) => !cancelled && setError(String(e.message || e)));
@@ -348,6 +354,40 @@ export default function AssetDetail() {
           value={form.comment}
           onChange={(e) => setForm({ ...form, comment: e.target.value })}
           disabled={!isDraft}
+        />
+
+        {/* WI-39: rich-text contenteditable description editor. Plain
+            contenteditable (no framework) -- the grabber's WI-39
+            contenteditable burst capture should collapse typing into
+            one rich_text_set step. The element root carries
+            contenteditable=true; React doesn't control its content
+            (we read from it on save via the ref). */}
+        <label htmlFor="asset-description">Description</label>
+        <div
+          id="asset-description"
+          data-testid="input-description"
+          contentEditable={isDraft}
+          suppressContentEditableWarning={true}
+          style={{
+            border: "1px solid var(--border, #ccc)",
+            borderRadius: 4,
+            padding: 8,
+            minHeight: 60,
+            background: isDraft ? "white" : "#f6f6f6",
+          }}
+          onInput={(e) => {
+            // Reflect editor textContent into form.description so save
+            // captures it. innerHTML is preserved in the DOM verbatim.
+            setForm({
+              ...form,
+              description: e.currentTarget.textContent || "",
+            });
+          }}
+          dangerouslySetInnerHTML={
+            asset && asset.description_html != null
+              ? { __html: asset.description_html }
+              : undefined
+          }
         />
 
         {/* WI-28: priority slider. Range 0-100, step 5. The grabber's

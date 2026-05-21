@@ -1697,6 +1697,117 @@ class FileSpec(BaseModel):
     only -- replay still supplies its own paths."""
 
 
+class RichTextSpec(BaseModel):
+    """WI-39: spec for setting a contenteditable / rich-text editor's
+    content as ONE semantic step.
+
+    Plain ``<input>`` / ``<textarea>`` go through fill_submit / change.
+    Contenteditable roots -- and their embedded editors (TinyMCE, Quill,
+    Lexical, ProseMirror, Slate) -- need a different replay path because
+    Playwright's ``locator.fill`` does not work on a non-form-control
+    contenteditable (it returns an empty string).
+
+    The annotator collapses the operator's typing burst inside a
+    contenteditable into ONE ``rich_text_set`` step whose primary target
+    is the editor root. At replay the runner:
+
+      1. Resolves the editor root via the step's fingerprint.
+      2. Focuses the root + clears existing content per ``embed_policy``.
+      3. Sets the content via the declared ``paste_strategy`` so the
+         framework's listeners (input event, beforeinput, paste) fire
+         the right way for that editor.
+      4. Verifies the editor's text/HTML matches the resolved param.
+
+    Acceptance check (from the WI brief):
+      Typing 'Hello **bold**' into a contenteditable replays the same
+      content at replay time -- including any sanitization the framework
+      performs on innerHTML insertion.
+    """
+
+    value_param: str
+    """Name of the skill param holding the target content. Resolved at
+    replay through the SkillParam's codec (typically ``raw`` for
+    plain/markdown, with the editor's own sanitizer doing the HTML
+    parsing)."""
+
+    format: Literal["html", "markdown", "plain"] = "plain"
+    """How the param value is interpreted.
+      - ``plain``: textContent set, no HTML parsing. Safe default for
+        comments / notes where formatting doesn't matter.
+      - ``html``: innerHTML set, then the editor framework's mutation
+        observer normalizes (Quill / Lexical / ProseMirror rewrite HTML
+        to their internal model representation on input).
+      - ``markdown``: pass-through to the editor's ``setMarkdown`` API
+        when the framework exposes one (currently Lexical + ProseMirror's
+        markdown plugin). Otherwise the runner falls back to plain and
+        emits a warning so the operator knows the formatting was lost.
+    """
+
+    embed_policy: Literal["preserve", "strip"] = "preserve"
+    """How to handle EMBEDDED non-text nodes (images, mentions, embeds)
+    when clearing the editor before insertion.
+      - ``preserve``: leave existing embeds in place; the new content is
+        appended or replaces the text portion only.
+      - ``strip``: clear the whole editor (innerHTML='') before inserting
+        the new content. Required for ``html`` / ``markdown`` formats
+        where the param value carries the FULL document state, not a
+        delta. Default for ``html`` / ``markdown``; ``preserve`` for
+        ``plain`` so a comment edit doesn't accidentally drop an image.
+    """
+
+    paste_strategy: Literal[
+        "execCommand", "clipboard", "input_event"
+    ] = "input_event"
+    """How the runner injects the content into the editor.
+
+      - ``execCommand``: ``document.execCommand('insertHTML', ...)``.
+        Works on legacy editors that listen for execCommand events.
+        Deprecated in modern browsers but still fires the input handler
+        for TinyMCE / older Quill.
+      - ``clipboard``: simulate a paste via the ``ClipboardEvent`` and
+        ``DataTransfer`` API. Most modern editors (Lexical, ProseMirror)
+        handle paste through this path and call their own sanitizer.
+      - ``input_event``: set innerHTML / textContent directly, then
+        dispatch a synthetic ``input`` event so React/Vue controlled
+        editors see the change. DEFAULT because it's the most portable
+        across editor frameworks; the editor's own MutationObserver
+        re-normalizes after the synthetic event fires.
+
+    The annotator picks ``input_event`` by default. Operators can
+    override per-editor in the portal context when the default doesn't
+    work for a specific portal's editor framework."""
+
+    editor_root_fp: Optional[ElementFingerprint] = None
+    """Fingerprint of the contenteditable root (the element carrying
+    ``contenteditable=true`` directly OR the ancestor whose contenteditable
+    cascade applies). When None the runner uses step.fingerprint -- which
+    the annotator sets to the same root. Kept separate so future WIs that
+    target a specific block inside an editor (e.g. only set a paragraph)
+    can scope the fingerprint to the block while the editor_root_fp
+    points at the framework's mount node."""
+
+    framework_hint: Optional[Literal[
+        "tinymce", "quill", "lexical", "prosemirror", "slate", "draft",
+        "unknown",
+    ]] = None
+    """Detected editor framework. The grabber inspects window-scoped
+    instances (window.tinymce, window.Quill, document.querySelectorAll
+    for editor classes) at record time and stamps the hint here. The
+    runner uses it to pick a framework-specific API path BEFORE falling
+    back to ``paste_strategy``. ``unknown`` means raw contenteditable
+    (no detected framework) -- safe default."""
+
+    recorded_html: Optional[str] = None
+    """The editor's innerHTML at the END of the recorded typing burst.
+    Audit-only; the runner uses the param value, not this snapshot. Kept
+    so the operator can review what was originally typed without
+    replaying."""
+
+    recorded_text: Optional[str] = None
+    """The editor's textContent at the end of the burst. Audit-only;
+    same role as recorded_html for the plain-text path."""
+
+
 class SliderSpec(BaseModel):
     """WI-28: spec for a range slider (``<input type=range>``) final
     value + event dispatch.
@@ -1956,6 +2067,14 @@ class SkillStep(BaseModel):
     """WI-28: spec for action='slider_set' steps. Carries the value
     param, the min/max/step constraints, orientation, and the event
     dispatch mode. None for non-slider actions."""
+
+    rich_text: Optional["RichTextSpec"] = None
+    """WI-39: spec for action='rich_text_set' steps. Carries the value
+    param, format (html/markdown/plain), embed policy, paste strategy,
+    and editor framework hint. None for non-rich-text actions or for
+    legacy traces. The runner uses the spec to dispatch through
+    framework-specific APIs when the framework_hint matches, otherwise
+    falls back to paste_strategy."""
 
     file_spec: Optional["FileSpec"] = None
     """WI-29: spec for ``upload`` (file_selected) steps. Carries the
@@ -2767,3 +2886,25 @@ class TraceEvent(BaseModel):
     by the scroll detector to confirm the scroll caused new rows to
     render (positive delta) rather than just shifting the viewport
     within already-rendered content (zero delta)."""
+
+    # WI-39: rich-text editor burst payload. Populated by the grabber's
+    # contenteditable input listener on raw_event_kind="rich_text_input"
+    # input_change events. ``rich_text_html`` is the editor root's
+    # innerHTML at the END of the burst; ``rich_text_framework`` is the
+    # detected editor framework (tinymce / quill / lexical / unknown).
+    # Plain ``value`` carries the textContent fallback so consumers that
+    # don't care about HTML can still bind a SkillParam.
+    rich_text_html: Optional[str] = None
+    """For rich-text bursts: editor root's innerHTML at end-of-burst.
+    Capped at 64KB by the grabber to bound payload size; the runner
+    only uses this for the recorded_html audit field on RichTextSpec.
+    None for non-contenteditable input events."""
+    rich_text_framework: Optional[Literal[
+        "tinymce", "quill", "lexical", "prosemirror", "slate", "draft",
+        "unknown",
+    ]] = None
+    """For rich-text bursts: detected editor framework. The grabber
+    inspects window.tinymce / window.Quill / data-lexical-editor /
+    class names at burst time. None for non-contenteditable input
+    events; ``unknown`` for raw contenteditable without a detected
+    framework."""

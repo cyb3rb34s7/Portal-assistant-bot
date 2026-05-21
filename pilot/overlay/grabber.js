@@ -1492,6 +1492,13 @@
       // Flush any pending text input debounce BEFORE the click is
       // recorded, so order is fill→click, not click→fill.
       if (pendingInputEl && pendingInputEl !== target) flushPendingInput();
+      // WI-39: same for rich-text burst -- a click on Save while the
+      // operator's typing burst is still debouncing must commit the
+      // burst first, so the captured order is rich_text_set -> click.
+      if (pendingRichTextEl && pendingRichTextEl !== target
+          && !pendingRichTextEl.contains(target)) {
+        _flushPendingRichText();
+      }
       // Clicks on form inputs fire "change" on the input — dedupe
       var tag = (target.tagName || "").toLowerCase();
       if (
@@ -1723,11 +1730,212 @@
         schedulePending(t);
         return;
       }
-      if (tag !== "input") return;
+      // WI-39: contenteditable / rich-text editor. The input target
+      // may be a child node inside a contenteditable root (e.g. a
+      // <p> inside <div contenteditable>); walk up to the editor root
+      // before debouncing so the burst attributes to ONE root, not to
+      // whatever element happened to receive the input event.
+      if (tag !== "input") {
+        var editorRoot = _closestContenteditableRoot(t);
+        if (editorRoot) {
+          _captureRichTextBeforeValue(editorRoot);
+          _scheduleRichTextBurst(editorRoot);
+        }
+        return;
+      }
       var itype = (t.getAttribute && t.getAttribute("type") || "text").toLowerCase();
       if (!TEXTISH_TYPES[itype]) return;
       _captureBeforeValue(t);
       schedulePending(t);
+    },
+    true
+  );
+
+  // ---- WI-39: contenteditable / rich-text editor burst capture --------
+  //
+  // Plain inputs go through fireInput / flushPendingInput above. Editors
+  // that mount on a contenteditable root (raw, TinyMCE, Quill, Lexical,
+  // ProseMirror) need a parallel debounce path because:
+  //   (a) the input target inside the editor is typically a descendant
+  //       <p> / <span>, not the root -- the fingerprint must point at
+  //       the root so the annotator can collapse the burst
+  //   (b) the value to record is the editor's innerHTML / textContent,
+  //       not el.value (contenteditable elements have no value property)
+  //   (c) framework detection (window.tinymce / window.Quill / Lexical
+  //       editor classes) happens once per burst, stamped on the emit
+  //
+  // The annotator detects this raw_event_kind="rich_text_input" pattern
+  // and collapses the burst into one rich_text_set step (WI-39).
+  var pendingRichTextEl = null;
+  var pendingRichTextTimer = null;
+  var richTextBeforeFor = (typeof WeakMap === "function") ? new WeakMap() : new Map();
+  var RICH_TEXT_DEBOUNCE_MS = 400;
+
+  function _closestContenteditableRoot(el) {
+    // Walks up from the input target to the nearest ancestor whose own
+    // contenteditable attribute is "true" or "" (presence form). Returns
+    // null when the element isn't inside an editable region (the page's
+    // input target was some non-contenteditable element that happened
+    // to fire 'input' -- e.g. a number-spinner widget, or a designMode
+    // document we don't model).
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var ce = node.getAttribute && node.getAttribute("contenteditable");
+      if (ce === "true" || ce === "") return node;
+      if (ce === "false") return null;  // explicit non-editable scope
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function _captureRichTextBeforeValue(root) {
+    if (!root) return;
+    if (richTextBeforeFor.has(root)) return;
+    try {
+      // Snapshot innerHTML; textContent is derivable but we keep both
+      // on the emit so the annotator can pick the right format. Cap at
+      // 64KB to bound payload size for runaway editors.
+      var html = root.innerHTML || "";
+      if (html.length > 65536) html = html.slice(0, 65536) + "...";
+      richTextBeforeFor.set(root, html);
+    } catch (e) {}
+  }
+
+  function _consumeRichTextBeforeValue(root) {
+    if (!root || !richTextBeforeFor.has(root)) return null;
+    var v = richTextBeforeFor.get(root);
+    try { richTextBeforeFor.delete(root); } catch (e) {}
+    return v;
+  }
+
+  function _detectEditorFramework(root) {
+    // Cheap framework probes -- read window-scoped instances + class
+    // names. We don't try every editor under the sun; the runner falls
+    // back to ``input_event`` when framework_hint is null/unknown.
+    if (!root) return "unknown";
+    try {
+      var cls = (root.className && typeof root.className === "string")
+        ? root.className.toLowerCase() : "";
+      if (cls.indexOf("ql-editor") !== -1) return "quill";
+      if (cls.indexOf("tox-edit-area") !== -1) return "tinymce";
+      if (cls.indexOf("public-DraftEditor") !== -1) return "draft";
+      if (cls.indexOf("ProseMirror") !== -1) return "prosemirror";
+      // Lexical editors carry a data-lexical-editor attribute.
+      if (root.hasAttribute && root.hasAttribute("data-lexical-editor")) {
+        return "lexical";
+      }
+      // Slate editors carry data-slate-editor.
+      if (root.hasAttribute && root.hasAttribute("data-slate-editor")) {
+        return "slate";
+      }
+    } catch (e) {}
+    try {
+      if (window.tinymce && typeof window.tinymce === "object") {
+        // Confirm THIS root is a tinymce instance, not just that the
+        // global exists.
+        try {
+          if (window.tinymce.activeEditor &&
+              window.tinymce.activeEditor.getBody &&
+              window.tinymce.activeEditor.getBody() === root) {
+            return "tinymce";
+          }
+        } catch (te) {}
+      }
+      if (typeof window.Quill === "function") {
+        // Quill exposes Quill.find(domNode) -> instance | null. Use it
+        // when available so the hint is precise.
+        try {
+          if (window.Quill.find && window.Quill.find(root)) return "quill";
+        } catch (qe) {}
+      }
+    } catch (e) {}
+    return "unknown";
+  }
+
+  function _fireRichTextBurst(root) {
+    if (!root) return;
+    var attr = _rootAttribution("user_input");
+    // Opening a fresh interaction so consequence events (network calls
+    // from a remote-save autosave) attribute back to this burst.
+    _setActiveInteraction("change", attr.event_id);
+    var html = "";
+    var text = "";
+    try {
+      html = root.innerHTML || "";
+      if (html.length > 65536) html = html.slice(0, 65536) + "...";
+      text = (root.innerText || root.textContent || "");
+      if (text.length > 16384) text = text.slice(0, 16384) + "...";
+    } catch (e) {}
+    var beforeValue = _consumeRichTextBeforeValue(root);
+    var framework = _detectEditorFramework(root);
+    var fp = fingerprint(root);
+    // Force the fingerprint's control_kind to ``contenteditable`` so
+    // the annotator routes this through the rich_text_set detector
+    // regardless of what control_kind the static fingerprint inferred.
+    if (fp) fp.control_kind = "contenteditable";
+    post(_merge({
+      kind: "input_change",
+      fingerprint: fp,
+      // ``value`` carries the textContent (plain string) -- this is what
+      // the annotator binds to a SkillParam by default. innerHTML lives
+      // on rich_text_html for the html-format path.
+      value: text,
+      value_before: beforeValue,
+      // WI-39: signal to the annotator that this is a rich-text burst,
+      // not a plain input. The annotator uses raw_event_kind to pick
+      // the rich_text_set cluster detector before the generic
+      // fill_submit / change detector.
+      rich_text_html: html,
+      rich_text_framework: framework,
+      page_url: location.href,
+      raw_event_kind: "rich_text_input",
+    }, attr));
+  }
+
+  function _flushPendingRichText() {
+    if (pendingRichTextEl) {
+      if (pendingRichTextTimer) clearTimeout(pendingRichTextTimer);
+      _fireRichTextBurst(pendingRichTextEl);
+      pendingRichTextEl = null;
+      pendingRichTextTimer = null;
+    }
+  }
+
+  function _scheduleRichTextBurst(root) {
+    if (pendingRichTextEl && pendingRichTextEl !== root) {
+      if (pendingRichTextTimer) clearTimeout(pendingRichTextTimer);
+      _fireRichTextBurst(pendingRichTextEl);
+    }
+    pendingRichTextEl = root;
+    if (pendingRichTextTimer) clearTimeout(pendingRichTextTimer);
+    pendingRichTextTimer = setTimeout(function () {
+      if (pendingRichTextEl) {
+        _fireRichTextBurst(pendingRichTextEl);
+        pendingRichTextEl = null;
+        pendingRichTextTimer = null;
+      }
+    }, RICH_TEXT_DEBOUNCE_MS);
+  }
+
+  // WI-39: capture before-value on focusin for contenteditable
+  // ancestors so the first input doesn't overwrite the starting state.
+  document.addEventListener(
+    "focusin",
+    function (e) {
+      var root = _closestContenteditableRoot(e.target);
+      if (root) _captureRichTextBeforeValue(root);
+    },
+    true
+  );
+
+  // Flush pending rich-text burst on blur (operator clicked away) and
+  // also flush on click outside the editor (covers operator clicking a
+  // Save button while the burst is still debouncing).
+  document.addEventListener(
+    "blur",
+    function (e) {
+      var root = _closestContenteditableRoot(e.target);
+      if (root && root === pendingRichTextEl) _flushPendingRichText();
     },
     true
   );
@@ -1964,6 +2172,9 @@
     function (e) {
       // Flush any pending text input first (e.g. the last field of a form)
       flushPendingInput();
+      // WI-39: flush any pending rich-text burst before the submit so
+      // the captured order matches operator intent (typed -> submit).
+      _flushPendingRichText();
       // F-06: page state before/after the submit. Synchronous form
       // handlers (preventDefault + custom mutation) land in "after"
       // via microtask.

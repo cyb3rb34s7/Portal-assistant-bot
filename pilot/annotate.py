@@ -46,6 +46,7 @@ from .skill_models import (
     ParamBinding,
     ParamConstraints,
     PopupEffect,
+    RichTextSpec,
     ScrollUntilSpec,
     SelectOptionSpec,
     SemanticCluster,
@@ -2295,6 +2296,122 @@ def _detect_slider_set_clusters(
     return clusters
 
 
+def _detect_rich_text_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-39: detect contenteditable / rich-text editor bursts.
+
+    The grabber's WI-39 patch debounces typing inside a contenteditable
+    root and emits ONE ``input_change`` per burst with
+    raw_event_kind="rich_text_input" and rich_text_html / rich_text_framework
+    populated. Each such event is its OWN cluster (single_event in
+    structure) but with cluster_kind="rich_text_set" so the build_skill
+    step loop knows to stamp a RichTextSpec.
+
+    No multi-event collapsing here: the grabber already collapsed the
+    burst into one event by debouncing. The detector's job is just to
+    recognize the event and reserve its id, so the generic
+    single_event fallback doesn't emit it as a plain change step.
+
+    Conservative: requires the rich_text_input raw_event_kind (set by
+    the grabber). Legacy traces without this field fall through to the
+    plain change step (no breakage).
+    """
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "input_change" or ev.event_id not in user_actions:
+            continue
+        if ev.raw_event_kind != "rich_text_input":
+            continue
+        # Defense: a contenteditable burst SHOULD carry rich_text_html
+        # OR a control_kind=contenteditable fingerprint. If neither
+        # signal is present the event isn't really a rich-text burst
+        # and we skip rather than mis-cluster.
+        fp = ev.fingerprint
+        has_ce_fp = fp is not None and fp.control_kind == "contenteditable"
+        has_html = ev.rich_text_html is not None
+        if not has_ce_fp and not has_html:
+            continue
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="rich_text_set",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+    return clusters
+
+
+def _build_rich_text_spec(
+    ev: TraceEvent,
+    param_name: str,
+) -> RichTextSpec:
+    """WI-39: derive a RichTextSpec from a contenteditable burst event.
+
+    Picks the format based on whether the captured HTML diverges from
+    textContent: when HTML and text are identical (modulo whitespace),
+    the editor's content is plain text and we emit format="plain";
+    otherwise we emit format="html" so the runner preserves markup.
+
+    paste_strategy defaults to ``input_event`` (the most portable
+    across editor frameworks); operators can override per-portal.
+    embed_policy follows from format: html/markdown -> strip (the param
+    carries full content), plain -> preserve (don't accidentally drop
+    embedded media when editing a comment).
+    """
+    fp = ev.fingerprint
+    html = ev.rich_text_html or ""
+    text = ev.value or ""
+    framework = ev.rich_text_framework or "unknown"
+    # Format inference: a contenteditable that only ever contained plain
+    # text (no tags beyond the framework's root <p>) is plain. Anything
+    # with real tags (<strong>, <em>, embed wrappers) is html.
+    # Heuristic: count non-paragraph tags after stripping the outermost
+    # wrapper. < 1 -> plain; >= 1 -> html.
+    fmt: Literal["html", "markdown", "plain"] = "plain"
+    if html:
+        # Cheap tag-count: any tag that's not <p>/<br>/<div> indicates
+        # formatting the operator added. Markdown detection is out of
+        # scope -- operators using a markdown editor will need to set
+        # format="markdown" explicitly via the portal config.
+        try:
+            stripped = re.sub(r"</?(p|br|div)[^>]*>", "", html, flags=re.I)
+            if re.search(r"<[a-zA-Z]", stripped):
+                fmt = "html"
+        except Exception:
+            fmt = "plain"
+    embed_policy: Literal["preserve", "strip"] = (
+        "strip" if fmt in ("html", "markdown") else "preserve"
+    )
+    # Cap recorded snapshots so the skill JSON stays bounded.
+    if len(html) > 8192:
+        html_audit: Optional[str] = html[:8192] + "..."
+    else:
+        html_audit = html or None
+    if len(text) > 4096:
+        text_audit: Optional[str] = text[:4096] + "..."
+    else:
+        text_audit = text or None
+    return RichTextSpec(
+        value_param=param_name,
+        format=fmt,
+        embed_policy=embed_policy,
+        paste_strategy="input_event",
+        editor_root_fp=fp,
+        framework_hint=framework,  # type: ignore[arg-type]
+        recorded_html=html_audit,
+        recorded_text=text_audit,
+    )
+
+
 def _detect_drag_drop_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -2660,6 +2777,14 @@ def detect_semantic_clusters(
     # specific first (fill_submit binds to a contiguous input burst;
     # the per-event fallback would emit one change step per input).
     clusters: list[SemanticCluster] = []
+    # WI-39: rich_text_set runs FIRST so contenteditable bursts
+    # (raw_event_kind="rich_text_input") are reserved before
+    # fill_submit's generic input_change walker can claim them. The
+    # detector filters strictly on raw_event_kind so it never consumes
+    # plain-input events.
+    clusters.extend(
+        _detect_rich_text_clusters(events, causality, folded_ids)
+    )
     clusters.extend(
         _detect_fill_submit_clusters(events, causality, folded_ids)
     )
@@ -3025,6 +3150,8 @@ def build_skill(
                 action = "set_selection"
             elif cluster_here.cluster_kind == "slider_set":
                 action = "slider_set"
+            elif cluster_here.cluster_kind == "rich_text_set":
+                action = "rich_text_set"
             elif cluster_here.cluster_kind == "drag_drop":
                 action = "drag_drop"
             elif cluster_here.cluster_kind == "toggle_state":
@@ -3211,6 +3338,34 @@ def build_skill(
             slider_set_spec = _build_slider_set_spec(
                 cluster_here, events, causality, ev, sl_pname
             )
+
+        # WI-39: build the RichTextSpec for rich_text_set cluster steps.
+        # The grabber's WI-39 burst already collapsed the operator's
+        # typing into one event; the spec carries format + paste strategy
+        # + framework hint so the runner picks the right replay path.
+        rich_text_spec: Optional[RichTextSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "rich_text_set"
+        ):
+            # Param name from the operator's binding (if any) or
+            # derived from the editor root's identifying attribute.
+            rt_pname: str
+            if binding is not None:
+                rt_pname = binding.name
+            elif ev.fingerprint is not None:
+                raw = (
+                    ev.fingerprint.test_id
+                    or ev.fingerprint.element_id
+                    or ev.fingerprint.name
+                    or "rich_text"
+                )
+                rt_pname = re.sub(
+                    r"[^a-zA-Z0-9_]+", "_", raw
+                ).strip("_").lower() or "rich_text"
+            else:
+                rt_pname = "rich_text"
+            rich_text_spec = _build_rich_text_spec(ev, rt_pname)
 
         # WI-21: build the DatePickerSpec for date_select cluster steps.
         # Distinguishes native (single input_change on a date input)
@@ -3470,6 +3625,7 @@ def build_skill(
             set_selection=set_selection_spec,
             date_select=date_select_spec,
             slider_set=slider_set_spec,
+            rich_text=rich_text_spec,
             file_spec=file_spec_value,
             drag_drop=drag_drop_spec,
             toggle_state=toggle_state_spec,
@@ -3534,6 +3690,31 @@ def build_skill(
                 example=slider_set_spec.final_value,
                 required=True,
                 constraints=constraints,
+            )
+
+        # WI-39: declare a string param for rich_text_set steps. The
+        # captured textContent is the example; the runner sets either
+        # innerHTML or textContent at replay depending on the spec's
+        # format. Param is typed as string (free text); the codec
+        # remains raw because the editor's own sanitizer handles
+        # markup at replay time.
+        if (
+            rich_text_spec is not None
+            and rich_text_spec.value_param not in declared_params
+        ):
+            declared_params[rich_text_spec.value_param] = SkillParam(
+                name=rich_text_spec.value_param,
+                type="string",
+                codec="raw",
+                description=(
+                    f"Rich text content for step {step.index}: {label}"
+                ),
+                example=(
+                    rich_text_spec.recorded_text
+                    or rich_text_spec.recorded_html
+                    or ""
+                ) or None,
+                required=True,
             )
 
         # WI-19: declare a string_list param for set_selection steps.

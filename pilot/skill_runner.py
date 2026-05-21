@@ -73,12 +73,11 @@ _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     #   fill_submit (WI-15), select_autocomplete (WI-16),
     #   select_option (WI-17), date_select (WI-21), slider_set (WI-28),
     #   drag_drop (WI-30), toggle_state (WI-33),
-    #   scroll_until (WI-37/WI-38).
+    #   scroll_until (WI-37/WI-38), rich_text_set (WI-39),
+    #   shortcut (WI-41).
     "modal",                # WI-34 (as effect, not standalone action)
     "popup",                # WI-35 (as effect, not standalone action)
     "download",             # WI-45
-    "rich_text_set",        # WI-39
-    "shortcut",             # WI-41
     "canvas_gesture",       # WI-49
 })
 
@@ -568,6 +567,8 @@ class SkillRunner:
                 result, level = self._do_toggle_state(step)
             elif step.action == "scroll_until":
                 result, level = self._do_scroll_until(step)
+            elif step.action == "rich_text_set":
+                result, level = self._do_rich_text_set(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2610,6 +2611,212 @@ class SkillRunner:
             action_taken=f"slider_set({spec.value_param}={target_str!r})",
             screenshot_path=shot,
             unverified_error="slider_set: post-action verify failed",
+        )
+
+    def _do_rich_text_set(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-39: set a contenteditable / rich-text editor's content.
+
+        Resolves the editor root via step.fingerprint (the annotator
+        sets this to the contenteditable root), focuses it, clears
+        per embed_policy, and injects content via the declared
+        paste_strategy. Verifies the editor's textContent / innerHTML
+        matches the target before returning success.
+
+        The runner's framework dispatch is conservative: a known
+        framework_hint (tinymce / quill) routes through the framework's
+        API when available at replay; otherwise paste_strategy decides.
+
+        Failure modes:
+          - param_missing: value_param not in self.params
+          - locator_unresolved: editor root not found
+          - rich_text_value_mismatch: post-action textContent differs
+        """
+        spec = step.rich_text
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="rich_text_set",
+                    error="rich_text_set step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        if spec.value_param not in self.params:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="rich_text_set",
+                    error=f"missing rich_text param {spec.value_param!r}",
+                    error_kind="param_missing",
+                ),
+                0,
+            )
+        target = self.params[spec.value_param]
+        if target is None:
+            target = ""
+        target_str = str(target)
+
+        locator, level, heal = self._resolve_locator(step)
+        if locator is None:
+            return self._fallback_human(
+                step, "could not locate contenteditable root"
+            )
+        page = self.session.page
+
+        # Focus the editor + apply content via the declared strategy.
+        # ``element.value = X`` does NOT work on contenteditable (no
+        # value property); innerHTML / textContent is the only path.
+        try:
+            element = locator.element_handle(timeout=4000)
+            if element is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="rich_text_set",
+                        error="contenteditable element handle unavailable",
+                        error_kind="locator_unresolved",
+                    ),
+                    0,
+                )
+            # Strip existing content per embed_policy.
+            if spec.embed_policy == "strip" or spec.format in ("html", "markdown"):
+                page.evaluate(
+                    "(el) => { el.innerHTML = ''; }",
+                    element,
+                )
+            # Focus first so the editor's mutation observer sees the
+            # change in the right active-element context.
+            page.evaluate("(el) => { el.focus && el.focus(); }", element)
+
+            paste_strategy = spec.paste_strategy
+            fmt = spec.format
+            if paste_strategy == "execCommand":
+                # Legacy editors: execCommand-insertHTML triggers their
+                # listeners. Modern editors may ignore but the input
+                # event from setting innerHTML below covers them.
+                payload = target_str
+                page.evaluate(
+                    "([el, html]) => {"
+                    "  el.focus && el.focus();"
+                    "  try {"
+                    "    document.execCommand('selectAll', false, null);"
+                    "    document.execCommand('insertHTML', false, html);"
+                    "  } catch (e) {"
+                    "    el.innerHTML = html;"
+                    "    el.dispatchEvent(new InputEvent('input',"
+                    "      { bubbles: true, inputType: 'insertFromPaste',"
+                    "        data: html }));"
+                    "  }"
+                    "}",
+                    [element, payload],
+                )
+            elif paste_strategy == "clipboard":
+                # Simulate a paste event with a DataTransfer object so
+                # editors that handle paste through their own pipeline
+                # (Lexical / ProseMirror) sanitize via their handler.
+                mime = "text/html" if fmt in ("html", "markdown") else "text/plain"
+                # If no paste handler claims the event, fall through to
+                # direct insertion so the editor's content always
+                # reflects the param value.
+                page.evaluate(
+                    "([el, payload, mime]) => {"
+                    "  el.focus && el.focus();"
+                    "  var dt = new DataTransfer();"
+                    "  try { dt.setData(mime, payload); } catch (e) {}"
+                    "  try { dt.setData('text/plain', payload); } catch (e) {}"
+                    "  var pe = new ClipboardEvent('paste',"
+                    "    { bubbles: true, cancelable: true, clipboardData: dt });"
+                    "  el.dispatchEvent(pe);"
+                    "  if (!pe.defaultPrevented) {"
+                    "    if (mime === 'text/html') el.innerHTML = payload;"
+                    "    else el.textContent = payload;"
+                    "    el.dispatchEvent(new InputEvent('input',"
+                    "      { bubbles: true, inputType: 'insertFromPaste',"
+                    "        data: payload }));"
+                    "  }"
+                    "}",
+                    [element, target_str, mime],
+                )
+            else:
+                # input_event (default): set innerHTML / textContent
+                # directly, then dispatch an InputEvent so framework
+                # listeners see the change. Most portable across editor
+                # frameworks; Lexical/ProseMirror re-normalize via
+                # their own MutationObserver after the synthetic event.
+                use_html = fmt in ("html", "markdown")
+                page.evaluate(
+                    "([el, payload, useHtml]) => {"
+                    "  el.focus && el.focus();"
+                    "  if (useHtml) { el.innerHTML = payload; }"
+                    "  else { el.textContent = payload; }"
+                    "  el.dispatchEvent(new InputEvent('input',"
+                    "    { bubbles: true, inputType: 'insertText',"
+                    "      data: payload }));"
+                    "  el.dispatchEvent(new Event('change', { bubbles: true }));"
+                    "}",
+                    [element, target_str, use_html],
+                )
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"rich_text_set value-set failed: {e}",
+                    error=str(e),
+                    error_kind="rich_text_set_failed",
+                ),
+                0,
+            )
+
+        # Verify. For html format, compare textContent equivalence (the
+        # browser normalizes HTML on innerHTML set, so byte-equal HTML
+        # is fragile). For plain, textContent must match exactly.
+        try:
+            actual_text = locator.evaluate("el => el.textContent || ''") or ""
+            actual_html = locator.evaluate("el => el.innerHTML || ''") or ""
+        except Exception:
+            actual_text = ""
+            actual_html = ""
+        if spec.format in ("html", "markdown"):
+            # Compare a normalized text-equivalent (strip tags, collapse
+            # whitespace) so framework-rewritten markup still verifies.
+            import re as _re
+            def _norm(s: str) -> str:
+                s = _re.sub(r"<[^>]+>", "", s)
+                s = _re.sub(r"\s+", " ", s).strip()
+                return s
+            verified = _norm(actual_html) == _norm(target_str) or actual_text.strip() == _norm(target_str)
+        else:
+            verified = actual_text.strip() == target_str.strip()
+        shot = self._screenshot(f"step_{step.index}_rich_text_set")
+        if not verified:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"rich_text_set({spec.value_param})",
+                    error=(
+                        f"rich_text final content {actual_text!r} did "
+                        f"not match target {target_str!r}"
+                    ),
+                    error_kind="rich_text_value_mismatch",
+                    error_details={
+                        "actual_text": actual_text,
+                        "actual_html": actual_html[:512],
+                        "target": target_str,
+                        "format": spec.format,
+                    },
+                    screenshot_path=shot,
+                ),
+                level,
+            )
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=f"rich_text_set({spec.value_param}, format={spec.format})",
+            screenshot_path=shot,
+            unverified_error="rich_text_set: post-action verify failed",
         )
 
     def _do_drag_drop(self, step: SkillStep) -> tuple[ToolResult, int]:
