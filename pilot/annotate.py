@@ -26,6 +26,8 @@ from rich.table import Table
 from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
+    DomExpectation,
+    ExpectedSignals,
     NavigationEffect,
     ParamBinding,
     Skill,
@@ -324,6 +326,53 @@ def _index_caused_navigates(
     return out
 
 
+def _index_readiness_signals(
+    events: list[TraceEvent],
+) -> dict[str, list[DomExpectation]]:
+    """WI-10: build a {causing_event_id -> [DomExpectation, ...]} map
+    from the grabber's observed-readiness dom_mutation events.
+
+    The grabber's readiness watcher emits dom_mutation events with
+    ``mutation_summary.readiness = {kind, selector, value}`` whenever
+    aria-busy clears or a disabled attr is removed during a user
+    interaction. We translate each into a DomExpectation the runner
+    can wait on.
+
+    Multiple readiness events can attribute to one causing event
+    (e.g. Save button: disabled-until-enabled AND aria-busy clears).
+    The annotator merges them into the step's expected_signals.dom.
+    """
+    out: dict[str, list[DomExpectation]] = {}
+    for ev in events:
+        if ev.kind != "dom_mutation":
+            continue
+        if not ev.caused_by:
+            continue
+        readiness = (ev.mutation_summary or {}).get("readiness")
+        if not isinstance(readiness, dict):
+            continue
+        rk = readiness.get("kind")
+        sel = readiness.get("selector")
+        if not rk or not sel:
+            continue
+        # Map grabber-side readiness kind onto DomExpectation.kind.
+        # ``aria_busy`` / ``disabled_until_enabled`` /
+        # ``field_enabled`` / ``role_progressbar_hidden`` /
+        # ``text_transition`` / ``selector_hidden`` are all valid.
+        if rk not in (
+            "aria_busy", "disabled_until_enabled", "field_enabled",
+            "role_progressbar_hidden", "text_transition", "selector_hidden",
+        ):
+            continue
+        de = DomExpectation(
+            kind=rk,  # type: ignore[arg-type]
+            selector=sel,
+            text=readiness.get("text"),
+        )
+        out.setdefault(ev.caused_by, []).append(de)
+    return out
+
+
 def _derive_url_template(
     nav_url: Optional[str],
     params_seen: list[tuple[str, str]],
@@ -394,12 +443,29 @@ def build_skill(
         if nav.event_id
     }
 
+    # WI-10: observed-readiness signals indexed by causing event id.
+    # When a click/change/key/submit triggered a readiness transition
+    # (aria-busy clear, disabled->enabled), the annotator turns those
+    # into the step's expected_signals.dom so replay waits for the
+    # declared readiness instead of the legacy spinner-by-convention.
+    readiness_by_cause = _index_readiness_signals(events)
+
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
     # Track params-seen so navigation URL templates can substitute
     # values that appear in the URL (WI-08 + foundation for WI-11).
     params_seen: list[tuple[str, str]] = []
+
+    # F-07/WI-10: observed-event kinds (dom_mutation, network_request,
+    # network_response, popup, download, visibility_change) feed the
+    # annotator's structural derivation -- they are NOT user-facing
+    # steps themselves. Skip them in the per-event loop so the skill
+    # only carries semantic steps.
+    _OBSERVED_KINDS: frozenset[str] = frozenset({
+        "dom_mutation", "network_request", "network_response",
+        "popup", "download", "visibility_change",
+    })
 
     for idx, ev in enumerate(events):
         # WI-08: skip caused-navigate events. They get folded into
@@ -409,6 +475,11 @@ def build_skill(
             and ev.event_id
             and ev.event_id in folded_nav_ids
         ):
+            continue
+        # WI-10 / F-07: skip observed events; they contributed to
+        # readiness_by_cause / caused_navs / future WI-09 expected
+        # signal indexes but don't become steps themselves.
+        if ev.kind in _OBSERVED_KINDS:
             continue
 
         label = auto_label(ev)
@@ -448,6 +519,14 @@ def build_skill(
                 )
             )
 
+        # WI-10: collect readiness signals attributed to this user
+        # event so the step's expected_signals.dom gets populated.
+        expected_signals: Optional[ExpectedSignals] = None
+        if ev.event_id and ev.event_id in readiness_by_cause:
+            expected_signals = ExpectedSignals(
+                dom=list(readiness_by_cause[ev.event_id])
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -461,6 +540,7 @@ def build_skill(
             captured_at=ev.ts,
             screenshot_path=ev.screenshot_path,
             effects=effects,
+            expected_signals=expected_signals,
             # WI-02 + WI-08: link the step back to its source raw event.
             # When a navigate is folded, BOTH the click and the navigate
             # event ids become raw_event_ids so the audit trail shows

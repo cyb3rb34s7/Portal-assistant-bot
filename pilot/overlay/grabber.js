@@ -500,6 +500,104 @@
   }
   _installQuiescenceWatchers();
 
+  // ---- WI-10: observed readiness watcher ---------------------------------
+  //
+  // Watches the page for transitions that signal a "busy" period
+  // ending: aria-busy clearing, role=progressbar disappearing, button
+  // disabled flipping back to enabled, button text settling. Each
+  // observed transition during a user-initiated interaction window
+  // becomes a dom_mutation event whose mutation_summary carries a
+  // ``readiness`` field. The annotator converts these into
+  // expected_signals.dom entries so replay waits for the declared
+  // readiness signal instead of the conventional spinner-selector
+  // list. The legacy convention (status-saving etc.) remains as a
+  // last-resort fallback.
+  //
+  // Cheap design: a MutationObserver scoped to attributes on the WHOLE
+  // document (no childList -- the quiescence watcher above already
+  // tracks DOM growth). Filtering happens in the JS callback so the
+  // payload only carries transitions worth annotating.
+  function _installReadinessWatcher() {
+    if (window.__cp_readiness_installed) return;
+    window.__cp_readiness_installed = true;
+    try {
+      var root = document.body || document.documentElement;
+      if (!root) {
+        return setTimeout(_installReadinessWatcher, 100);
+      }
+      var mo = new MutationObserver(function (records) {
+        for (var i = 0; i < records.length; i++) {
+          var r = records[i];
+          if (r.type !== "attributes") continue;
+          var t = r.target;
+          if (!t || t.nodeType !== 1) continue;
+          var name = r.attributeName;
+          // aria-busy clear
+          if (name === "aria-busy" && t.getAttribute("aria-busy") === "false") {
+            _emitReadiness("aria_busy", t, "false");
+          }
+          // disabled clear: previously had disabled attribute, now doesn't
+          if (
+            name === "disabled"
+            && !t.hasAttribute("disabled")
+            && (t.tagName === "BUTTON"
+                || t.tagName === "INPUT"
+                || t.tagName === "TEXTAREA"
+                || t.tagName === "SELECT")
+          ) {
+            _emitReadiness("disabled_until_enabled", t, "enabled");
+          }
+        }
+      });
+      mo.observe(root, {
+        attributes: true,
+        subtree: true,
+        attributeFilter: ["aria-busy", "disabled"],
+      });
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] readiness watcher failed", e);
+    }
+  }
+
+  function _readinessSelector(el) {
+    // Build a stable selector for the observed element. Prefer
+    // data-testid -> id -> tag+class.
+    var tid = el.getAttribute && el.getAttribute("data-testid");
+    if (tid) return "[data-testid='" + tid + "']";
+    if (el.id) return "#" + cssEscape(el.id);
+    var tag = (el.tagName || "").toLowerCase();
+    if (el.className && typeof el.className === "string") {
+      var firstClass = el.className.split(/\s+/)[0];
+      if (firstClass) return tag + "." + cssEscape(firstClass);
+    }
+    return tag;
+  }
+
+  function _emitReadiness(kind, el, value) {
+    // Only emit when there's an active user interaction -- otherwise
+    // background DOM activity floods the channel. The annotator pairs
+    // these with the originating user action via caused_by.
+    if (!activeInteraction || !_isWithinWindow()) return;
+    var attr = _attribution("readiness_observer");
+    try {
+      post(_merge({
+        kind: "dom_mutation",
+        page_url: location.href,
+        raw_event_kind: "readiness_transition",
+        mutation_summary: {
+          readiness: {
+            kind: kind,
+            selector: _readinessSelector(el),
+            value: value,
+          },
+        },
+      }, attr));
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] readiness emit failed", e);
+    }
+  }
+  _installReadinessWatcher();
+
   // ---- Transport -----------------------------------------------------------
 
   function post(payload) {

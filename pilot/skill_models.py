@@ -284,6 +284,18 @@ class DomExpectation(BaseModel):
         "hidden",
         "options_changed",  # for cascading dropdowns: the option list mutated
         "count_changed",
+        # WI-10: observed-readiness kinds. Annotator emits these when the
+        # grabber's WI-10 readiness watcher captured the corresponding
+        # transition DURING the originating action's effect window. The
+        # runner waits for the declared signal; the legacy
+        # _SPINNER_SELECTOR becomes a last-resort fallback only when no
+        # readiness signals are declared on the step.
+        "aria_busy",                # aria-busy on target became "false"
+        "role_progressbar_hidden",  # role=progressbar inside scope disappeared
+        "disabled_until_enabled",   # disabled attr cleared on target
+        "field_enabled",            # field's :disabled flipped to false
+        "text_transition",          # innerText of target changed to ``text``
+        "selector_hidden",          # arbitrary selector reached display:none
     ]
     selector: str
     stable_ms: int = 250
@@ -295,6 +307,11 @@ class DomExpectation(BaseModel):
     timeout_ms: int = 5000
     """F-08c: 5000 is a legacy fallback. New annotations should set
     this explicitly from PortalContext.wait_policy.dom_timeout_ms."""
+    text: Optional[str] = None
+    """WI-10: for ``text_transition`` kind, the target text the
+    selector's innerText should match (substring, case-insensitive).
+    e.g. a Save button transitions from 'Saving...' back to 'Save'
+    when the request resolves -- annotator emits text='Save'."""
 
 
 class ExpectedSignals(BaseModel):

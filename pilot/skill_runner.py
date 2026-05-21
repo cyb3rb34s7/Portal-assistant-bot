@@ -1746,10 +1746,20 @@ class SkillRunner:
 
     # ---- Heal post-condition ---------------------------------------------
 
-    # Spinner-style transient state indicators. Used as an *additional*
-    # signal alongside in-flight network and DOM-quiescence -- not the
-    # primary one. Portals that follow this convention get faster
-    # detection of "still saving"; portals that don't lose nothing.
+    # WI-10: LAST-RESORT spinner selector list.
+    #
+    # Used ONLY when a step has no declared expected_signals at all
+    # (legacy v1 skills + skills recorded before the WI-10 readiness
+    # watcher landed). Modern skills carry annotator-emitted
+    # DomExpectation kinds (aria_busy, disabled_until_enabled,
+    # field_enabled, role_progressbar_hidden, text_transition,
+    # selector_hidden) so the runner waits for the structural signal
+    # the recording observed -- not a convention-based testid prefix
+    # the portal may or may not use.
+    #
+    # The convention list still helps portals that follow it (the
+    # status-saving / loading- prefix is widespread in enterprise
+    # apps) but it is no longer the primary readiness mechanism.
     _SPINNER_SELECTOR = (
         "[data-testid^='status-saving'],"
         "[data-testid^='status-applying'],"
@@ -2510,6 +2520,74 @@ class SkillRunner:
                         " return (now - last.ts) >= stable; }",
                         arg=[de.selector, de.stable_ms],
                         timeout=de.timeout_ms,
+                    )
+                elif de.kind == "aria_busy":
+                    # WI-10: wait for aria-busy on the target to settle
+                    # to "false" (or be absent entirely). The grabber
+                    # observes this transition during the originating
+                    # action's effect window.
+                    page.wait_for_function(
+                        "([sel]) => {"
+                        " const el = document.querySelector(sel);"
+                        " if (!el) return false;"
+                        " const v = el.getAttribute('aria-busy');"
+                        " return v === null || v === 'false'; }",
+                        arg=[de.selector],
+                        timeout=de.timeout_ms,
+                    )
+                elif de.kind in ("disabled_until_enabled", "field_enabled"):
+                    # WI-10: wait for the target to be NOT disabled.
+                    # Honors both the HTML disabled attribute AND the
+                    # aria-disabled state used by ARIA combobox widgets.
+                    page.wait_for_function(
+                        "([sel]) => {"
+                        " const el = document.querySelector(sel);"
+                        " if (!el) return false;"
+                        " if (el.hasAttribute('disabled')) return false;"
+                        " if (el.getAttribute('aria-disabled') === 'true')"
+                        "   return false;"
+                        " return true; }",
+                        arg=[de.selector],
+                        timeout=de.timeout_ms,
+                    )
+                elif de.kind == "role_progressbar_hidden":
+                    # WI-10: any descendant role=progressbar inside
+                    # ``selector`` must be gone or hidden.
+                    page.wait_for_function(
+                        "([sel]) => {"
+                        " const root = document.querySelector(sel);"
+                        " if (!root) return true;"
+                        " const bars = root.querySelectorAll(\"[role='progressbar']\");"
+                        " for (const b of bars) {"
+                        "   const cs = window.getComputedStyle(b);"
+                        "   if (cs && cs.display !== 'none' &&"
+                        "       cs.visibility !== 'hidden') return false;"
+                        " }"
+                        " return true; }",
+                        arg=[de.selector],
+                        timeout=de.timeout_ms,
+                    )
+                elif de.kind == "text_transition":
+                    # WI-10: wait for selector's innerText to contain
+                    # the declared ``text`` (case-insensitive
+                    # substring). Used for button labels that revert
+                    # from "Saving..." to "Save" when complete.
+                    page.wait_for_function(
+                        "([sel, expected]) => {"
+                        " const el = document.querySelector(sel);"
+                        " if (!el) return false;"
+                        " if (!expected) return true;"
+                        " const t = (el.innerText || el.textContent ||"
+                        "            '').toLowerCase();"
+                        " return t.includes(String(expected).toLowerCase()); }",
+                        arg=[de.selector, de.text or ""],
+                        timeout=de.timeout_ms,
+                    )
+                elif de.kind == "selector_hidden":
+                    # WI-10: simple hidden alias for arbitrary
+                    # readiness markup the operator declares.
+                    page.locator(de.selector).first.wait_for(
+                        state="hidden", timeout=de.timeout_ms
                     )
             except Exception:
                 self.audit.log(
