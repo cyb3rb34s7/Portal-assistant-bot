@@ -837,35 +837,186 @@ class SkillRunner:
     def _do_upload(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
+        # WI-29: validate replay-time file(s) against the recorded
+        # constraints BEFORE locator resolution + set_input_files. A
+        # missing file or accept-attr-mismatch becomes
+        # ``file_validation_failed`` and the page is never mutated.
+        file_spec = step.file_spec
+        # Resolve the value into a path list. For file_path_list params
+        # (WI-29 multiple) the WI-05 codec already stashed list[str] in
+        # self.params; for single file_path the resolved value is a
+        # string. _resolved_value normalizes both upstream.
+        binding = step.param_binding
+        target_paths: list[str]
+        if binding is not None:
+            provided = self.params.get(binding.name)
+            if isinstance(provided, list):
+                target_paths = [str(p) for p in provided]
+            elif provided is not None:
+                target_paths = [str(provided)]
+            elif value is not None:
+                target_paths = [value]
+            else:
+                target_paths = []
+        elif value is not None:
+            target_paths = [value]
+        else:
+            target_paths = []
+        if not target_paths:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="upload",
+                    error="no file_path parameter resolved",
+                    error_kind="file_validation_failed",
+                    error_details={"reason": "missing_path"},
+                ),
+                0,
+            )
+        # Validate every path exists + matches the recorded accept attr
+        # / multiple flag BEFORE the locator is resolved. Doing this
+        # upstream of locator resolution means a bad replay input never
+        # mutates the page (the audit's acceptance bar for WI-29).
+        from pathlib import Path as _Path
+        for p in target_paths:
+            pth = _Path(p)
+            if not pth.exists():
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="upload",
+                        error=f"file does not exist: {p}",
+                        error_kind="file_validation_failed",
+                        error_details={"path": p, "reason": "missing_file"},
+                    ),
+                    0,
+                )
+            if not pth.is_file():
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="upload",
+                        error=f"path is not a file: {p}",
+                        error_kind="file_validation_failed",
+                        error_details={"path": p, "reason": "not_a_file"},
+                    ),
+                    0,
+                )
+        if file_spec is not None:
+            # multiple flag mismatch: recorded single but replay
+            # supplied multiple paths, or vice-versa.
+            if not file_spec.multiple_flag and len(target_paths) > 1:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="upload",
+                        error=(
+                            "recorded file input is single but replay "
+                            f"supplied {len(target_paths)} paths"
+                        ),
+                        error_kind="file_validation_failed",
+                        error_details={
+                            "paths": target_paths,
+                            "reason": "multiple_mismatch",
+                        },
+                    ),
+                    0,
+                )
+            # accept attribute: validate extension / MIME family on each
+            # supplied path. Empty accept_attribute means the input had
+            # no constraint -- everything passes.
+            if file_spec.accept_attribute:
+                ok, reason = self._validate_against_accept(
+                    target_paths, file_spec.accept_attribute
+                )
+                if not ok:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken="upload",
+                            error=f"file accept-attr mismatch: {reason}",
+                            error_kind="file_validation_failed",
+                            error_details={
+                                "paths": target_paths,
+                                "accept": file_spec.accept_attribute,
+                                "reason": reason,
+                            },
+                        ),
+                        0,
+                    )
+
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
             ambig = self._consume_ambiguity()
             if ambig is not None:
                 return self._build_ambiguous_result(step, ambig, "upload")
             return self._fallback_human(step, "could not locate file input")
-        if not value:
-            return (
-                ToolResult(
-                    success=False,
-                    action_taken="upload",
-                    error="no file_path parameter resolved",
-                    healed=heal,
-                ),
-                level,
-            )
         page = self.session.page
+        # set_input_files accepts a single path string OR a list. Pass
+        # the appropriate shape so older Playwright versions don't
+        # second-guess type.
+        files_arg: Any = (
+            target_paths if len(target_paths) > 1 else target_paths[0]
+        )
         verified = self._execute_with_heal_check(
-            page, level, heal, lambda: locator.set_input_files(value), step=step
+            page, level, heal,
+            lambda: locator.set_input_files(files_arg),
+            step=step,
         )
         shot = self._screenshot(f"step_{step.index}_upload")
         return self._build_action_result(
             success=verified,
             level=level,
             heal=heal,
-            action_taken=f"uploaded {value}",
+            action_taken=f"uploaded {files_arg}",
             screenshot_path=shot,
             unverified_error="L3 heal: page state did not change after upload",
         )
+
+    def _validate_against_accept(
+        self, paths: list[str], accept: str
+    ) -> tuple[bool, Optional[str]]:
+        """WI-29: check that every supplied path satisfies the file
+        input's ``accept`` attribute.
+
+        ``accept`` is a comma-separated list of:
+          - file extensions (``.png``, ``.pdf``)
+          - MIME types (``image/png``)
+          - MIME globs (``image/*``)
+
+        A path passes if any token matches. Empty accept = pass.
+        Returns (ok, reason_if_failed).
+        """
+        import mimetypes
+        from pathlib import Path as _P
+        tokens = [t.strip() for t in accept.split(",") if t.strip()]
+        if not tokens:
+            return True, None
+        for p in paths:
+            ext = _P(p).suffix.lower()
+            mime, _ = mimetypes.guess_type(p)
+            mime = (mime or "").lower()
+            matched = False
+            for tok in tokens:
+                tok_lower = tok.lower()
+                if tok_lower.startswith(".") and ext == tok_lower:
+                    matched = True
+                    break
+                if "/" in tok_lower:
+                    if tok_lower.endswith("/*"):
+                        prefix = tok_lower[:-1]  # keep trailing slash
+                        if mime.startswith(prefix):
+                            matched = True
+                            break
+                    elif mime == tok_lower:
+                        matched = True
+                        break
+            if not matched:
+                return False, (
+                    f"path {p!r} extension {ext!r} / mime {mime!r} "
+                    f"matches none of accept tokens {tokens!r}"
+                )
+        return True, None
 
     def _do_key(
         self, step: SkillStep, value: Optional[str]

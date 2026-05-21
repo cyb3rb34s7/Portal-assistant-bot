@@ -32,6 +32,8 @@ from .skill_models import (
     DomExpectation,
     ElementFingerprint,
     ExpectedSignals,
+    FileMetadata,
+    FileSpec,
     FillSubmitSpec,
     NavigationEffect,
     NetworkExpectation,
@@ -1826,6 +1828,47 @@ def _detect_date_select_clusters(
     return clusters
 
 
+def _build_file_spec(ev: TraceEvent) -> Optional[FileSpec]:
+    """WI-29: derive a FileSpec from a file_selected event.
+
+    The grabber's WI-29 patch stamps ev.file_metadata with a list of
+    {name, size, mime, ext}. Legacy traces only have ev.file_name; we
+    fall back to a single-file metadata derived from that.
+
+    The fingerprint carries accept (HTML accept attribute) and
+    multiple (HTML attribute) from WI-03.
+    """
+    if ev.kind != "file_selected":
+        return None
+    fp = ev.fingerprint
+    metas: list[FileMetadata] = []
+    if ev.file_metadata:
+        metas = list(ev.file_metadata)
+    elif ev.file_name:
+        # Legacy: derive a single FileMetadata from the recorded name.
+        ext = ""
+        if "." in ev.file_name:
+            ext = ev.file_name[ev.file_name.rfind("."):].lower()
+        metas = [
+            FileMetadata(
+                name=ev.file_name,
+                size=None,
+                mime=None,
+                ext=ext,
+            )
+        ]
+    primary = metas[0] if metas else None
+    return FileSpec(
+        original_name=primary.name if primary else None,
+        extension=primary.ext if primary else None,
+        mime_hint=primary.mime if primary else None,
+        size=primary.size if primary else None,
+        accept_attribute=(fp.accept if fp else None),
+        multiple_flag=bool(fp.multiple) if fp else False,
+        recorded_files=metas,
+    )
+
+
 def _detect_slider_set_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -2674,6 +2717,15 @@ def build_skill(
                 click_binding_name=binding.name if binding else None,
             )
 
+        # WI-29: build the FileSpec for file_selected events. The
+        # SkillStep's action stays ``upload`` (mapped by action_for_kind
+        # from kind=``file_selected``); file_spec carries the recorded
+        # metadata + accept/multiple constraints for the runner to
+        # validate the replay-time path before set_input_files runs.
+        file_spec_value = (
+            _build_file_spec(ev) if ev.kind == "file_selected" else None
+        )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -2697,6 +2749,7 @@ def build_skill(
             set_selection=set_selection_spec,
             date_select=date_select_spec,
             slider_set=slider_set_spec,
+            file_spec=file_spec_value,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
@@ -2858,7 +2911,13 @@ def build_skill(
             # grabber metadata win -- it's structural truth from the
             # moment of recording.
             if binding.type == "file_path":
-                final_type = "file_path"
+                # WI-29: upgrade to file_path_list when the recorded
+                # file input was ``multiple``. The runner consumes
+                # file_path_list as list[str] via params dict.
+                if fp and fp.multiple:
+                    final_type = "file_path_list"
+                else:
+                    final_type = "file_path"
                 final_codec = "file_ref"
             else:
                 final_type = inferred_type
@@ -2869,6 +2928,34 @@ def build_skill(
             if ev.event_id and ev.event_id in cascading_by_child:
                 parent_eid = cascading_by_child[ev.event_id]
                 depends_on_name = binding_name_by_event_id.get(parent_eid)
+            # WI-29: derive ParamConstraints from the file input's
+            # accept attribute (e.g. ``image/*,.pdf`` -> mime_types=
+            # ['image/'], extensions=['.pdf']).
+            file_constraints: Optional[ParamConstraints] = None
+            if (
+                final_type in ("file_path", "file_path_list")
+                and fp is not None
+                and fp.accept
+            ):
+                mimes: list[str] = []
+                exts: list[str] = []
+                for tok in fp.accept.split(","):
+                    t = tok.strip()
+                    if not t:
+                        continue
+                    if t.startswith("."):
+                        exts.append(t.lower())
+                    elif "/" in t:
+                        # MIME glob: ``image/*`` becomes prefix
+                        # ``image/`` for the WI-05 constraint check.
+                        mimes.append(
+                            t[:-1] if t.endswith("*") else t
+                        )
+                if mimes or exts:
+                    file_constraints = ParamConstraints(
+                        mime_types=mimes or None,
+                        extensions=exts or None,
+                    )
             declared_params[binding.name] = SkillParam(
                 name=binding.name,
                 type=final_type,  # type: ignore[arg-type]
@@ -2882,6 +2969,7 @@ def build_skill(
                     if fp and fp.options_snapshot
                     else None
                 ),
+                constraints=file_constraints,
             )
         if ev.event_id and binding:
             binding_name_by_event_id[ev.event_id] = binding.name

@@ -1270,6 +1270,68 @@ class DatePickerSpec(BaseModel):
     by recorded click."""
 
 
+class FileMetadata(BaseModel):
+    """WI-29: one file's metadata captured at record time.
+
+    The browser never exposes the absolute path for security reasons;
+    only the original name, size in bytes, and MIME type are accessible.
+    Plus the extension extracted from the name for cheap accept-attr
+    matching at replay. The annotator stamps this on every recorded
+    file so the runner can validate the replay-time replacement file
+    against the recorded constraints BEFORE the page mutates."""
+
+    name: str
+    """Original filename at record time. Not used as a path -- replay
+    requires an operator-supplied path."""
+    size: Optional[int] = None
+    """File size in bytes (browser-reported)."""
+    mime: Optional[str] = None
+    """MIME type the browser inferred from the file. May be empty for
+    unknown types -- the runner falls back to extension matching."""
+    ext: Optional[str] = None
+    """Lowercased extension including the leading dot, e.g. ``.png``.
+    Extracted from ``name`` at record time."""
+
+
+class FileSpec(BaseModel):
+    """WI-29: spec for a file upload step.
+
+    Carries the recorded constraints (original name, MIME, accept attr,
+    multiple flag) so the runner can validate the operator-supplied
+    REPLACEMENT path against them BEFORE the page mutation.
+
+    The param itself remains ``file_path`` (single) or ``file_path_list``
+    (when ``multiple_flag`` is True); this spec is the contract the
+    runner checks the param value against.
+
+    Acceptance check (from the plan):
+      Replay with a different file path succeeds when constraints
+      match; fails BEFORE the page mutation when file is missing or
+      MIME / extension doesn't match the recorded accept attribute.
+    """
+
+    original_name: Optional[str] = None
+    """Recorded filename at record time. Audit-only -- replay passes
+    a NEW path."""
+    extension: Optional[str] = None
+    """Lowercased extension (e.g. ``.png``)."""
+    mime_hint: Optional[str] = None
+    """Recorded MIME type."""
+    size: Optional[int] = None
+    """Recorded file size in bytes."""
+    accept_attribute: Optional[str] = None
+    """The ``accept`` attribute on the file input at record time. Used
+    by the runner to validate that the replay-time path's extension /
+    MIME matches. Comma-separated list of extensions and MIME globs
+    (e.g. ``image/*,.pdf``). None means the input had no constraint."""
+    multiple_flag: bool = False
+    """Whether the input was ``multiple``. When True the replay param
+    is treated as ``file_path_list``; when False it's ``file_path``."""
+    recorded_files: list[FileMetadata] = Field(default_factory=list)
+    """For multiple-file uploads: the per-file metadata snapshot. Audit-
+    only -- replay still supplies its own paths."""
+
+
 class SliderSpec(BaseModel):
     """WI-28: spec for a range slider (``<input type=range>``) final
     value + event dispatch.
@@ -1530,6 +1592,13 @@ class SkillStep(BaseModel):
     param, the min/max/step constraints, orientation, and the event
     dispatch mode. None for non-slider actions."""
 
+    file_spec: Optional["FileSpec"] = None
+    """WI-29: spec for ``upload`` (file_selected) steps. Carries the
+    recorded file metadata + the input's accept attribute + the
+    multiple flag, so the runner can validate the replay-time path
+    BEFORE set_input_files runs. None for non-upload actions or for
+    legacy traces (which lacked the WI-29 metadata)."""
+
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy
     # v1 skills load and execute exactly as before.
@@ -1654,6 +1723,7 @@ SkillParamType = Literal[
     "datetime",          # iso datetime with optional timezone
     "file_path",         # legacy; codec carries the resolution policy
     "object",            # nested JSON payload (rich text, structured form)
+    "file_path_list",   # WI-29: multiple-file upload (input multiple)
 ]
 
 
@@ -2215,3 +2285,10 @@ class TraceEvent(BaseModel):
     nearest stable ancestor selector for the most-changed subtree. Lets
     WI-09 / WI-10 detect 'this action caused the DOM to actually
     change' without scanning every individual mutation record."""
+
+    file_metadata: Optional[list[FileMetadata]] = None
+    """WI-29: per-file metadata on ``file_selected`` events. List of
+    {name, size, mime, ext} records for every file the operator
+    picked. None for legacy traces (which only captured ``file_name``);
+    annotator falls back to a single FileMetadata derived from
+    ``file_name`` in that case."""

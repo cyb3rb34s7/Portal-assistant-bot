@@ -1352,14 +1352,33 @@
           raw_event_kind: "change",
         }, attr1), changeStateBefore);
       } else if (tag === "input" && t.type === "file") {
-        var fname = "";
-        if (t.files && t.files[0]) fname = t.files[0].name;
+        // WI-29: capture file metadata, NOT path bytes. The browser
+        // never reveals the absolute path; the original_name + size +
+        // type + extension are enough for replay to validate that the
+        // operator-supplied REPLACEMENT path matches the recorded
+        // constraints (accept attr, multiple flag, MIME family).
+        var files = t.files || [];
+        var fname = files[0] ? files[0].name : "";
+        var fmeta = [];
+        for (var fi = 0; fi < files.length; fi++) {
+          var fl = files[fi];
+          var ext = "";
+          var dotIdx = fl.name ? fl.name.lastIndexOf(".") : -1;
+          if (dotIdx >= 0) ext = fl.name.substring(dotIdx).toLowerCase();
+          fmeta.push({
+            name: fl.name || "",
+            size: typeof fl.size === "number" ? fl.size : null,
+            mime: fl.type || null,
+            ext: ext,
+          });
+        }
         var attr2 = _rootAttribution("user_file_selected");
         _setActiveInteraction("file_selected", attr2.event_id);
         _emitWithStateSnapshot(_merge({
           kind: "file_selected",
           fingerprint: fingerprint(t),
           file_name: fname,
+          file_metadata: fmeta,
           page_url: location.href,
           raw_event_kind: "change",
         }, attr2), changeStateBefore);
