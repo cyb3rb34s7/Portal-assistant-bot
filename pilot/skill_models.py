@@ -790,12 +790,26 @@ class TraceEvent(BaseModel):
 
     ts: datetime = Field(default_factory=datetime.utcnow)
     kind: Literal[
+        # User-initiated events
         "click",
         "input_change",
         "submit",
         "file_selected",
         "navigate",
         "key",
+        # F-07 / F-09: observed page-side events. network_request and
+        # network_response carry request_id + method + url + status +
+        # initiator_event_id so WI-09 / WI-10 / WI-43 / WI-47 can wait
+        # on specific requests rather than scanning a global counter.
+        # dom_mutation is a debounced burst summary for DOM-change-driven
+        # waits. popup / download / visibility_change cover WI-35 / WI-45
+        # / WI-46 cross-tab + observable-side-effect workflows.
+        "network_request",
+        "network_response",
+        "dom_mutation",
+        "popup",
+        "download",
+        "visibility_change",
     ]
     fingerprint: Optional[ElementFingerprint] = None
     value: Optional[str] = None
@@ -847,3 +861,36 @@ class TraceEvent(BaseModel):
     event. Used by the annotator to verify caused-state changes."""
     page_state_after: Optional[dict[str, Any]] = None
     """Same, after the event resolved."""
+
+    # F-07: observed-event payload fields. These are populated only on
+    # the observed kinds (network_request, network_response,
+    # dom_mutation, popup, download, visibility_change). They live on
+    # TraceEvent (rather than a separate envelope) so the annotator can
+    # walk a single ordered list when building the causality graph.
+    request_id: Optional[str] = None
+    """Stable per-request ID assigned by the grabber's fetch/XHR hook.
+    Links a network_request event to its matching network_response.
+    Used by WI-09 expected_signals.started_after_event so waits key off
+    a specific request, not a substring match against a global log."""
+    method: Optional[str] = None
+    """HTTP method (GET/POST/PUT/PATCH/DELETE) of a request event."""
+    started_at: Optional[float] = None
+    """``performance.now()`` at fetch/XHR start. Lets WI-09 enforce
+    'this request started AFTER the action's baseline' so a stale prior
+    request can't accidentally satisfy a new step's expected_signal."""
+    finished_at: Optional[float] = None
+    """``performance.now()`` at fetch/XHR finish. None until the request
+    settles. Pairs with ``status`` on network_response events."""
+    status: Optional[int] = None
+    """HTTP response status. Populated on network_response events."""
+    initiator_event_id: Optional[str] = None
+    """``event_id`` of the user-action event that triggered this
+    request, when the grabber can infer it (set inside the synchronous
+    handler of a click / submit / key). None for requests not
+    attributable to a specific user action (e.g. background polling)."""
+    mutation_summary: Optional[dict[str, Any]] = None
+    """For dom_mutation events: a compact summary of the debounced
+    mutation burst -- counts of added/removed/attribute nodes plus the
+    nearest stable ancestor selector for the most-changed subtree. Lets
+    WI-09 / WI-10 detect 'this action caused the DOM to actually
+    change' without scanning every individual mutation record."""

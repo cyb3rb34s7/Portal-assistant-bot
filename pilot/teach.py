@@ -226,6 +226,16 @@ class TeachRecorder:
             raw_event_kind=raw.get("raw_event_kind"),
             page_state_before=raw.get("page_state_before"),
             page_state_after=raw.get("page_state_after"),
+            # F-07: observed-event fields. Populated only on
+            # network_request / network_response / dom_mutation events;
+            # None on user-initiated events.
+            request_id=raw.get("request_id"),
+            method=raw.get("method"),
+            started_at=raw.get("started_at"),
+            finished_at=raw.get("finished_at"),
+            status=raw.get("status"),
+            initiator_event_id=raw.get("initiator_event_id"),
+            mutation_summary=raw.get("mutation_summary"),
         )
 
         # Screenshot is safe here — we're on the main thread, outside

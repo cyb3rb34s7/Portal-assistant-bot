@@ -85,3 +85,65 @@ def test_trace_event_page_state_optional() -> None:
     restored = TraceEvent.model_validate_json(ev.model_dump_json())
     assert restored.page_state_before is None
     assert restored.page_state_after is None
+
+
+def test_trace_event_network_request_roundtrip() -> None:
+    """F-07: network_request and network_response events carry the
+    request_id + method + url + started_at + finished_at + status +
+    initiator_event_id needed by WI-09 expected_signals.started_after_event."""
+    req = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="network_request",
+        page_url="http://x",
+        event_id="req-evt-1",
+        request_id="req-1",
+        method="POST",
+        url="http://x/api/assets",
+        started_at=12345.6,
+        initiator_event_id="click-1",
+    )
+    resp = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="network_response",
+        page_url="http://x",
+        event_id="resp-evt-1",
+        request_id="req-1",
+        method="POST",
+        url="http://x/api/assets",
+        started_at=12345.6,
+        finished_at=12350.2,
+        status=200,
+        initiator_event_id="click-1",
+    )
+    req_r = TraceEvent.model_validate_json(req.model_dump_json())
+    resp_r = TraceEvent.model_validate_json(resp.model_dump_json())
+    assert req_r.kind == "network_request"
+    assert req_r.request_id == "req-1"
+    assert req_r.initiator_event_id == "click-1"
+    assert req_r.method == "POST"
+    assert resp_r.kind == "network_response"
+    assert resp_r.status == 200
+    assert resp_r.finished_at == 12350.2
+
+
+def test_trace_event_dom_mutation_roundtrip() -> None:
+    """F-07: dom_mutation events carry a debounced burst summary so
+    WI-09 / WI-10 can wait on real DOM activity without rescanning
+    every MutationRecord."""
+    ev = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="dom_mutation",
+        page_url="http://x",
+        event_id="mut-1",
+        mutation_summary={
+            "added": 3,
+            "removed": 1,
+            "attribute": 5,
+            "character_data": 0,
+            "first_target_selector": "div#root > main > .panel",
+        },
+    )
+    restored = TraceEvent.model_validate_json(ev.model_dump_json())
+    assert restored.kind == "dom_mutation"
+    assert restored.mutation_summary["added"] == 3
+    assert restored.mutation_summary["first_target_selector"] == "div#root > main > .panel"

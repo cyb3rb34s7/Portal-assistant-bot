@@ -236,8 +236,63 @@
     window.__cp_inflight = 0;
     window.__cp_last_request_at = 0;
 
-    function bumpMutation() {
+    // F-07: debounced dom_mutation burst summaries. The MutationObserver
+    // batches DOM changes that arrive within ~200ms into one event so
+    // WI-09 / WI-10 can wait on "this action caused real DOM activity"
+    // without scanning every individual MutationRecord.
+    var _mutBurst = null;
+    var _mutBurstTimer = null;
+    var DOM_MUTATION_BURST_MS = 200;
+
+    function _flushMutationBurst() {
+      if (!_mutBurst) return;
+      var summary = _mutBurst;
+      _mutBurst = null;
+      _mutBurstTimer = null;
+      try {
+        var attr = _attribution("mutation_observer");
+        post(_merge({
+          kind: "dom_mutation",
+          page_url: location.href,
+          raw_event_kind: "dom_mutation",
+          mutation_summary: summary,
+        }, attr));
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] dom_mutation emit failed", e);
+      }
+    }
+
+    function bumpMutation(records) {
       window.__cp_last_mutation_at = Date.now();
+      if (!_mutBurst) {
+        _mutBurst = {
+          added: 0,
+          removed: 0,
+          attribute: 0,
+          character_data: 0,
+          first_target_selector: null,
+        };
+      }
+      try {
+        for (var i = 0; i < records.length; i++) {
+          var r = records[i];
+          if (r.type === "childList") {
+            _mutBurst.added += (r.addedNodes && r.addedNodes.length) || 0;
+            _mutBurst.removed += (r.removedNodes && r.removedNodes.length) || 0;
+          } else if (r.type === "attributes") {
+            _mutBurst.attribute++;
+          } else if (r.type === "characterData") {
+            _mutBurst.character_data++;
+          }
+          if (!_mutBurst.first_target_selector && r.target && r.target.nodeType === 1) {
+            try {
+              _mutBurst.first_target_selector = buildCssPath(r.target);
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+      if (_mutBurstTimer) clearTimeout(_mutBurstTimer);
+      _mutBurstTimer = setTimeout(_flushMutationBurst, DOM_MUTATION_BURST_MS);
     }
 
     function _observe() {
@@ -260,51 +315,140 @@
     }
     _observe();
 
-    // fetch hook
+    // fetch hook (F-07: emits network_request + network_response
+    // TraceEvents alongside the existing counters)
     if (window.fetch && !window.__cp_fetch_hooked) {
       window.__cp_fetch_hooked = true;
       var _origFetch = window.fetch.bind(window);
-      window.fetch = function () {
+      window.fetch = function (input, init) {
         window.__cp_inflight = (window.__cp_inflight || 0) + 1;
         window.__cp_last_request_at = Date.now();
+        var url = "";
+        var method = "GET";
+        try {
+          if (typeof input === "string") {
+            url = input;
+            method = (init && init.method) || "GET";
+          } else if (input && input.url) {
+            url = input.url;
+            method = (init && init.method) || input.method || "GET";
+          }
+        } catch (e) {}
+        var requestId = _newEventId();
+        var startedAt = _now();
+        // Emit the request-start event synchronously so its
+        // initiator_event_id is the active interaction at THIS tick,
+        // not whatever happens to be active when the response lands.
+        _emitNetworkRequest(requestId, method, url, startedAt);
         var p;
         try {
           p = _origFetch.apply(this, arguments);
         } catch (e) {
           window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
+          _emitNetworkResponse(requestId, method, url, startedAt, _now(), 0);
           throw e;
         }
         return p.then(
           function (r) {
             window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
             window.__cp_last_request_at = Date.now();
+            try {
+              _emitNetworkResponse(
+                requestId, method, url, startedAt, _now(), r && r.status
+              );
+            } catch (e) {}
             return r;
           },
           function (e) {
             window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
             window.__cp_last_request_at = Date.now();
+            try {
+              _emitNetworkResponse(
+                requestId, method, url, startedAt, _now(), 0
+              );
+            } catch (e2) {}
             throw e;
           },
         );
       };
     }
 
-    // XHR hook
+    // XHR hook (F-07: emits network_request + network_response too).
+    // open() is wrapped so we capture method + url; send() emits the
+    // request-start event and binds loadend to the response emit.
     if (window.XMLHttpRequest && !window.__cp_xhr_hooked) {
       window.__cp_xhr_hooked = true;
+      var _origOpen = window.XMLHttpRequest.prototype.open;
+      window.XMLHttpRequest.prototype.open = function (m, u) {
+        try {
+          this.__cp_method = (m || "GET").toUpperCase();
+          this.__cp_url = u || "";
+        } catch (e) {}
+        return _origOpen.apply(this, arguments);
+      };
       var _origSend = window.XMLHttpRequest.prototype.send;
       window.XMLHttpRequest.prototype.send = function () {
         var self = this;
         window.__cp_inflight = (window.__cp_inflight || 0) + 1;
         window.__cp_last_request_at = Date.now();
+        var requestId = _newEventId();
+        var startedAt = _now();
+        var method = self.__cp_method || "GET";
+        var url = self.__cp_url || "";
+        _emitNetworkRequest(requestId, method, url, startedAt);
         function _done() {
           window.__cp_inflight = Math.max(0, window.__cp_inflight - 1);
           window.__cp_last_request_at = Date.now();
+          try {
+            _emitNetworkResponse(
+              requestId, method, url, startedAt, _now(),
+              (typeof self.status === "number" ? self.status : 0)
+            );
+          } catch (e) {}
         }
         self.addEventListener("loadend", _done);
         return _origSend.apply(self, arguments);
       };
     }
+  }
+
+  function _emitNetworkRequest(requestId, method, url, startedAt) {
+    // Network requests are CONSEQUENCE events -- they don't open a
+    // new interaction window. Attribute to the active user
+    // interaction (set inside a click/submit/key/change handler).
+    // For requests with no active interaction (background poll, SSE
+    // reconnect), initiator_event_id is null.
+    var initiator = (activeInteraction && _isWithinWindow())
+      ? activeInteraction.id : null;
+    var attr = _attribution("fetch_request_start");
+    post(_merge({
+      kind: "network_request",
+      page_url: location.href,
+      raw_event_kind: "fetch_request_start",
+      request_id: requestId,
+      method: method,
+      url: url,
+      started_at: startedAt,
+      initiator_event_id: initiator,
+    }, attr));
+  }
+
+  function _emitNetworkResponse(requestId, method, url, startedAt, finishedAt, status) {
+    var initiator = (activeInteraction && _isWithinWindow())
+      ? activeInteraction.id : null;
+    var attr = _attribution("fetch_response");
+    post(_merge({
+      kind: "network_response",
+      page_url: location.href,
+      raw_event_kind: "fetch_response",
+      request_id: requestId,
+      method: method,
+      url: url,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      status: status || 0,
+      initiator_event_id: initiator,
+    }, attr));
   }
   _installQuiescenceWatchers();
 
