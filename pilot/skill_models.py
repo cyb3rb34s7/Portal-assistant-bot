@@ -1786,15 +1786,35 @@ def _replay_type_for(action: ActionType) -> str:
     return mapping.get(action, "click")
 
 
+def _replay_escape_attr(value: str) -> str:
+    """WI-24: escape a value for CSS attribute selectors.
+
+    Replaces the pre-WI-24 ``[attr='value']`` interpolation that broke
+    on ``]``, ``'``, spaces, colons, and non-ASCII characters. We
+    backslash-escape backslash and double-quote and emit the value
+    inside double quotes. This shape is accepted by Puppeteer Replay's
+    selector resolver and by Playwright's CSS engine. The runner uses
+    Playwright's semantic locator APIs at execution; this exporter is
+    for the down-converted Replay JSON.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _build_replay_selectors(fp: Optional[ElementFingerprint]) -> list[list[str]]:
     """Emit Puppeteer Replay selector-array-of-arrays from a fingerprint."""
     if fp is None:
         return []
     out: list[list[str]] = []
     if fp.test_id:
-        out.append([f"[data-testid='{fp.test_id}']"])
+        # WI-24: double-quoted + escaped so values containing ``]`` /
+        # quotes / spaces / colons / non-ASCII chars resolve correctly.
+        out.append([f'[data-testid="{_replay_escape_attr(fp.test_id)}"]'])
     if fp.element_id:
-        out.append([f"#{fp.element_id}"])
+        # WI-24: use [id="..."] attribute selector instead of #id
+        # because #id rejects characters CSS treats as syntax (``:``,
+        # ``.``, ``[``, etc.) and requires CSS.escape -- the attribute
+        # form sidesteps the issue.
+        out.append([f'[id="{_replay_escape_attr(fp.element_id)}"]'])
     if fp.accessible_name and fp.role:
         out.append([f"aria/{fp.accessible_name}"])
     if fp.css_path:

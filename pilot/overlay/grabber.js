@@ -563,7 +563,10 @@
     // Build a stable selector for the observed element. Prefer
     // data-testid -> id -> tag+class.
     var tid = el.getAttribute && el.getAttribute("data-testid");
-    if (tid) return "[data-testid='" + tid + "']";
+    // WI-24: escape the test_id via CSS.escape so testids containing
+    // ``]`` / quotes / spaces / colons / non-ASCII don't produce an
+    // unparseable selector. Pre-WI-24 the raw string was concatenated.
+    if (tid) return "[data-testid=\"" + tid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
     if (el.id) return "#" + cssEscape(el.id);
     var tag = (el.tagName || "").toLowerCase();
     if (el.className && typeof el.className === "string") {
@@ -703,7 +706,10 @@
       }
       var tid = node.getAttribute && node.getAttribute("data-testid");
       if (tid) {
-        seg += "[data-testid='" + tid + "']";
+        // WI-24: escape the testid into a double-quoted form. Pre-WI-24
+        // any testid containing a single quote / ``]`` / spaces / colons
+        // produced an unparseable selector.
+        seg += "[data-testid=\"" + tid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
         parts.unshift(seg);
         break;
       }

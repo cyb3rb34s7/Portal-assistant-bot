@@ -2292,15 +2292,21 @@ class SkillRunner:
         # WI-22: detection now spans both locator levels, not only
         # templated test_id / element_id. Each lambda is bound to the
         # specific fingerprint field so the loop can call it lazily.
+        # WI-24: use semantic locator APIs / _attr_locator for safe
+        # escaping (the legacy ``#id`` + ``[name=...]`` shapes broke
+        # on ``]`` / quotes / spaces / colons / non-ASCII).
         if fp.test_id:
             _try("test_id", lambda: page.get_by_test_id(fp.test_id))
         if fp.element_id:
             _try(
                 "element_id",
-                lambda: page.locator(f"#{_css_escape(fp.element_id)}"),
+                lambda: page.locator(self._attr_locator("id", fp.element_id)),
             )
         if fp.name:
-            _try("name", lambda: page.locator(f"[name='{fp.name}']"))
+            _try(
+                "name",
+                lambda: page.locator(self._attr_locator("name", fp.name)),
+            )
         if fp.aria_label:
             _try(
                 "aria_label",
@@ -2342,6 +2348,22 @@ class SkillRunner:
             # Enrich each candidate with the policy's context_fields.
             return self._enrich_candidates(visible, fields)
         return None
+
+    def _attr_locator(self, attr: str, value: str) -> str:
+        """WI-24: build a safe ``[attr="value"]`` CSS selector.
+
+        Replaces the pre-WI-24 ``[attr='value']`` interpolation +
+        ``_css_escape`` helper which only handled backslash and single
+        quote. Values containing ``]``, double quotes, spaces, colons,
+        non-ASCII, etc. broke the selector. The fix:
+          - emit value inside double quotes
+          - backslash-escape backslashes and double quotes
+        Playwright accepts this form for ``page.locator``; for ID
+        lookups we prefer ``get_by_test_id`` / ``[id="..."]`` over
+        ``#id`` because the latter would still need ``CSS.escape``.
+        """
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'[{attr}="{escaped}"]'
 
     def _enrich_candidates(
         self, candidates: list[dict[str, Any]], fields: list[str]
@@ -2568,17 +2590,25 @@ class SkillRunner:
 
     def _level1(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
         if fp.test_id:
+            # WI-24: get_by_test_id handles escaping internally; no
+            # CSS construction needed.
             loc = page.get_by_test_id(fp.test_id)
             result = self._probe_and_branch("test_id", loc)
             if result is not None:
                 return result
         if fp.element_id:
-            loc = page.locator(f"#{_css_escape(fp.element_id)}")
+            # WI-24: use the [id="..."] attribute form instead of #id
+            # so IDs containing ``]`` / quotes / spaces / colons /
+            # non-ASCII resolve correctly. _css_escape only escaped
+            # backslash and single quote -- the audit's gap.
+            loc = page.locator(self._attr_locator("id", fp.element_id))
             result = self._probe_and_branch("element_id", loc)
             if result is not None:
                 return result
         if fp.name:
-            loc = page.locator(f"[name='{fp.name}']")
+            # WI-24: same fix -- the legacy `[name='{fp.name}']` was
+            # never escaped at all.
+            loc = page.locator(self._attr_locator("name", fp.name))
             result = self._probe_and_branch("name", loc)
             if result is not None:
                 return result
@@ -3839,6 +3869,13 @@ class SkillRunner:
 
 
 def _css_escape(s: str) -> str:
+    """Legacy helper. WI-24 replaced most call sites with semantic
+    locator APIs (``get_by_test_id`` / ``get_by_label`` / etc.) or with
+    the runner's ``_attr_locator`` helper. The original helper only
+    escaped backslash and single quote -- IDs containing ``]``,
+    double quotes, spaces, colons, or non-ASCII characters broke the
+    selector. Kept here for backward compatibility with any external
+    consumer; new in-tree code should use ``_attr_locator``."""
     return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
