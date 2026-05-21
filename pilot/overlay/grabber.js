@@ -788,10 +788,75 @@
     return out;
   }
 
+  // WI-32: walk up from an element through shadow roots and frames
+  // building the outer->inner traversal chain. Returns
+  // {frame_chain, shadow_path, in_shadow_root, frame_path_legacy}.
+  function _buildFramePath(el) {
+    var chain = [];
+    var shadowSelectors = [];
+    var inShadow = false;
+    var node = el;
+    // Walk inner -> outer; we'll reverse at the end so the chain is
+    // ordered from the top document down to the target.
+    while (node) {
+      var root = (node.getRootNode && node.getRootNode()) || null;
+      if (root && root.host) {
+        // We're inside a shadow root. Step out to the host element.
+        inShadow = true;
+        var host = root.host;
+        var hostSel = null;
+        try { hostSel = buildCssPath(host); } catch (e) {}
+        if (hostSel) {
+          chain.push({ kind: "shadow", host_selector: hostSel });
+          shadowSelectors.push(hostSel);
+        }
+        node = host;
+        continue;
+      }
+      // Same document tree. Are we inside an iframe?
+      var doc = node.ownerDocument;
+      var win = doc && doc.defaultView;
+      if (win && win.frameElement) {
+        // Step out to the iframe element in the parent document.
+        var frameSel = null;
+        try { frameSel = buildCssPath(win.frameElement); } catch (e) {}
+        if (frameSel) {
+          chain.push({ kind: "iframe", selector: frameSel });
+        }
+        node = win.frameElement;
+        continue;
+      }
+      break;
+    }
+    chain.reverse();  // outer-most first
+    return {
+      frame_chain: chain,
+      shadow_path: shadowSelectors.reverse(),
+      in_shadow_root: inShadow,
+      // Legacy frame_path: iframe-only selectors so pre-WI-32 runner
+      // paths still see something useful when they look at
+      // ``frame_path`` instead of ``frame_chain``.
+      frame_path_legacy: chain
+        .filter(function (s) { return s.kind === "iframe"; })
+        .map(function (s) { return s.selector; }),
+    };
+  }
+
   function fingerprint(el) {
     if (!el || el.nodeType !== 1) return null;
     var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
     var meta = _controlMetadata(el);
+    var framePath;
+    try {
+      framePath = _buildFramePath(el);
+    } catch (fpe) {
+      framePath = {
+        frame_chain: [],
+        shadow_path: [],
+        in_shadow_root: false,
+        frame_path_legacy: [],
+      };
+    }
     return {
       test_id: (el.getAttribute && el.getAttribute("data-testid")) || null,
       element_id: el.id || null,
@@ -810,8 +875,10 @@
       bbox: rect
         ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
         : null,
-      frame_path: [],
-      in_shadow_root: !!(el.getRootNode && el.getRootNode().host),
+      frame_path: framePath.frame_path_legacy,
+      in_shadow_root: framePath.in_shadow_root,
+      frame_chain: framePath.frame_chain,
+      shadow_path: framePath.shadow_path,
       // WI-03: enriched control metadata. control_kind + value_kind
       // drive semantic action selection; options_snapshot +
       // selected_options + min/max/step support typed-param codecs;

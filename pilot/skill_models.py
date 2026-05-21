@@ -64,6 +64,49 @@ class OptionSnapshot(BaseModel):
     disabled: bool = False
 
 
+class FrameStep(BaseModel):
+    """WI-32: one step in a fingerprint's outer->inner frame chain.
+
+    The chain describes how to reach an element that lives inside an
+    iframe AND/OR a shadow root. The runner walks the chain in order:
+
+      kind='iframe' + selector='iframe[name="preview"]'
+        -> page.frame_locator('iframe[name="preview"]') ...
+      kind='shadow' + host_selector='.my-design-system-host'
+        -> element.evaluateHandle('h => h.shadowRoot') after locating
+           the host inside the current scope.
+
+    Either ``selector`` or ``host_selector`` is set depending on
+    ``kind`` -- they're separate fields rather than one polymorphic
+    field so the schema is unambiguous and JSON-introspectable.
+    """
+
+    kind: Literal["iframe", "shadow"]
+    selector: Optional[str] = None
+    """CSS selector when kind=iframe -- the iframe element's selector
+    in the current scope. None when kind=shadow."""
+    host_selector: Optional[str] = None
+    """CSS selector when kind=shadow -- the shadow host element's
+    selector in the current scope. None when kind=iframe."""
+
+    @model_validator(mode="after")
+    def _check_kind_field_consistency(self) -> "FrameStep":
+        """Enforce: iframe steps carry selector, shadow steps carry
+        host_selector. A FrameStep with the wrong field set is a
+        recording / annotator bug and would silently fail at replay."""
+        if self.kind == "iframe":
+            if not self.selector:
+                raise ValueError(
+                    "FrameStep(kind='iframe') requires selector"
+                )
+        if self.kind == "shadow":
+            if not self.host_selector:
+                raise ValueError(
+                    "FrameStep(kind='shadow') requires host_selector"
+                )
+        return self
+
+
 class ElementFingerprint(BaseModel):
     """Fat fingerprint of a DOM element, captured at teach time.
 
@@ -95,9 +138,40 @@ class ElementFingerprint(BaseModel):
     nth_of_role: Optional[int] = None       # "2nd button with role=button"
     bbox: Optional[dict[str, float]] = None  # x, y, width, height
 
-    # Frame / shadow path (empty = top document)
+    # Frame / shadow path (empty = top document). Legacy boolean +
+    # string-list shape is preserved for back-compat with pre-WI-32
+    # recordings. WI-32 introduces the richer ``frame_chain`` and
+    # ``shadow_path`` fields so the runner can traverse iframes (via
+    # page.frame_locator) and shadow roots (via evaluate handles)
+    # before resolving the target locator.
     frame_path: list[str] = Field(default_factory=list)
+    """Legacy: outer->inner iframe selectors. New recordings populate
+    ``frame_chain`` with richer kind-tagged steps; ``frame_path`` is
+    derived from frame_chain for back-compat with pre-WI-32 runner
+    code paths."""
     in_shadow_root: bool = False
+    """Legacy boolean. WI-32 replaces with ``shadow_path``. Set True
+    when the element lived inside ANY shadow root, regardless of host
+    chain depth. Pre-WI-32 recordings only set this flag; the runner
+    can't resolve those without re-recording."""
+    frame_chain: list["FrameStep"] = Field(default_factory=list)
+    """WI-32: outer->inner frame traversal path. Each step is a
+    FrameStep describing whether to enter an iframe (via
+    page.frame_locator(selector)) or pierce a shadow root (via
+    element.evaluateHandle for getRootNode().host). Empty = top
+    document, no traversal. The grabber walks up from the target
+    element through document.defaultView.frameElement (iframe
+    boundaries) and getRootNode().host (shadow boundaries) to build
+    this list."""
+    shadow_path: list[str] = Field(default_factory=list)
+    """WI-32: ordered list of shadow-host CSS selectors. Empty = no
+    shadow root involvement. When the target lives inside a shadow
+    tree, each entry is the host element's selector relative to its
+    own document (the runner walks each entry through evaluate, then
+    descends to the next). Mostly redundant with ``frame_chain`` (a
+    shadow step in frame_chain carries the same host selector); kept
+    for back-compat + a simple boolean-replacement when the operator
+    only needs to know 'is this in a shadow root.'"""
 
     # WI-03: richer control metadata captured at record time. These let
     # the annotator pick the right semantic action (select_option,

@@ -3104,7 +3104,73 @@ class SkillRunner:
         )
         return None
 
+    def _scope_for_fingerprint(
+        self, page: Page, fp: ElementFingerprint
+    ) -> Any:
+        """WI-32: return the locator scope (page OR a frame_locator
+        chain) the runner should resolve fp against.
+
+        Walks fp.frame_chain in order: each iframe step descends into
+        the iframe via page.frame_locator(selector); each shadow step
+        is currently NO-OP at scope level (shadow roots in Playwright
+        are pierced automatically by locator strategies that use the
+        composed-tree -- locator.get_by_test_id works through open
+        shadow roots without explicit piercing). Closed shadow roots
+        remain unreachable; we surface that as a diagnostic.
+
+        For legacy fingerprints with frame_chain empty but
+        frame_path populated (pre-WI-32 recordings), we walk
+        frame_path as iframe selectors for back-compat.
+        """
+        scope: Any = page
+        chain = fp.frame_chain
+        if not chain and fp.frame_path:
+            # Legacy: treat frame_path entries as iframe selectors.
+            for sel in fp.frame_path:
+                try:
+                    scope = scope.frame_locator(sel)
+                except Exception as e:
+                    self._diagnostic(
+                        "runner.frame_traversal_failed",
+                        level="warn",
+                        recoverable=True,
+                        selector=sel,
+                        last_error=str(e)[:200],
+                    )
+                    return page  # fall back to top scope
+            return scope
+        for step in chain:
+            if step.kind == "iframe" and step.selector:
+                try:
+                    scope = scope.frame_locator(step.selector)
+                except Exception as e:
+                    self._diagnostic(
+                        "runner.frame_traversal_failed",
+                        level="warn",
+                        recoverable=True,
+                        selector=step.selector,
+                        last_error=str(e)[:200],
+                    )
+                    return page
+            elif step.kind == "shadow" and step.host_selector:
+                # Playwright's locator API pierces OPEN shadow roots
+                # transparently via the composed tree -- locator()
+                # selectors descend into shadow content automatically.
+                # We don't need to switch scope here. We log the host
+                # selector for audit + future closed-shadow handling.
+                self._diagnostic(
+                    "runner.shadow_traversal_noted",
+                    level="debug",
+                    recoverable=True,
+                    host_selector=step.host_selector,
+                )
+        return scope
+
     def _level1(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
+        # WI-32: descend into the frame chain BEFORE locator resolution
+        # so iframed elements resolve correctly. Legacy fingerprints
+        # (empty frame_chain) fall through to ``page`` unchanged.
+        page = self._scope_for_fingerprint(page, fp)
         if fp.test_id:
             # WI-24: get_by_test_id handles escaping internally; no
             # CSS construction needed.
@@ -3136,6 +3202,9 @@ class SkillRunner:
         return None
 
     def _level2(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
+        # WI-32: descend into frame_chain so semantic locators run
+        # inside the correct frame scope.
+        page = self._scope_for_fingerprint(page, fp)
         if fp.role and fp.accessible_name:
             try:
                 loc = page.get_by_role(
