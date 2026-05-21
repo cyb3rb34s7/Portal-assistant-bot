@@ -1568,6 +1568,85 @@ def _detect_set_selection_clusters(
     return clusters
 
 
+def _detect_dependent_multiselect(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    set_selection_clusters: list[SemanticCluster],
+) -> dict[str, tuple[Optional[TraceEvent], Optional[TraceEvent]]]:
+    """WI-20: detect a parent picker (single-select or multi-select)
+    whose change drives a child multi-select's option set.
+
+    Returns a mapping from child_cluster.primary_target_event_id to
+    (parent_event, option_source_request_event) tuples. The build_skill
+    pass overlays SetSelectionSpec.depends_on / parent_picker_fp /
+    option_source / hierarchy_path on the child step.
+
+    Detection: for each set_selection cluster, find the most recent
+    user-action event before the cluster's first event whose
+    fingerprint is a select_single / set_selection-prefix toggle, AND
+    a network_request between them whose caused_by chain traces back
+    to that parent.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    children_of: dict[str, list[str]] = causality.get("children_of") or {}
+    out: dict[str, tuple[Optional[TraceEvent], Optional[TraceEvent]]] = {}
+
+    # Pre-compute the index of each event in the event list (for
+    # 'most recent prior' lookup).
+    event_index = {
+        ev.event_id: i for i, ev in enumerate(events) if ev.event_id
+    }
+
+    for cluster in set_selection_clusters:
+        if cluster.cluster_kind != "set_selection":
+            continue
+        first_raw_id = cluster.raw_event_ids[0] if cluster.raw_event_ids else None
+        if not first_raw_id or first_raw_id not in event_index:
+            continue
+        cluster_start_i = event_index[first_raw_id]
+
+        # Find the most recent user-action select_single change OR
+        # a prior set_selection cluster's last event.
+        parent_event: Optional[TraceEvent] = None
+        for k in range(cluster_start_i - 1, -1, -1):
+            cand = events[k]
+            if cand.kind != "input_change":
+                continue
+            if cand.event_id in (cluster.raw_event_ids):
+                continue
+            if cand.fingerprint is None:
+                continue
+            if cand.fingerprint.control_kind == "select_single":
+                parent_event = cand
+                break
+
+        if parent_event is None:
+            continue
+
+        # Look for a network_request caused by parent_event whose
+        # event index is between the parent and the cluster start.
+        request_ev: Optional[TraceEvent] = None
+        for cid in children_of.get(parent_event.event_id or "", []):
+            ce = by_id.get(cid)
+            if ce is None:
+                continue
+            if ce.kind not in ("network_request", "network_response"):
+                continue
+            ce_i = event_index.get(ce.event_id or "", -1)
+            if ce_i < 0:
+                continue
+            if ce_i < cluster_start_i:
+                request_ev = ce
+                break
+
+        if request_ev is None:
+            continue
+        primary = cluster.primary_target_event_id
+        if primary:
+            out[primary] = (parent_event, request_ev)
+    return out
+
+
 def _build_set_selection_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -1843,6 +1922,20 @@ def build_skill(
         cid: pid for pid, cid, _ in cascading_chains
     }
 
+    # WI-20: dependent multi-select detection. For each set_selection
+    # cluster, find a prior parent select event whose change fired a
+    # network request that landed before the cluster's first event.
+    # The mapping is by child cluster's primary_target_event_id.
+    set_selection_clusters_only = [
+        c for c in clusters if c.cluster_kind == "set_selection"
+    ]
+    dependent_multiselect = (
+        _detect_dependent_multiselect(
+            events, causality, set_selection_clusters_only
+        )
+        if annotate_mode == "semantic" else {}
+    )
+
     # WI-15+: when a specialized cluster (fill_submit, select_autocomplete,
     # select_option, set_selection, date_select) folded multiple events,
     # the per-event loop must SKIP the non-primary members so we don't
@@ -2084,6 +2177,46 @@ def build_skill(
             ) = _build_set_selection_spec(
                 cluster_here, events, causality, ev
             )
+            # WI-20: overlay dependent-multiselect metadata onto the
+            # child set_selection spec when a parent picker drove its
+            # options. depends_on, parent_picker_fp, option_source.
+            if ev.event_id and ev.event_id in dependent_multiselect:
+                parent_ev, req_ev = dependent_multiselect[ev.event_id]
+                if parent_ev is not None:
+                    # Resolve parent's param name via the running index.
+                    parent_pname = (
+                        binding_name_by_event_id.get(parent_ev.event_id or "")
+                        if parent_ev.event_id else None
+                    )
+                    set_selection_spec.depends_on = parent_pname
+                    set_selection_spec.parent_picker_fp = parent_ev.fingerprint
+                if req_ev is not None and req_ev.url:
+                    try:
+                        url_pattern = req_ev.url.split("?", 1)[0]
+                    except Exception:
+                        url_pattern = req_ev.url
+                    method = (req_ev.method or "GET").upper()
+                    if method not in (
+                        "GET", "POST", "PATCH", "PUT", "DELETE"
+                    ):
+                        method = "GET"
+                    set_selection_spec.option_source = NetworkExpectation(
+                        url_pattern=url_pattern,
+                        method=method,  # type: ignore[arg-type]
+                        optional=False,
+                    )
+                # hierarchy_path: for now, two-level (parent name ->
+                # child param name). Future hierarchical pickers will
+                # extend this when deeper trees are recorded.
+                if parent_ev is not None and set_selection_param_name:
+                    parent_pname = (
+                        binding_name_by_event_id.get(parent_ev.event_id or "")
+                        if parent_ev.event_id else None
+                    )
+                    if parent_pname:
+                        set_selection_spec.hierarchy_path = [
+                            parent_pname, set_selection_param_name,
+                        ]
 
         # WI-17: build the SelectOptionSpec for select_option cluster
         # steps. The recording's options_snapshot is captured on the

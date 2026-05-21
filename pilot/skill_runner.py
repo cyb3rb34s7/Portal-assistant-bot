@@ -983,6 +983,18 @@ class SkillRunner:
                 0,
             )
 
+        # WI-20: if this set_selection depends on a parent picker, wait
+        # for the option-source request to finish refreshing the child
+        # picker's options BEFORE reading current state. The parent
+        # step is responsible for changing the parent picker value;
+        # WI-20's contract is "child options must be refreshed before
+        # this step reconciles."
+        if spec.option_source is not None:
+            from .skill_models import ExpectedSignals as _ES
+            self._wait_for_page_settle(
+                expected=_ES(network=[spec.option_source])
+            )
+
         target = self.params.get(spec.param)
         if not isinstance(target, list):
             # Tolerant CSV split is convenient for CLI invocations but
