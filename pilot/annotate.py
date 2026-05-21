@@ -45,6 +45,7 @@ from .skill_models import (
     OptionSnapshot,
     ParamBinding,
     ParamConstraints,
+    PageContext,
     PopupEffect,
     RichTextSpec,
     ScrollUntilSpec,
@@ -3284,6 +3285,40 @@ def build_skill(
             expected_signal=None,
         )
 
+    # WI-46: build a mapping from popup URLs to their binding_key so
+    # events that occurred INSIDE a popup can be tagged with
+    # page_context. We index by popup_url (the URL the popup opened
+    # to) -- subsequent events whose page_url starts with that URL
+    # are considered inside the popup. The grabber's add_init_script
+    # installs on every page in the context, so popup-interior events
+    # arrive in the same trace stream as main-page events.
+    popup_url_to_binding: dict[str, str] = {}
+    for ev in events:
+        if ev.kind != "popup":
+            continue
+        if not ev.popup_url or not ev.popup_binding_key:
+            continue
+        popup_url_to_binding[ev.popup_url] = ev.popup_binding_key
+    # Build an event -> page_binding_key map. An event is INSIDE a
+    # popup when its page_url matches a known popup_url. We use a
+    # prefix match because popups often navigate within their own
+    # context (e.g. opens about:blank then navigates to the real URL).
+    page_context_by_event: dict[str, str] = {}
+    if popup_url_to_binding:
+        for ev in events:
+            if not ev.event_id or not ev.page_url:
+                continue
+            for popup_url, binding in popup_url_to_binding.items():
+                # Skip about:blank popup_urls -- they match everything.
+                if not popup_url or popup_url == "about:blank":
+                    continue
+                if (
+                    ev.page_url == popup_url
+                    or ev.page_url.startswith(popup_url)
+                ):
+                    page_context_by_event[ev.event_id] = binding
+                    break
+
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
@@ -3989,6 +4024,16 @@ def build_skill(
             drag_drop=drag_drop_spec,
             toggle_state=toggle_state_spec,
             download_spec=_attached_download_spec,
+            page_context=(
+                PageContext(
+                    page_binding_key=page_context_by_event[ev.event_id],
+                    opens_via="popup_event",
+                    expected_close="auto",
+                )
+                if ev.event_id
+                and ev.event_id in page_context_by_event
+                else None
+            ),
             dependency_chain=dependency_chain_spec,
             ambiguity_policy=dialog_ambiguity_policy,
             auth_precondition=auth_precondition_value,

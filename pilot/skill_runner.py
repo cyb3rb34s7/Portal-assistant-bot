@@ -396,6 +396,38 @@ class SkillRunner:
     # ---- Execution -----------------------------------------------------
 
     def _execute_step(self, step: SkillStep) -> tuple[ToolResult, int]:
+        # WI-46: when the step declares page_context, temporarily swap
+        # self.session.page to the popup-bound page for the duration
+        # of this step. Action handlers + _resolve_locator read
+        # self.session.page directly, so this single-point swap routes
+        # the WHOLE step (locator resolution, click dispatch, wait
+        # helpers) to the right page without touching every handler.
+        # The original page is restored in a try/finally so a failing
+        # step can't leave the runner pointed at the popup.
+        _orig_page = None
+        if step.page_context is not None:
+            bound = self.session.popup_pages.get(
+                step.page_context.page_binding_key
+            )
+            if bound is not None:
+                _orig_page = self.session.page
+                self.session.page = bound
+            else:
+                self._diagnostic(
+                    "runner.page_context_unbound",
+                    level="warn",
+                    recoverable=True,
+                    page_binding_key=step.page_context.page_binding_key,
+                )
+        try:
+            return self._execute_step_inner(step)
+        finally:
+            if _orig_page is not None:
+                self.session.page = _orig_page
+
+    def _execute_step_inner(
+        self, step: SkillStep
+    ) -> tuple[ToolResult, int]:
         self.console.print(
             f"[cyan]-[/cyan] step {step.index:02d}  "
             f"[dim]{step.action}[/dim]  "
