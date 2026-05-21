@@ -1,5 +1,111 @@
 base_url: http://localhost:5188/upload
 pages:
+  /asset/A-9001:
+    buttons:
+    - label: Sign out
+      role: button
+      test_id: btn-logout
+    first_seen: '2026-05-21T15:13:50.276535'
+    inputs: []
+    last_seen: '2026-05-21T15:30:38.774662'
+    links:
+    - href: /catalog
+      test_id: nav-catalog
+      text: Catalog
+    - href: /upload
+      test_id: nav-upload
+      text: Upload
+    - href: /curation
+      test_id: nav-curation
+      text: Curation
+    path: /asset/A-9001
+    selects: []
+    titles:
+    - Sample Portal
+    url: http://localhost:5188/asset/A-9001
+    visit_count: 2
+  /catalog:
+    buttons:
+    - label: Sign out
+      role: button
+      test_id: btn-logout
+    - label: Search
+      role: button
+      test_id: btn-catalog-search
+    first_seen: '2026-05-21T15:13:21.649543'
+    inputs:
+    - label: null
+      name: null
+      placeholder: Asset ID or title...
+      required: false
+      test_id: input-catalog-search
+      type: text
+    last_seen: '2026-05-21T15:30:30.134996'
+    links:
+    - href: /catalog
+      test_id: nav-catalog
+      text: Catalog
+    - href: /upload
+      test_id: nav-upload
+      text: Upload
+    - href: /curation
+      test_id: nav-curation
+      text: Curation
+    path: /catalog
+    selects:
+    - label: null
+      name: null
+      options:
+      - text: All categories
+        value: ''
+      - text: Sports
+        value: sports
+      - text: News
+        value: news
+      - text: Entertainment
+        value: entertainment
+      - text: Kids
+        value: kids
+      - text: Documentary
+        value: documentary
+      - text: Drama
+        value: drama
+      - text: Comedy
+        value: comedy
+      - text: Music
+        value: music
+      test_id: select-catalog-category
+    titles:
+    - Sample Portal
+    url: http://localhost:5188/catalog
+    visit_count: 2
+  /login:
+    buttons:
+    - label: Sign in
+      role: button
+      test_id: btn-login
+    first_seen: '2026-05-21T15:13:10.118918'
+    inputs:
+    - label: Username
+      name: null
+      placeholder: null
+      required: false
+      test_id: input-username
+      type: text
+    - label: Password
+      name: null
+      placeholder: null
+      required: false
+      test_id: input-password
+      type: password
+    last_seen: '2026-05-21T15:13:10.118918'
+    links: []
+    path: /login
+    selects: []
+    titles:
+    - Sample Portal
+    url: http://localhost:5188/login
+    visit_count: 1
   /upload:
     buttons: []
     first_seen: '2026-05-06T19:54:40.706760'

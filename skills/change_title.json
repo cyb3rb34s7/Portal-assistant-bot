@@ -1,0 +1,845 @@
+{
+  "name": "change_title",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "created_at": "2026-05-21T15:30:56.376100",
+  "updated_at": "2026-05-21T15:30:56.376102",
+  "base_url": null,
+  "params": [
+    {
+      "name": "input_catalog_search",
+      "type": "string",
+      "description": "Value for step 1: fill_input_catalog_search",
+      "example": "A",
+      "required": true,
+      "depends_on": null,
+      "select_from_current_options": false
+    },
+    {
+      "name": "input_asset_title",
+      "type": "string",
+      "description": "Value for step 8: fill_input_asset_title",
+      "example": "Spring Cup Final 202",
+      "required": true,
+      "depends_on": null,
+      "select_from_current_options": false
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/catalog",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:29.130392",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-catalog-search",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Asset ID or title...",
+        "text": null,
+        "placeholder": "Asset ID or title...",
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input[data-testid='input-catalog-search']",
+        "xpath": "/html/body/div/div/main/section/form/div/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": "catalog-search-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "catalog-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 110.0,
+          "width": 523.640625,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": "A",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_catalog_search",
+      "param_binding": {
+        "name": "input_catalog_search",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:31.422802",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 2,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-catalog-search",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Asset ID or title...",
+        "text": null,
+        "placeholder": "Asset ID or title...",
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input[data-testid='input-catalog-search']",
+        "xpath": "/html/body/div/div/main/section/form/div/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": "catalog-search-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "catalog-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 110.0,
+          "width": 523.640625,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": "A-90",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_catalog_search",
+      "param_binding": {
+        "name": "input_catalog_search",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:33.058629",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 3,
+      "action": "key",
+      "fingerprint": {
+        "test_id": "input-catalog-search",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Asset ID or title...",
+        "text": null,
+        "placeholder": "Asset ID or title...",
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input[data-testid='input-catalog-search']",
+        "xpath": "/html/body/div/div/main/section/form/div/input",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": "catalog-search-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "catalog-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 110.0,
+          "width": 523.640625,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": "Enter",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "key_enter_input_catalog_search",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:33.388415",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 4,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-catalog-search",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Search",
+        "text": "Search",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-catalog-search']",
+        "xpath": "/html/body/div/div/main/section/form/div/button",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "row"
+          },
+          {
+            "tag": "form",
+            "id": null,
+            "testId": "catalog-search-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "catalog-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 948.640625,
+          "y": 111.0,
+          "width": 72.359375,
+          "height": 32.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_catalog_search",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:33.389178",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\d110f592bec2\\screenshots\\20260521T153033389191_004_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 5,
+      "action": "submit",
+      "fingerprint": {
+        "test_id": "catalog-search-form",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": null,
+        "accessible_name": "All categories Sports News Entertainment Kids Documentary Drama Comedy Music Search",
+        "text": "All categories Sports News Entertainment Kids Documentary Drama Comedy Music Search",
+        "placeholder": null,
+        "tag": "form",
+        "input_type": null,
+        "css_path": "form[data-testid='catalog-search-form']",
+        "xpath": "/html/body/div/div/main/section/form",
+        "ancestor_chain": [
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "catalog-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "body",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 256.0,
+          "y": 90.0,
+          "width": 788.0,
+          "height": 74.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "submit_catalog_search_form",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:33.485621",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\d110f592bec2\\screenshots\\20260521T153033485641_005_submit.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 6,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-open-A-9001",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Open",
+        "text": "Open",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-open-A-9001']",
+        "xpath": "/div/div/main/section/div/table/tbody/tr[1]/td[4]/button",
+        "ancestor_chain": [
+          {
+            "tag": "td",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "tr",
+            "id": null,
+            "testId": "catalog-row-A-9001",
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "tbody",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "table",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "catalog-table"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "catalog-results",
+            "role": null,
+            "className": "card"
+          }
+        ],
+        "landmark": "Catalog",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 859.796875,
+          "y": 274.0,
+          "width": 64.25,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {
+          "test_id": "btn-open-{input_catalog_search}01",
+          "css_path": "button[data-testid='btn-open-{input_catalog_search}01']"
+        }
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_open_a_9001",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:38.065924",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\d110f592bec2\\screenshots\\20260521T153038065973_006_click.png",
+      "auto_post_observed": null
+    },
+    {
+      "index": 7,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/asset/A-9001",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:38.124753",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 8,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-asset-title",
+        "element_id": "asset-title",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Title",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#asset-title",
+        "xpath": "/html/body/div/div/main/section/div/input[1]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Asset A-9001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 308.921875,
+          "y": 111.0,
+          "width": 177.0,
+          "height": 21.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": "Spring Cup Final 202",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_asset_title",
+      "param_binding": {
+        "name": "input_asset_title",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:43.299560",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 9,
+      "action": "change",
+      "fingerprint": {
+        "test_id": "input-asset-title",
+        "element_id": "asset-title",
+        "name": null,
+        "aria_label": null,
+        "role": "textbox",
+        "accessible_name": "Title",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "text",
+        "css_path": "input#asset-title",
+        "xpath": "/html/body/div/div/main/section/div/input[1]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          },
+          {
+            "tag": "div",
+            "id": "root",
+            "testId": null,
+            "role": null,
+            "className": null
+          }
+        ],
+        "landmark": "Asset A-9001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 308.921875,
+          "y": 111.0,
+          "width": 177.0,
+          "height": 21.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": "Spring Cup Final 20289",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_input_asset_title",
+      "param_binding": {
+        "name": "input_asset_title",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:44.596893",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 10,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-save",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Save",
+        "text": "Save",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid='btn-save']",
+        "xpath": "/html/body/div/div/main/section/div/div[4]/button[1]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "action-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Asset A-9001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 381.171875,
+          "width": 59.921875,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "alternates": [],
+        "templates": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_save",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "set_selection": null,
+      "captured_at": "2026-05-21T15:30:45.908377",
+      "screenshot_path": "D:\\PROJECTS\\Portal Assistant\\Portal-assistant-bot\\sessions\\d110f592bec2\\screenshots\\20260521T153045908421_010_click.png",
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "d110f592bec2"
+}

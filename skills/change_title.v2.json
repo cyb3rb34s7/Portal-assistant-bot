@@ -1,0 +1,49 @@
+{
+  "description": "Change the title of an asset in the catalog by searching for it and updating its title.",
+  "parameters": [
+    {
+      "name": "catalog_search_query",
+      "semantic": "The search query to find the asset in the catalog.",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column catalog_search_query, row 1",
+      "default_hint": "A"
+    },
+    {
+      "name": "new_asset_title",
+      "semantic": "The new title to assign to the asset.",
+      "required": true,
+      "type": "string",
+      "source_hint": "CSV column new_asset_title, row 1",
+      "default_hint": "Spring Cup Final 202"
+    }
+  ],
+  "preconditions": [
+    "The user is logged in to the portal.",
+    "The catalog search page is open."
+  ],
+  "destructive_actions": [
+    {
+      "step": 10,
+      "kind": "save",
+      "reversible": true,
+      "confirm_prompt": null
+    }
+  ],
+  "success_assertions": [
+    {
+      "type": "text_visible",
+      "text": "The asset title has been updated successfully.",
+      "scope": "page"
+    },
+    {
+      "type": "text_visible",
+      "text": "The new title is visible in the catalog.",
+      "scope": "page"
+    }
+  ],
+  "param_alias_map": {
+    "catalog_search_query": "input_catalog_search",
+    "new_asset_title": "input_asset_title"
+  }
+}

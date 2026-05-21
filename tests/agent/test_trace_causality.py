@@ -16,6 +16,7 @@ from pilot.annotate import (
     _assign_synthetic_ids,
     build_causality_graph,
     build_skill,
+    filter_events,
 )
 from pilot.skill_models import TraceEvent
 
@@ -87,6 +88,27 @@ def test_causality_graph_indexes_by_all_keys() -> None:
     # User actions are events without a cause -- both the click AND the
     # manually-initiated navigation count.
     assert set(g["user_actions"]) == {"c1", "n2"}
+
+
+def test_filter_events_accepts_causality_graph() -> None:
+    """F-05: filter_events accepts the causality graph as a parameter so
+    downstream WIs (WI-06/13/14) can replace legacy heuristics with
+    causality-aware logic. Today's body doesn't consume it -- this
+    test pins the wiring contract so future refactors don't drop the
+    parameter accidentally."""
+    click = _ev("click", event_id="c1", interaction_id="int-1")
+    nav = _ev(
+        "navigate",
+        event_id="n1",
+        interaction_id="int-1",
+        caused_by="c1",
+        url="/asset/A-9003",
+    )
+    g = build_causality_graph([click, nav])
+    # Passing the graph must not change behavior versus not passing it.
+    out_with = filter_events([click, nav], causality=g)
+    out_without = filter_events([click, nav])
+    assert [e.event_id for e in out_with] == [e.event_id for e in out_without]
 
 
 def test_step_provenance_carries_raw_event_id() -> None:

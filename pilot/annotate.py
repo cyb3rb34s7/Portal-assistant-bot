@@ -16,7 +16,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -137,8 +137,21 @@ def build_causality_graph(events: list[TraceEvent]) -> dict[str, Any]:
 # ---- Noise filter ---------------------------------------------------------
 
 
-def filter_events(events: list[TraceEvent]) -> list[TraceEvent]:
-    """Drop events that don't belong in a replayable skill."""
+def filter_events(
+    events: list[TraceEvent],
+    causality: Optional[dict[str, Any]] = None,
+) -> list[TraceEvent]:
+    """Drop events that don't belong in a replayable skill.
+
+    F-05: ``causality`` is the graph produced by
+    ``build_causality_graph``. It's passed in so future WIs (WI-06,
+    WI-13, WI-14) can replace the legacy heuristics below with
+    causality-aware checks (e.g. drop a same-URL navigate only when
+    its ``caused_by`` is also a navigate to the same URL). Today's
+    body does not consume it -- this is wiring only -- but the data
+    flow is now correct.
+    """
+    _ = causality  # reserved -- consumed by WI-06/13/14
     out: list[TraceEvent] = []
     last_nav_url: Optional[str] = None
     prev: Optional[TraceEvent] = None
@@ -533,7 +546,16 @@ def run_annotate(
         skill_name = meta.get("skill_name") or session_id
 
     raw_events = load_trace(session_dir)
-    events = filter_events(raw_events)
+    # F-05: identity + causality MUST be computed on the raw event
+    # list, before filter_events drops anything. Otherwise the graph
+    # is built from a pre-filtered view and downstream consumers
+    # (WI-06/13/14 will replace the legacy heuristics in filter_events
+    # with causality-aware logic) cannot see the dropped events'
+    # causal ancestors. The graph is then passed into filter_events
+    # so future WIs can read it without rebuilding.
+    raw_events = _assign_synthetic_ids(list(raw_events))
+    causality = build_causality_graph(raw_events)
+    events = filter_events(raw_events, causality=causality)
 
     console.print(
         Panel.fit(
