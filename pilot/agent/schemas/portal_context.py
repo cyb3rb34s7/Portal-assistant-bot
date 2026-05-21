@@ -45,6 +45,65 @@ class SessionInfo(BaseModel):
     notes: str | None = None
 
 
+class IdempotencyCapability(BaseModel):
+    """How the portal's backend handles idempotency keys.
+
+    Replaces the prior "inject Idempotency-Key into every non-GET
+    request" behavior, which assumed backend semantics. Now opt-in
+    per portal: the operator declares what the portal accepts.
+
+    A portal that doesn't support idempotency keys leaves ``enabled``
+    False (the default) and the runner won't inject the header.
+    The runner still tracks per-step idempotency-context internally
+    for retry safety -- it just doesn't send it on the wire."""
+
+    enabled: bool = False
+    """Master switch. False -> runner does not inject the header. The
+    audit log still records when a destructive step ran without
+    configured idempotency, so the operator sees the gap."""
+
+    header_name: str = "Idempotency-Key"
+    """Header name the portal accepts. Some portals use ``X-Idempotency-Key``
+    or vendor-specific names."""
+
+    endpoint_patterns: list[str] = Field(default_factory=list)
+    """URL substring patterns where injection applies. Empty list
+    means "all non-GET requests get a key" (per ``method_patterns``).
+    Use this to scope injection to known-safe destructive endpoints
+    (e.g. ``/api/assets/`` + ``/api/orders/``) and skip injection on
+    auth / search / autocomplete endpoints that don't dedupe."""
+
+    method_patterns: list[Literal["POST", "PUT", "PATCH", "DELETE"]] = Field(
+        default_factory=lambda: ["POST", "PUT", "PATCH", "DELETE"]
+    )
+    """HTTP methods to inject on."""
+
+    key_components: list[Literal[
+        "session", "step_index", "method", "url_path", "body_hash",
+        "query_canonical",
+    ]] = Field(
+        default_factory=lambda: ["session", "step_index", "url_path"]
+    )
+    """Which components contribute to the key. Same components in the
+    same order produce the same key, so a retry of the same logical
+    operation dedupes. Adding ``body_hash`` makes the key depend on
+    the request body -- distinct PATCHes against the same URL get
+    distinct keys, preventing accidental dedupe of legitimate edits."""
+
+    body_hash_fields: list[str] = Field(default_factory=list)
+    """When ``key_components`` includes ``body_hash``, hash ONLY these
+    fields (case-insensitive, dot-path on JSON bodies). Empty -> hash
+    the whole body. Used to exclude noisy fields like timestamps
+    while still differentiating semantically distinct requests."""
+
+    allow_existing_header: bool = True
+    """If the app code already sets an ``Idempotency-Key`` header on
+    a request, leave it alone (default). Set False to force the
+    runner's key to win -- needed when the app generates a fresh key
+    per call and you want retries to dedupe against the runner's key
+    instead."""
+
+
 class AuthSignal(BaseModel):
     """How to tell whether the portal is currently authenticated.
 
@@ -116,6 +175,14 @@ class PortalContext(BaseModel):
     upward for portals where requests dispatch in rapid bursts (UI
     fires four GETs serially after a click) and we want to wait for
     all of them. Tune downward for snappy portals."""
+
+    idempotency: "IdempotencyCapability" = Field(
+        default_factory=lambda: IdempotencyCapability()
+    )
+    """How the runner should inject idempotency keys on state-changing
+    requests. Default is ``enabled=False`` -- portals opt in by
+    declaring the capability, which is safer than the previous
+    global-injection behavior (WI-04 from the fix-everything plan)."""
 
     extra: dict[str, Any] = Field(default_factory=dict)
 

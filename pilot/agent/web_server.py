@@ -850,6 +850,9 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 network_quiet_ms=(
                     portal_ctx.network_quiet_ms if portal_ctx else 250
                 ),
+                idempotency_capability=(
+                    portal_ctx.idempotency if portal_ctx else None
+                ),
             )
         )
 

@@ -132,3 +132,21 @@ auth_signal:
 # in-flight checks. Empty for now since the sample portal has no
 # long-poll / SSE channels; included as documentation of the field.
 network_ignore: []
+
+# WI-04: idempotency capability. The sample portal's mock backend has
+# an Idempotency-Key middleware that dedupes within a 60s window. We
+# declare the capability here so the runner injects keys on PATCH /
+# POST against the destructive endpoints. body_hash is included so
+# two PATCH /api/assets/A-9001 calls with different bodies get
+# different keys (legitimate distinct edits don't dedupe).
+idempotency:
+  enabled: true
+  header_name: "Idempotency-Key"
+  endpoint_patterns:
+    - "/api/assets/"
+    - "/api/save"
+    - "/api/apply"
+  method_patterns: ["POST", "PUT", "PATCH", "DELETE"]
+  key_components: ["session", "step_index", "method", "url_path", "body_hash"]
+  body_hash_fields: []   # hash the whole body
+  allow_existing_header: true

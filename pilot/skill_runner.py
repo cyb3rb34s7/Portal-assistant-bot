@@ -135,6 +135,10 @@ class SkillRunner:
         # wait predicate.
         self.portal_network_ignore: list[str] = []
         self.network_quiet_ms: int = 250
+        # WI-04: portal idempotency capability. None disables injection
+        # entirely. The RealExecutor sets this from PortalContext.idempotency
+        # at construction; legacy callers leave it None.
+        self.idempotency_capability: Optional[Any] = None
         # Disambiguation hints keyed by step.index. Carries operator
         # picks from prior runs so we can resolve ambiguity without
         # pausing again. Set externally by the executor reading the
@@ -1433,31 +1437,45 @@ class SkillRunner:
         """Install the in-page quiescence watchers if they aren't already.
 
         Idempotent -- safe to call before every wait. Failures here are
-        non-fatal; we just fall back to the simpler spinner check."""
+        non-fatal; we just fall back to the simpler spinner check.
+
+        WI-04: the idempotency shim is installed only when the portal
+        declares the capability. A portal that doesn't support
+        idempotency keys (most don't have the middleware) gets no
+        injection -- the previous global-injection behavior assumed
+        backend semantics."""
         try:
             page.evaluate(self._WATCHER_INSTALL_JS)
-            page.evaluate(self._IDEMPOTENCY_INSTALL_JS)
+            if self._idempotency_enabled():
+                page.evaluate(self._IDEMPOTENCY_INSTALL_JS)
         except Exception:
             pass
 
-    # JS that installs a fetch+XHR shim adding an Idempotency-Key header
-    # derived from window.__cp_step_idem (set by _set_step_idem_context
-    # before each step). The shim only fires on state-changing methods
-    # (POST/PATCH/PUT/DELETE) and never overrides an existing key that
-    # the app already chose. Combined with the sample portal's
-    # Idempotency-Key middleware, this means two retry attempts of the
-    # same step issue the same key for the same URL and the second
-    # attempt returns the cached response -- no double-publish.
+    def _idempotency_enabled(self) -> bool:
+        cfg = getattr(self, "idempotency_capability", None)
+        if cfg is None:
+            return False
+        return bool(getattr(cfg, "enabled", False))
+
+    # WI-04: capability-driven idempotency shim.
+    #
+    # Installed only when PortalContext.idempotency.enabled is True
+    # (gated by _ensure_watchers above). The shim reads
+    # window.__cp_idem_config -- set by _set_step_idem_context per
+    # step -- which carries the capability data + per-step key
+    # context. If config is null or disabled, the shim is a passthrough.
+    #
+    # The key is built from the configured ``key_components`` so the
+    # portal operator controls the dedupe semantics (session + step is
+    # safe for our typical workflows; adding body_hash differentiates
+    # legitimate distinct PATCHes against the same URL).
     _IDEMPOTENCY_INSTALL_JS = r"""
     () => {
       if (window.__cp_idem_installed) return true;
       window.__cp_idem_installed = true;
-      window.__cp_step_idem = window.__cp_step_idem || null;
+      window.__cp_idem_config = window.__cp_idem_config || null;
 
-      // Strip query string + hash from URL when building the idempotency
-      // key -- two retries against the same logical endpoint should
-      // dedupe even if one sends a cursor param the other doesn't.
-      function _idemUrl(urlStr) {
+      function _idemPath(urlStr) {
         if (!urlStr) return '';
         let u = String(urlStr);
         const q = u.indexOf('?');
@@ -1467,14 +1485,91 @@ class SkillRunner:
         return u;
       }
 
-      function _augment(headers, method, urlStr) {
-        const m = (method || 'GET').toUpperCase();
-        if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return headers;
-        const ctx = window.__cp_step_idem;
-        if (!ctx) return headers;
+      function _canonicalQuery(urlStr) {
+        try {
+          const u = new URL(urlStr, location.href);
+          const entries = [];
+          u.searchParams.forEach((v, k) => entries.push([k, v]));
+          entries.sort((a, b) => (a[0] < b[0] ? -1 : 1));
+          return entries.map(([k, v]) => k + '=' + v).join('&');
+        } catch (e) { return ''; }
+      }
+
+      function _hashString(s) {
+        // FNV-1a 32-bit. Sufficient for dedupe within a session;
+        // not cryptographic. Stable across browser sessions.
+        let h = 2166136261;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = (h * 16777619) >>> 0;
+        }
+        return h.toString(16);
+      }
+
+      function _bodyHash(body, fields) {
+        if (!body) return '';
+        let payload = '';
+        if (typeof body === 'string') {
+          payload = body;
+        } else {
+          try { payload = JSON.stringify(body); } catch (e) { payload = String(body); }
+        }
+        if (!fields || fields.length === 0) return _hashString(payload);
+        // Field-subset hashing: parse the JSON, pick declared fields,
+        // hash that. If the body isn't JSON, fall back to whole-body
+        // hash (operator opted into body_hash but didn't fence it).
+        let obj;
+        try { obj = JSON.parse(payload); } catch (e) { return _hashString(payload); }
+        const subset = {};
+        for (const f of fields) {
+          let v = obj;
+          for (const part of f.split('.')) {
+            if (v && typeof v === 'object' && part in v) v = v[part];
+            else { v = undefined; break; }
+          }
+          if (v !== undefined) subset[f] = v;
+        }
+        return _hashString(JSON.stringify(subset));
+      }
+
+      function _buildKey(cfg, method, urlStr, body) {
+        const parts = [];
+        for (const c of (cfg.key_components || [])) {
+          switch (c) {
+            case 'session':    parts.push(cfg.session_id || ''); break;
+            case 'step_index': parts.push(String(cfg.step_index ?? '')); break;
+            case 'method':     parts.push((method || 'GET').toUpperCase()); break;
+            case 'url_path':   parts.push(_idemPath(urlStr)); break;
+            case 'query_canonical': parts.push(_canonicalQuery(urlStr)); break;
+            case 'body_hash':  parts.push(_bodyHash(body, cfg.body_hash_fields || [])); break;
+          }
+        }
+        return parts.join('|');
+      }
+
+      function _endpointMatches(cfg, urlStr) {
+        const patterns = cfg.endpoint_patterns || [];
+        if (patterns.length === 0) return true;  // no scoping
+        const lower = String(urlStr || '').toLowerCase();
+        return patterns.some(p => lower.indexOf(p.toLowerCase()) >= 0);
+      }
+
+      function _methodMatches(cfg, method) {
+        const allowed = (cfg.method_patterns || [
+          'POST', 'PUT', 'PATCH', 'DELETE'
+        ]).map(m => m.toUpperCase());
+        return allowed.indexOf((method || 'GET').toUpperCase()) >= 0;
+      }
+
+      function _augment(headers, method, urlStr, body) {
+        const cfg = window.__cp_idem_config;
+        if (!cfg || !cfg.enabled) return headers;
+        if (!_methodMatches(cfg, method)) return headers;
+        if (!_endpointMatches(cfg, urlStr)) return headers;
+        const headerName = cfg.header_name || 'Idempotency-Key';
         const h = new Headers(headers || {});
-        if (h.has('Idempotency-Key')) return h;
-        h.set('Idempotency-Key', ctx + ':' + _idemUrl(urlStr));
+        if (h.has(headerName) && cfg.allow_existing_header !== false) return h;
+        h.set(headerName, _buildKey(cfg, method, urlStr, body));
         return h;
       }
 
@@ -1485,8 +1580,9 @@ class SkillRunner:
           try {
             const url = typeof input === 'string' ? input : (input && input.url) || '';
             const method = (init && init.method) || (input && input.method) || 'GET';
+            const body = init && init.body;
             const init2 = init ? Object.assign({}, init) : {};
-            init2.headers = _augment(init.headers || {}, method, url);
+            init2.headers = _augment(init.headers || {}, method, url, body);
             return _f.call(this, input, init2);
           } catch (e) {
             return _f.apply(this, arguments);
@@ -1504,16 +1600,20 @@ class SkillRunner:
           }
           return _setRH.apply(this, arguments);
         };
-        window.XMLHttpRequest.prototype.send = function () {
+        window.XMLHttpRequest.prototype.send = function (body) {
           try {
-            const method = (this.__cp_method || 'GET').toUpperCase();
-            const url = this.__cp_url || '';
-            if (
-              method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' &&
-              !this.__cp_idem_already_set && window.__cp_step_idem
-            ) {
-              _setRH.call(this, 'Idempotency-Key',
-                          window.__cp_step_idem + ':' + _idemUrl(url));
+            const cfg = window.__cp_idem_config;
+            if (cfg && cfg.enabled) {
+              const method = (this.__cp_method || 'GET').toUpperCase();
+              const url = this.__cp_url || '';
+              const headerName = cfg.header_name || 'Idempotency-Key';
+              if (
+                _methodMatches(cfg, method) &&
+                _endpointMatches(cfg, url) &&
+                (!this.__cp_idem_already_set || cfg.allow_existing_header === false)
+              ) {
+                _setRH.call(this, headerName, _buildKey(cfg, method, url, body));
+              }
             }
           } catch (e) {}
           return _send.apply(this, arguments);
@@ -1524,27 +1624,64 @@ class SkillRunner:
     """
 
     def _set_step_idem_context(self, page: Page, step: SkillStep) -> None:
-        """Set the per-step idempotency context on the page.
+        """Set the per-step idempotency config on the page.
 
-        Combines the runner's session_id with the step.index so:
-          - retries of the SAME step within the SAME run share the key
-            (the backend's Idempotency-Key middleware dedupes them)
-          - the next replay run gets fresh keys (new session_id), so
-            stale cache entries from yesterday don't leak.
-        Failures here are non-fatal -- idempotency is a safety net,
-        not a correctness requirement -- but we log them so a silent
-        regression doesn't go undetected when a real customer cares.
-        """
+        WI-04: this now writes the full capability config (header
+        name, endpoint patterns, method patterns, key components)
+        plus the per-step context (session id + step index) so the
+        page-side shim has everything it needs to build the right
+        key for the right requests. When the portal doesn't declare
+        idempotency capability, this still runs but writes ``enabled:
+        False`` so the shim short-circuits.
+
+        Also logs a warning if the step is annotated destructive
+        (requires_gate) but no capability is configured -- that's the
+        operator's signal to declare idempotency on the portal."""
+        cap = getattr(self, "idempotency_capability", None)
+        if cap is None or not getattr(cap, "enabled", False):
+            # Even when disabled, clear stale config from a prior task
+            # that may have left it set.
+            try:
+                page.evaluate(
+                    "() => { window.__cp_idem_config = { enabled: false }; }"
+                )
+            except Exception:
+                pass
+            if step.requires_gate:
+                self.audit.log(
+                    "warn",
+                    (
+                        f"step {step.index} is destructive but portal has no "
+                        "idempotency capability configured -- retries may "
+                        "double-write. Declare PortalContext.idempotency to "
+                        "fix."
+                    ),
+                    data={"step_index": step.index, "label": step.semantic_label},
+                )
+            return
+
+        cfg = {
+            "enabled": True,
+            "header_name": getattr(cap, "header_name", "Idempotency-Key"),
+            "endpoint_patterns": list(getattr(cap, "endpoint_patterns", []) or []),
+            "method_patterns": list(getattr(cap, "method_patterns", []) or []),
+            "key_components": list(getattr(cap, "key_components", []) or []),
+            "body_hash_fields": list(getattr(cap, "body_hash_fields", []) or []),
+            "allow_existing_header": bool(
+                getattr(cap, "allow_existing_header", True)
+            ),
+            "session_id": self.session_id,
+            "step_index": step.index,
+        }
         try:
-            ctx = f"replay:{self.session_id}:{step.index}"
             page.evaluate(
-                "(ctx) => { window.__cp_step_idem = ctx; }", ctx
+                "(cfg) => { window.__cp_idem_config = cfg; }", cfg
             )
         except Exception as e:  # noqa: BLE001
             self.audit.log(
                 "warn",
                 (
-                    f"idempotency context not set for step {step.index} "
+                    f"idempotency config not set for step {step.index} "
                     f"({type(e).__name__}: {e}) -- retries of this step "
                     "may double-write to destructive endpoints"
                 ),

@@ -101,6 +101,12 @@ class RealExecutorConfig:
     """How long network has to be quiet before the wait predicate
     returns. Sourced from PortalContext.network_quiet_ms."""
 
+    idempotency_capability: Any = None
+    """Portal idempotency capability (PortalContext.idempotency). None
+    means the runner does not inject idempotency keys -- the default
+    safe behavior for portals whose backend hasn't declared support.
+    Sourced from PortalContext.idempotency by the orchestrator."""
+
 
 class RealExecutor(StepExecutor):
     """Bridges the agent's PlanStep onto a full SkillRunner invocation."""
@@ -441,6 +447,7 @@ class RealExecutor(StepExecutor):
                 self.config.portal_network_ignore or []
             )
             runner.network_quiet_ms = int(self.config.network_quiet_ms)
+            runner.idempotency_capability = self.config.idempotency_capability
             results = runner.run()
         except Exception as e:  # noqa: BLE001
             # Drop the session on a crash; the next step will re-attach.
