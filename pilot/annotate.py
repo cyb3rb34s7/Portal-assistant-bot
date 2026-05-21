@@ -4288,6 +4288,32 @@ def build_skill(
     if skipped and not auto:
         console.print(f"[dim]Skipped {skipped} event(s) marked as noise.[/dim]")
 
+    # WI-48: derive Skill.recording_context from the most-common
+    # locale_hint + timezone_hint observed across fingerprints. Each
+    # fingerprint already carries WI-03's locale + timezone reads, so
+    # we pick the most frequent non-None value. A skill whose
+    # fingerprints disagree on locale (rare; could happen if the
+    # operator switched apps mid-recording) takes the modal value.
+    from .skill_models import RecordingContext as _RC
+    from collections import Counter as _Counter
+    _locales = _Counter()
+    _timezones = _Counter()
+    for ev in events:
+        fp = ev.fingerprint
+        if fp is None:
+            continue
+        if fp.locale_hint:
+            _locales[fp.locale_hint] += 1
+        if fp.timezone_hint:
+            _timezones[fp.timezone_hint] += 1
+    _ctx_locale = _locales.most_common(1)[0][0] if _locales else None
+    _ctx_tz = _timezones.most_common(1)[0][0] if _timezones else None
+    recording_ctx = (
+        _RC(locale=_ctx_locale, timezone=_ctx_tz)
+        if (_ctx_locale or _ctx_tz)
+        else None
+    )
+
     skill = Skill(
         name=skill_name,
         description=description,
@@ -4303,6 +4329,7 @@ def build_skill(
         # annotator chose without re-deriving from raw events.
         annotate_mode=annotate_mode,
         semantic_clusters=clusters,
+        recording_context=recording_ctx,
     )
     # WI-11: strong-provenance templates first (row_key / operator_input);
     # legacy substring pass fills only the fields the strong pass left

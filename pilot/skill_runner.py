@@ -248,6 +248,35 @@ class SkillRunner:
             "auth signals configured but none matched",
         )
 
+    # ---- WI-48: locale + timezone probe -------------------------------
+
+    def _probe_page_locale_tz(self) -> tuple[Optional[str], Optional[str]]:
+        """Probe the live page for its locale + timezone, returning a
+        (locale, timezone) tuple. Either side is None when the page
+        couldn't surface the value (no <html lang>, no Intl, etc.).
+
+        Used by run() to emit locale_mismatch / timezone_mismatch
+        diagnostics when the recorded context doesn't match the replay
+        environment, and by step-level strict_locale checks to FAIL
+        the step when the operator declared the workflow as
+        locale-sensitive."""
+        try:
+            page = self.session.page
+            res = page.evaluate(
+                "() => ({"
+                " locale: (document.documentElement && document.documentElement.lang)"
+                "   || (navigator && navigator.language) || null,"
+                " timezone: (typeof Intl !== 'undefined' && Intl.DateTimeFormat)"
+                "   ? (Intl.DateTimeFormat().resolvedOptions().timeZone || null)"
+                "   : null"
+                "})"
+            )
+            if not isinstance(res, dict):
+                return (None, None)
+            return (res.get("locale"), res.get("timezone"))
+        except Exception:
+            return (None, None)
+
     # ---- WI-06: diagnostics --------------------------------------------
 
     def _diagnostic(
@@ -314,6 +343,46 @@ class SkillRunner:
             "replay started",
             data={"skill": self.skill.name, "params": self.params},
         )
+
+        # WI-48: compare the live page's locale + timezone against
+        # Skill.recording_context. On mismatch we emit a diagnostic
+        # (audit-visible). Per-step strict_locale=True turns this into
+        # a hard failure during step execution. The codec layer
+        # already handles format normalization (iso_date /
+        # localized_number) so a benign locale switch (e.g. en-US ->
+        # de-DE for date formatting) keeps replay running while
+        # surfacing the gap.
+        self._replay_locale_mismatch = False
+        rc = self.skill.recording_context
+        if rc is not None and (rc.locale or rc.timezone):
+            try:
+                live_locale, live_tz = self._probe_page_locale_tz()
+                if rc.locale and live_locale and rc.locale != live_locale:
+                    self._replay_locale_mismatch = True
+                    self._diagnostic(
+                        "runner.locale_mismatch",
+                        level="warn",
+                        recoverable=True,
+                        recorded_locale=rc.locale,
+                        replay_locale=live_locale,
+                    )
+                if rc.timezone and live_tz and rc.timezone != live_tz:
+                    self._replay_locale_mismatch = True
+                    self._diagnostic(
+                        "runner.timezone_mismatch",
+                        level="warn",
+                        recoverable=True,
+                        recorded_timezone=rc.timezone,
+                        replay_timezone=live_tz,
+                    )
+            except Exception:
+                # Locale probe failure is non-fatal -- we just skip the
+                # warning. Step-level strict_locale checks still rely
+                # on _replay_locale_mismatch being set; absent a probe
+                # value, strict_locale steps treat the unknown state
+                # as 'no mismatch' (safer than failing legitimate
+                # replays under a transient probe outage).
+                pass
 
         for step in self.skill.steps:
             if step.requires_gate:
@@ -521,6 +590,29 @@ class SkillRunner:
                     ),
                     0,
                 )
+
+        # WI-48: strict_locale gate. When the step declared
+        # strict_locale=True AND the run-start probe flagged a
+        # mismatch, fail this step before touching the page so the
+        # operator sees the gap as an actionable error_kind. Without
+        # strict_locale the diagnostic from run() already documented
+        # the gap; the codec layer normalizes inputs.
+        if step.strict_locale and getattr(self, "_replay_locale_mismatch", False):
+            shot = self._screenshot(f"step_{step.index}_locale_mismatch")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="locale mismatch precondition",
+                    error=(
+                        "step declared strict_locale=True but the "
+                        "replay environment's locale / timezone differs "
+                        "from recording_context"
+                    ),
+                    error_kind="locale_mismatch",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
 
         try:
             value = self._resolved_value(step)
