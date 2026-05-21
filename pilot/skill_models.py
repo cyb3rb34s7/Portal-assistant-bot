@@ -1344,6 +1344,54 @@ class DatePickerSpec(BaseModel):
     by recorded click."""
 
 
+class ToggleStateSpec(BaseModel):
+    """WI-33: spec for accordion/expand-collapse toggle as DESIRED
+    state.
+
+    Today an operator clicks the accordion header; the runner clicks
+    blindly even if the panel is already in the desired state. That
+    breaks replays where the page starts in a different state (e.g.
+    the operator recorded 'click to expand,' but at replay the panel
+    is already expanded -- a click would collapse it).
+
+    This spec moves the runner from 'click N times' to 'reach this
+    state, clicking only when current != target.' The grabber's WI-14
+    target_state_after captures the desired state at record time; the
+    annotator stamps it into ToggleStateSpec.target_state. At replay,
+    the runner reads the current state from the recorded state
+    attribute and skips the click when state already matches.
+
+    Acceptance check (from the plan):
+      Replay leaves the panel EXPANDED regardless of starting state.
+      - Already collapsed at replay -> click to expand.
+      - Already expanded at replay -> no-op.
+    """
+
+    target_state: bool
+    """The desired post-action state. True = expanded / pressed /
+    checked / open; False = collapsed / unpressed / unchecked /
+    closed. Read from the grabber's target_state_after at annotate
+    time."""
+
+    state_attribute: Literal[
+        "aria-expanded",
+        "aria-pressed",
+        "aria-checked",
+        "data-state",
+    ] = "aria-expanded"
+    """Which attribute the runner reads to determine current state.
+    Most accordions use aria-expanded; toggle buttons may use
+    aria-pressed; checkboxes use aria-checked; some design systems
+    use data-state with values like 'open'/'closed'."""
+
+    controlled_panel_selector: Optional[str] = None
+    """CSS selector for the panel the toggle controls (typically
+    referenced by aria-controls on the trigger). When set, the runner
+    can verify the panel's visibility matches target_state post-
+    action. None falls back to the state attribute as the sole
+    verification."""
+
+
 class DragDropSpec(BaseModel):
     """WI-30: spec for a drag-and-drop interaction.
 
@@ -1742,6 +1790,12 @@ class SkillStep(BaseModel):
     """WI-30: spec for ``drag_drop`` steps. Carries the source +
     target fingerprints, the DataTransfer payload summary, drop
     effect, and coordinates policy. None for non-drag_drop actions."""
+
+    toggle_state: Optional["ToggleStateSpec"] = None
+    """WI-33: spec for ``toggle_state`` steps (accordion / expand-
+    collapse). Carries the desired target_state, the state attribute
+    to read, and the controlled panel selector. None for clicks that
+    weren't classified as toggles."""
 
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy

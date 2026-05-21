@@ -72,8 +72,7 @@ _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     # Implemented in subsequent WIs and removed from this set:
     #   fill_submit (WI-15), select_autocomplete (WI-16),
     #   select_option (WI-17), date_select (WI-21), slider_set (WI-28),
-    #   drag_drop (WI-30).
-    "toggle_state",         # WI-33
+    #   drag_drop (WI-30), toggle_state (WI-33).
     "modal",                # WI-34
     "popup",                # WI-35
     "download",             # WI-45
@@ -456,6 +455,8 @@ class SkillRunner:
                 result, level = self._do_slider_set(step)
             elif step.action == "drag_drop":
                 result, level = self._do_drag_drop(step)
+            elif step.action == "toggle_state":
+                result, level = self._do_toggle_state(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2458,6 +2459,130 @@ class SkillRunner:
                 screenshot_path=shot,
             ),
             1,
+        )
+
+    def _do_toggle_state(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-33: accordion / expand-collapse toggle as DESIRED state.
+
+        Read the current state from the element's state_attribute
+        (typically aria-expanded). If it already matches the spec's
+        target_state, return success WITHOUT clicking. Otherwise
+        click once and verify the new state matches.
+
+        Acceptance: replay leaves the panel expanded regardless of
+        starting state.
+          - Already collapsed -> click to expand.
+          - Already expanded -> NO-OP (return success without click).
+        """
+        spec = step.toggle_state
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="toggle_state",
+                    error="toggle_state step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        locator, level, heal = self._resolve_locator(step)
+        if locator is None:
+            return self._fallback_human(
+                step, "could not locate toggle control"
+            )
+
+        # Read current state from the declared attribute.
+        attr = spec.state_attribute
+        try:
+            current_raw = locator.get_attribute(attr, timeout=2000)
+        except Exception:
+            current_raw = None
+        current_state: Optional[bool]
+        if current_raw is None:
+            current_state = None
+        elif attr == "data-state":
+            # data-state values: 'open' / 'closed' / 'on' / 'off'.
+            current_state = (current_raw or "").lower() in (
+                "open", "true", "on", "checked", "pressed", "expanded"
+            )
+        else:
+            current_state = (current_raw or "").lower() == "true"
+
+        # Already at target? No-op.
+        if current_state is not None and current_state == spec.target_state:
+            shot = self._screenshot(f"step_{step.index}_toggle_noop")
+            return (
+                ToolResult(
+                    success=True,
+                    action_taken=(
+                        f"toggle_state noop: {attr} already "
+                        f"{spec.target_state!r}"
+                    ),
+                    screenshot_path=shot,
+                    healed=heal,
+                ),
+                level,
+            )
+
+        # Click to flip state.
+        try:
+            locator.click(timeout=4000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"toggle_state click failed: {e}",
+                    error=str(e),
+                    error_kind="toggle_state_click_failed",
+                ),
+                0,
+            )
+
+        # Verify the new state matches the target.
+        try:
+            new_raw = locator.get_attribute(attr, timeout=2000)
+        except Exception:
+            new_raw = None
+        if new_raw is None:
+            new_state: Optional[bool] = None
+        elif attr == "data-state":
+            new_state = (new_raw or "").lower() in (
+                "open", "true", "on", "checked", "pressed", "expanded"
+            )
+        else:
+            new_state = (new_raw or "").lower() == "true"
+
+        shot = self._screenshot(f"step_{step.index}_toggle_state")
+        if new_state is not None and new_state != spec.target_state:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=(
+                        f"toggle_state target={spec.target_state} but "
+                        f"{attr} reads {new_raw!r}"
+                    ),
+                    error="toggle_state did not reach target",
+                    error_kind="toggle_state_mismatch",
+                    error_details={
+                        "target": spec.target_state,
+                        "attribute": attr,
+                        "actual_raw": new_raw,
+                    },
+                    screenshot_path=shot,
+                ),
+                level,
+            )
+        return (
+            ToolResult(
+                success=True,
+                action_taken=(
+                    f"toggle_state {attr}={spec.target_state!r}"
+                ),
+                screenshot_path=shot,
+                healed=heal,
+            ),
+            level,
         )
 
     def _locate_via_template(

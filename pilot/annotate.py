@@ -50,6 +50,7 @@ from .skill_models import (
     SliderSpec,
     StepEffect,
     StepProvenance,
+    ToggleStateSpec,
     TraceEvent,
     ValueTransition,
 )
@@ -2075,6 +2076,111 @@ def _detect_drag_drop_clusters(
     return clusters
 
 
+def _detect_toggle_state_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-33: detect click events on toggle-control elements.
+
+    A click is a toggle when the target carries one of:
+      - aria-expanded (accordion / collapse / disclosure / combobox)
+      - role in _TOGGLE_ROLES (button + aria-pressed)
+      - aria-checked (custom checkbox / switch in ARIA)
+
+    AND the grabber's WI-14 target_state_after captured the post-
+    click state. The desired state at replay is target_state_after.
+    """
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "click" or ev.event_id not in user_actions:
+            continue
+        fp = ev.fingerprint
+        if fp is None:
+            continue
+        # The element must have at least one toggle state attribute
+        # captured. aria_expanded is the strongest signal (accordion
+        # /disclosure); aria_pressed and aria_checked also count.
+        has_expanded = fp.aria_expanded is not None
+        # The target_state_after must carry the post-click state for
+        # us to derive a desired target_state at replay.
+        if not has_expanded:
+            continue
+        if ev.target_state_after is None:
+            continue
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="toggle_state",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+    return clusters
+
+
+def _build_toggle_state_spec(
+    ev: TraceEvent,
+) -> Optional[ToggleStateSpec]:
+    """WI-33: derive a ToggleStateSpec from a click event whose
+    target carried aria-expanded (or similar) and whose
+    target_state_after captured the post-click state."""
+    fp = ev.fingerprint
+    if fp is None or ev.target_state_after is None:
+        return None
+    after = ev.target_state_after
+    # Determine the desired target_state. Prefer aria_expanded after
+    # the click; fall back to aria_pressed / aria_checked / 'open'
+    # data-state.
+    target_state: Optional[bool] = None
+    state_attribute: Literal[
+        "aria-expanded", "aria-pressed", "aria-checked", "data-state"
+    ] = "aria-expanded"
+    if "aria_expanded" in after:
+        v = after["aria_expanded"]
+        target_state = (
+            v if isinstance(v, bool)
+            else str(v).lower() == "true"
+        )
+        state_attribute = "aria-expanded"
+    elif "aria_pressed" in after:
+        v = after["aria_pressed"]
+        target_state = (
+            v if isinstance(v, bool)
+            else str(v).lower() == "true"
+        )
+        state_attribute = "aria-pressed"
+    elif "aria_checked" in after:
+        v = after["aria_checked"]
+        target_state = (
+            v if isinstance(v, bool)
+            else str(v).lower() == "true"
+        )
+        state_attribute = "aria-checked"
+    if target_state is None:
+        # Fall back to the fingerprint's aria_expanded BEFORE the
+        # click and invert (a toggle click flips the state).
+        if fp.aria_expanded is not None:
+            target_state = not fp.aria_expanded
+            state_attribute = "aria-expanded"
+        else:
+            return None
+    return ToggleStateSpec(
+        target_state=target_state,
+        state_attribute=state_attribute,
+        # controlled_panel_selector: future enhancement reads aria-
+        # controls from the grabber's ancestor_chain to derive the
+        # panel selector. For now None means runner verifies via the
+        # state attribute alone.
+        controlled_panel_selector=None,
+    )
+
+
 def _build_drag_drop_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -2276,6 +2382,9 @@ def detect_semantic_clusters(
     clusters.extend(
         _detect_drag_drop_clusters(events, causality, folded_ids)
     )
+    clusters.extend(
+        _detect_toggle_state_clusters(events, causality, folded_ids)
+    )
 
     for ev in events:
         if not ev.event_id or ev.event_id in folded_ids:
@@ -2424,7 +2533,7 @@ def build_skill(
         if c.cluster_kind in (
             "fill_submit", "select_autocomplete", "select_option",
             "set_selection", "date_select", "cascading_select",
-            "slider_set", "drag_drop",
+            "slider_set", "drag_drop", "toggle_state",
         ):
             for raw_id in c.raw_event_ids:
                 if (
@@ -2531,6 +2640,8 @@ def build_skill(
                 action = "slider_set"
             elif cluster_here.cluster_kind == "drag_drop":
                 action = "drag_drop"
+            elif cluster_here.cluster_kind == "toggle_state":
+                action = "toggle_state"
             # ``cascading_select`` keeps action='change' but gets a
             # dependency_chain populated below (WI-18).
 
@@ -2652,6 +2763,17 @@ def build_skill(
             drag_drop_spec = _build_drag_drop_spec(
                 cluster_here, events, ev
             )
+
+        # WI-33: build the ToggleStateSpec for toggle_state cluster
+        # steps. The desired state is target_state_after (captured by
+        # the grabber's WI-14 patch); the runner skips the click when
+        # the current state already matches.
+        toggle_state_spec: Optional[ToggleStateSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "toggle_state"
+        ):
+            toggle_state_spec = _build_toggle_state_spec(ev)
 
         # WI-28: build the SliderSpec for slider_set cluster steps.
         # The cluster's primary target is the LAST event in the drag
@@ -2904,6 +3026,7 @@ def build_skill(
             slider_set=slider_set_spec,
             file_spec=file_spec_value,
             drag_drop=drag_drop_spec,
+            toggle_state=toggle_state_spec,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
