@@ -213,6 +213,19 @@ class TeachRecorder:
             url=raw.get("url"),
             file_name=raw.get("file_name"),
             page_url=raw.get("page_url", ""),
+            # WI-02: identity + causality + ordering. Grabber emits
+            # these on new recordings. Older traces don't have them;
+            # Pydantic defaults to None / no attribution and the
+            # annotator falls back to adjacency.
+            event_id=raw.get("event_id"),
+            interaction_id=raw.get("interaction_id"),
+            caused_by=raw.get("caused_by"),
+            sequence=raw.get("sequence"),
+            source=raw.get("source"),
+            monotonic_ts=raw.get("monotonic_ts"),
+            raw_event_kind=raw.get("raw_event_kind"),
+            page_state_before=raw.get("page_state_before"),
+            page_state_after=raw.get("page_state_after"),
         )
 
         # Screenshot is safe here — we're on the main thread, outside

@@ -29,6 +29,7 @@ from .skill_models import (
     Skill,
     SkillParam,
     SkillStep,
+    StepProvenance,
     TraceEvent,
 )
 
@@ -62,6 +63,75 @@ def load_meta(session_dir: Path) -> dict:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+# ---- WI-02: causality + identity foundation -----------------------------
+
+
+def _assign_synthetic_ids(events: list[TraceEvent]) -> list[TraceEvent]:
+    """Backfill identity for legacy traces recorded before the
+    grabber gained WI-02 event_id/interaction_id support.
+
+    Synthetic IDs are deterministic from file order so a re-annotation
+    of the same trace yields the same IDs (good for incremental
+    workflows). Events that already have an ``event_id`` from the
+    grabber keep theirs untouched.
+
+    Two independent counters: ``id_seq`` for synth-NNNNNN ids,
+    ``order_seq`` for the per-event sequence number. These are
+    independent so a sequence backfill doesn't perturb id numbering.
+
+    This is a migration helper; new recordings will have IDs in place
+    and this function is effectively a no-op for them.
+    """
+    id_seq = 1
+    order_seq = 1
+    for ev in events:
+        if not ev.event_id:
+            ev.event_id = f"synth-{id_seq:06d}"
+            id_seq += 1
+        if ev.sequence is None:
+            ev.sequence = order_seq
+        order_seq += 1
+    return events
+
+
+def build_causality_graph(events: list[TraceEvent]) -> dict[str, Any]:
+    """Construct the causality graph from a list of TraceEvents.
+
+    Returns:
+      {
+        "by_id": {event_id: TraceEvent, ...},
+        "by_interaction": {interaction_id: [event_id, ...], ...},
+        "children_of": {event_id: [child_event_id, ...], ...},
+        "user_actions": [event_id, ...]  # events with no caused_by
+      }
+
+    Downstream WIs (WI-08 click+navigation collapsing, WI-12 semantic
+    clustering) consume this graph to fold consequence events into
+    their causing user-action steps without re-deriving causality from
+    adjacency.
+    """
+    by_id: dict[str, TraceEvent] = {}
+    by_interaction: dict[str, list[str]] = {}
+    children_of: dict[str, list[str]] = {}
+    user_actions: list[str] = []
+    for ev in events:
+        if not ev.event_id:
+            continue
+        by_id[ev.event_id] = ev
+        if ev.interaction_id:
+            by_interaction.setdefault(ev.interaction_id, []).append(ev.event_id)
+        if ev.caused_by:
+            children_of.setdefault(ev.caused_by, []).append(ev.event_id)
+        else:
+            user_actions.append(ev.event_id)
+    return {
+        "by_id": by_id,
+        "by_interaction": by_interaction,
+        "children_of": children_of,
+        "user_actions": user_actions,
+    }
 
 
 # ---- Noise filter ---------------------------------------------------------
@@ -204,6 +274,18 @@ def build_skill(
 ) -> Skill:
     console = console or Console()
 
+    # WI-02: backfill synthetic event_ids for legacy traces so the
+    # causality graph + provenance lookups have consistent inputs
+    # whether the trace was recorded pre- or post- WI-02.
+    events = _assign_synthetic_ids(list(events))
+    # Causality graph is computed here so future WIs (WI-08 click+nav
+    # collapsing, WI-12 semantic clustering) can read it without
+    # re-walking the event list. Stored on the function locals for
+    # now -- a future refactor will pass it through to per-step
+    # provenance population.
+    _causality = build_causality_graph(events)
+    _ = _causality  # reserved -- consumed by WI-08+
+
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
@@ -236,6 +318,15 @@ def build_skill(
             requires_gate=gate,
             captured_at=ev.ts,
             screenshot_path=ev.screenshot_path,
+            # WI-02: link the step back to its source raw event. Once
+            # WI-08 (click+nav collapse) and WI-12 (semantic clusters)
+            # ship, multiple raw event ids will populate this list for
+            # the collapsed step.
+            provenance=StepProvenance(
+                raw_event_ids=[ev.event_id] if ev.event_id else [],
+                cluster_kind="single_event",
+                detection_method="deterministic",
+            ),
         )
         steps.append(step)
 

@@ -22,6 +22,124 @@
   var DEBUG = !!window.__cp_debug;
   var INPUT_DEBOUNCE_MS = 400;
 
+  // ---- WI-02: causality + identity + ordering ---------------------------
+  //
+  // Every emitted event carries an event_id (crypto.randomUUID()) plus
+  // a monotonic sequence number plus, when applicable, a caused_by
+  // reference to the user interaction that triggered it. A click that
+  // fires React Router pushState produces TWO raw events sharing
+  // interaction_id: the click (caused_by=null, source="user_click")
+  // and the navigate (caused_by=click.event_id, source="history.pushState").
+  //
+  // We do NOT suppress raw events here -- the annotator decides what
+  // to collapse based on causality. This preserves intent fidelity
+  // (operator-typed URL bar navigation has caused_by=null and survives
+  // through the annotator; click-driven SPA route change has caused_by
+  // and gets folded into the click's effects).
+  //
+  // activeInteraction is set on user-initiated events (click, keydown,
+  // submit) and lives for ATTRIBUTION_WINDOW_MS so consequence events
+  // (history.pushState, popstate, fetch start, etc.) can attach to it.
+  var ATTRIBUTION_WINDOW_MS = 3000;
+  var activeInteraction = null;
+  var _seq = 0;
+
+  function _newEventId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    // Fallback for older browsers / non-secure contexts. Same shape,
+    // weaker uniqueness; sequence + monotonic_ts compensate.
+    return (
+      Date.now().toString(36) +
+      "-" +
+      Math.random().toString(36).slice(2, 10) +
+      "-" +
+      (++_seq).toString(36)
+    );
+  }
+
+  function _now() {
+    return (window.performance && window.performance.now)
+      ? window.performance.now()
+      : Date.now();
+  }
+
+  function _setActiveInteraction(kind, eventId) {
+    var interactionId = activeInteraction && _isWithinWindow()
+      ? activeInteraction.interaction_id
+      : _newEventId();
+    activeInteraction = {
+      id: eventId,
+      interaction_id: interactionId,
+      kind: kind,
+      ts: _now(),
+    };
+  }
+
+  function _isWithinWindow() {
+    if (!activeInteraction) return false;
+    return _now() - activeInteraction.ts < ATTRIBUTION_WINDOW_MS;
+  }
+
+  function _merge(payload, attribution) {
+    // Shallow-merge attribution fields into the payload object. Used
+    // by every post() call site so attribution doesn't get hand-rolled
+    // (and accidentally omitted) per handler.
+    var out = {};
+    for (var k in payload) if (Object.prototype.hasOwnProperty.call(payload, k)) out[k] = payload[k];
+    for (var j in attribution) if (Object.prototype.hasOwnProperty.call(attribution, j)) out[j] = attribution[j];
+    return out;
+  }
+
+  function _attribution(source, options) {
+    // Consequence-event attribution: returns { event_id,
+    //   interaction_id, caused_by, sequence, source, monotonic_ts }
+    //   with caused_by + interaction_id pulled from the active
+    //   interaction if one is within the attribution window.
+    //
+    // ``options.causal=false`` opts out (informational events like
+    // page_snapshot don't attribute to user actions).
+    //
+    // For events that ARE user actions (click, submit, key, change
+    // commit), use _rootAttribution instead -- those are roots and
+    // must not attribute to a prior unrelated user action.
+    var eventId = _newEventId();
+    var causedBy = null;
+    var interactionId = null;
+    if (options && options.causal === false) {
+      // Informational events: no interaction linkage.
+    } else if (_isWithinWindow()) {
+      causedBy = activeInteraction.id;
+      interactionId = activeInteraction.interaction_id;
+    }
+    return {
+      event_id: eventId,
+      interaction_id: interactionId,
+      caused_by: causedBy,
+      sequence: ++_seq,
+      source: source || null,
+      monotonic_ts: _now(),
+    };
+  }
+
+  function _rootAttribution(source) {
+    // User-initiated events that START an interaction. They are roots
+    // in the causality graph: caused_by=null, fresh interaction_id
+    // (set equal to event_id so the interaction is identifiable by
+    // either id). Two clicks 1s apart produce TWO distinct
+    // interactions; the second does NOT attribute to the first.
+    var eventId = _newEventId();
+    return {
+      event_id: eventId,
+      interaction_id: eventId,
+      caused_by: null,
+      sequence: ++_seq,
+      source: source || null,
+      monotonic_ts: _now(),
+    };
+  }
+
   // ---- Quiescence watchers ------------------------------------------------
   //
   // The runner reads these globals at replay to decide when a step has
@@ -371,11 +489,18 @@
       ) {
         return;
       }
-      post({
+      // WI-02: click is a USER-INITIATED EVENT -- it opens a fresh
+      // interaction window. Subsequent consequence events (history
+      // pushState, fetch starts, mutations) attribute to this click
+      // until the window closes.
+      var attr = _rootAttribution("user_click");
+      _setActiveInteraction("click", attr.event_id);
+      post(_merge({
         kind: "click",
         fingerprint: fingerprint(target),
         page_url: location.href,
-      });
+        raw_event_kind: "click",
+      }, attr));
     },
     true
   );
@@ -390,12 +515,18 @@
 
   function fireInput(el) {
     if (!el) return;
-    post({
+    // input_change is NOT a user-action in the causal sense -- it's
+    // value-settling. It attributes to the most recent active
+    // interaction (typically a focus/click) but does NOT open a new
+    // interaction window. The actual "commit" is usually a subsequent
+    // submit/click/blur.
+    post(_merge({
       kind: "input_change",
       fingerprint: fingerprint(el),
       value: el.value != null ? String(el.value) : "",
       page_url: location.href,
-    });
+      raw_event_kind: "input",
+    }, _attribution("user_input")));
   }
 
   function flushPendingInput() {
@@ -472,36 +603,52 @@
       var t = e.target;
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
+      // WI-02: change events are USER ACTIONS (they commit a value).
+      // Selecting an option in a <select>, picking a file, ticking a
+      // checkbox -- each opens a fresh interaction window so that any
+      // network call / DOM update fired in response attributes back.
       if (tag === "select") {
-        post({
+        var attr1 = _rootAttribution("user_change");
+        _setActiveInteraction("change", attr1.event_id);
+        post(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: t.value != null ? String(t.value) : "",
           page_url: location.href,
-        });
+          raw_event_kind: "change",
+        }, attr1));
       } else if (tag === "input" && t.type === "file") {
         var fname = "";
         if (t.files && t.files[0]) fname = t.files[0].name;
-        post({
+        var attr2 = _rootAttribution("user_file_selected");
+        _setActiveInteraction("file_selected", attr2.event_id);
+        post(_merge({
           kind: "file_selected",
           fingerprint: fingerprint(t),
           file_name: fname,
           page_url: location.href,
-        });
+          raw_event_kind: "change",
+        }, attr2));
       } else if (tag === "input" && (t.type === "checkbox" || t.type === "radio")) {
-        post({
+        var attr3 = _rootAttribution("user_change");
+        _setActiveInteraction("change", attr3.event_id);
+        post(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: String(!!t.checked),
           page_url: location.href,
-        });
+          raw_event_kind: "change",
+        }, attr3));
       } else if (tag === "input" && t.type === "date") {
-        post({
+        var attr4 = _rootAttribution("user_change");
+        _setActiveInteraction("change", attr4.event_id);
+        post(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: t.value || "",
           page_url: location.href,
-        });
+          raw_event_kind: "change",
+        }, attr4));
       }
     },
     true
@@ -512,11 +659,17 @@
     function (e) {
       // Flush any pending text input first (e.g. the last field of a form)
       flushPendingInput();
-      post({
+      // WI-02: submit is a USER ACTION -- opens an interaction window
+      // so the POST it triggers and the navigation it may cause
+      // attribute back.
+      var attr = _rootAttribution("user_submit");
+      _setActiveInteraction("submit", attr.event_id);
+      post(_merge({
         kind: "submit",
         fingerprint: fingerprint(e.target),
         page_url: location.href,
-      });
+        raw_event_kind: "submit",
+      }, attr));
     },
     true
   );
@@ -614,44 +767,71 @@
     _snapshotTimer = setTimeout(function () {
       _snapshotTimer = null;
       try {
-        post(_collectPageSnapshot());
+        // page_snapshot is informational, not causal. It describes the
+        // page after a navigation settles. ``causal: false`` means the
+        // event won't attribute to whatever's in activeInteraction.
+        post(_merge(
+          _collectPageSnapshot(),
+          _attribution("page_snapshot", { causal: false })
+        ));
       } catch (e) {
         if (DEBUG) console.warn("[cp] snapshot failed", e);
       }
     }, 800);
   }
 
-  // Navigation — initial + SPA route changes
-  function postNavigate() {
-    post({ kind: "navigate", url: location.href, page_url: location.href });
+  // Navigation — initial + SPA route changes. The ``navigationSource``
+  // string carries the EXACT mechanism so the annotator can distinguish
+  // pushState (caused-by-click) from a manual address-bar entry (no
+  // active interaction).
+  function postNavigate(navigationSource) {
+    post(_merge(
+      {
+        kind: "navigate",
+        url: location.href,
+        page_url: location.href,
+        raw_event_kind: navigationSource || "navigate",
+      },
+      _attribution(navigationSource || "navigate")
+    ));
     _scheduleSnapshot();
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", postNavigate);
+    document.addEventListener("DOMContentLoaded", function () {
+      postNavigate("initial_load");
+    });
   } else {
-    postNavigate();
+    postNavigate("initial_load");
   }
 
-  // Hook History API for SPA routers
+  // Hook History API for SPA routers. The wrapped functions name the
+  // exact mechanism so navigate events carry source="history.pushState"
+  // vs "history.replaceState" vs "popstate" vs "hashchange".
   (function () {
     var _push = history.pushState;
     var _replace = history.replaceState;
     history.pushState = function () {
       var r = _push.apply(this, arguments);
-      setTimeout(postNavigate, 10);
+      setTimeout(function () { postNavigate("history.pushState"); }, 10);
       return r;
     };
     history.replaceState = function () {
       var r = _replace.apply(this, arguments);
-      setTimeout(postNavigate, 10);
+      setTimeout(function () { postNavigate("history.replaceState"); }, 10);
       return r;
     };
-    window.addEventListener("popstate", postNavigate);
-    window.addEventListener("hashchange", postNavigate);
+    window.addEventListener("popstate", function () {
+      postNavigate("popstate");
+    });
+    window.addEventListener("hashchange", function () {
+      postNavigate("hashchange");
+    });
   })();
 
-  // Enter / Escape on focused input
+  // Enter / Escape on focused input. WI-02: a key is a USER ACTION,
+  // opens a fresh interaction window so consequences (form submit,
+  // navigation, fetch) attribute back.
   document.addEventListener(
     "keydown",
     function (e) {
@@ -660,12 +840,15 @@
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
       if (tag !== "input" && tag !== "textarea") return;
-      post({
+      var attr = _rootAttribution("user_keydown");
+      _setActiveInteraction("key", attr.event_id);
+      post(_merge({
         kind: "key",
         fingerprint: fingerprint(t),
         value: e.key,
         page_url: location.href,
-      });
+        raw_event_kind: "keydown",
+      }, attr));
     },
     true
   );

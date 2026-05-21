@@ -723,3 +723,46 @@ class TraceEvent(BaseModel):
     page_url: str = ""
     screenshot_path: Optional[str] = None
     dom_diff: Optional[dict[str, Any]] = None
+
+    # WI-02: identity + causality + ordering. Populated by the grabber
+    # for new recordings; missing for legacy traces (Pydantic defaults
+    # carry None / 0). The annotator builds a causality graph from
+    # these instead of guessing from adjacency + time gaps.
+    event_id: Optional[str] = None
+    """Stable per-event ID assigned by the grabber (crypto.randomUUID()
+    in the browser). Used as the target of ``caused_by`` references."""
+    interaction_id: Optional[str] = None
+    """Groups all events caused by a single user interaction. A click
+    that triggers a SPA route change AND a network call AND a DOM
+    mutation produces one click event + N effect events sharing this
+    id. The annotator uses interaction_id to collapse effect events
+    into the causing step's ``effects`` field."""
+    caused_by: Optional[str] = None
+    """``event_id`` of the event that caused THIS event. For the click
+    itself, ``caused_by`` is None. For a navigate emitted by React
+    Router after the click, ``caused_by`` = click's event_id. For
+    network requests started inside an interaction, caused_by is the
+    triggering user event."""
+    sequence: Optional[int] = None
+    """Monotonic order within the session. Lets the annotator
+    reconstruct ordering even if ts has clock skew or two events share
+    the same millisecond."""
+    source: Optional[str] = None
+    """Where the event originated. Examples: ``user_click``,
+    ``user_keydown``, ``user_submit``, ``history.pushState``,
+    ``history.replaceState``, ``popstate``, ``hashchange``,
+    ``fetch_request_start``, ``fetch_response``, ``xhr_loadend``,
+    ``mutation_observer``, ``visibility_change``."""
+    monotonic_ts: Optional[float] = None
+    """``performance.now()`` from the page. More accurate than wall-
+    clock ``ts`` for ordering tiny intervals."""
+    raw_event_kind: Optional[str] = None
+    """The DOM event name behind a translated ``kind``. E.g.
+    kind=``input_change``, raw_event_kind=``input``. Useful when the
+    annotator needs to distinguish ``input`` (during typing) from
+    ``change`` (commit)."""
+    page_state_before: Optional[dict[str, Any]] = None
+    """Snapshot of URL/title/key DOM state immediately before the
+    event. Used by the annotator to verify caused-state changes."""
+    page_state_after: Optional[dict[str, Any]] = None
+    """Same, after the event resolved."""
