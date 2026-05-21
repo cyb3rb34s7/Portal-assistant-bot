@@ -5321,6 +5321,71 @@ class SkillRunner:
           return _send.apply(self, arguments);
         };
       }
+      // WI-47: WebSocket + EventSource hooks. Each push message lands
+      // in __cp_request_log as an entry with method='WS' or 'SSE' so
+      // PushExpectation matching can be a plain JS .some() scan in
+      // _check_push_expectation. The open events are also logged so
+      // the operator can see a channel was opened during the action.
+      if (typeof window.WebSocket === 'function' && !window.__cp_ws_hooked_runner) {
+        window.__cp_ws_hooked_runner = true;
+        const OrigWS = window.WebSocket;
+        function _summarizeFrame(data) {
+          try {
+            if (data == null) return '';
+            if (typeof data === 'string') return data.slice(0, 512);
+            if (data instanceof ArrayBuffer) return '[binary ' + data.byteLength + 'B]';
+            if (typeof data === 'object') return JSON.stringify(data).slice(0, 512);
+            return String(data).slice(0, 512);
+          } catch (e) { return ''; }
+        }
+        window.WebSocket = function (url, protocols) {
+          const ws = protocols !== undefined
+            ? new OrigWS(url, protocols) : new OrigWS(url);
+          const channelUrl = String(url || '');
+          const opened_ts = Date.now();
+          _logRequest({
+            url: channelUrl, method: 'WS', status: 0,
+            started_ts: opened_ts, finished_ts: opened_ts,
+            kind: 'ws_open',
+          });
+          ws.addEventListener('message', function (ev) {
+            const body = _summarizeFrame(ev && ev.data);
+            const ts = Date.now();
+            _logRequest({
+              url: channelUrl, method: 'WS', status: 0,
+              started_ts: ts, finished_ts: ts,
+              kind: 'ws_message', body_summary: body,
+            });
+          });
+          return ws;
+        };
+        window.WebSocket.prototype = OrigWS.prototype;
+      }
+      if (typeof window.EventSource === 'function' && !window.__cp_es_hooked_runner) {
+        window.__cp_es_hooked_runner = true;
+        const OrigES = window.EventSource;
+        window.EventSource = function (url, init) {
+          const es = init !== undefined ? new OrigES(url, init) : new OrigES(url);
+          const channelUrl = String(url || '');
+          const opened_ts = Date.now();
+          _logRequest({
+            url: channelUrl, method: 'SSE', status: 0,
+            started_ts: opened_ts, finished_ts: opened_ts,
+            kind: 'sse_open',
+          });
+          es.addEventListener('message', function (ev) {
+            const body = (ev && ev.data != null) ? String(ev.data).slice(0, 512) : '';
+            const ts = Date.now();
+            _logRequest({
+              url: channelUrl, method: 'SSE', status: 0,
+              started_ts: ts, finished_ts: ts,
+              kind: 'sse_message', body_summary: body,
+            });
+          });
+          return es;
+        };
+        window.EventSource.prototype = OrigES.prototype;
+      }
       return true;
     }
     """
@@ -6085,6 +6150,49 @@ class SkillRunner:
                 )
         if diag is not None:
             diag["waits_ms"]["dom"] = int((time.monotonic() - t0) * 1000)
+
+        # WI-47: push expectations (WebSocket / SSE frames). The
+        # grabber + runner watcher logged each frame into
+        # __cp_request_log with method='WS' / 'SSE' and a body_summary.
+        # We poll the log for the FIRST matching frame whose ts is
+        # strictly greater than the step's start. Required misses log a
+        # warning (consistent with network waits); the operator can
+        # tighten this by setting step.replay_policy.on_failure='abort'
+        # combined with assert_after on the post-push DOM mutation.
+        push_list = getattr(expected, "push", []) or []
+        if push_list:
+            baseline_ms = int(self._step_started_ms or 0)
+            for pe in push_list:
+                channel = pe.channel.lower()
+                type_match = (pe.type or "").lower()
+                payload_match = (pe.payload_match or "").lower()
+                try:
+                    page.wait_for_function(
+                        "([channel, type_match, payload_match, baseline]) => {"
+                        " const log = window.__cp_request_log || [];"
+                        " return log.some(r => {"
+                        "   const m = (r.method || '').toUpperCase();"
+                        "   if (m !== 'WS' && m !== 'SSE') return false;"
+                        "   if (!(r.url || '').toLowerCase().includes(channel)) return false;"
+                        "   if (r.started_ts <= baseline) return false;"
+                        "   const body = (r.body_summary || '').toLowerCase();"
+                        "   if (type_match && !body.includes(type_match)) return false;"
+                        "   if (payload_match && !body.includes(payload_match)) return false;"
+                        "   return true;"
+                        " });"
+                        " }",
+                        arg=[channel, type_match, payload_match, baseline_ms],
+                        timeout=pe.max_ms,
+                    )
+                except Exception:
+                    self._diagnostic(
+                        "runner.push_expectation_missed",
+                        level="warn",
+                        recoverable=True,
+                        channel=pe.channel,
+                        type=pe.type,
+                        max_ms=pe.max_ms,
+                    )
 
     def _verify_assertions(self, step: SkillStep) -> tuple[bool, Optional[str]]:
         """Run step.assert_after assertions in order.

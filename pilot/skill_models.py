@@ -513,6 +513,51 @@ class DomExpectation(BaseModel):
     when the request resolves -- annotator emits text='Save'."""
 
 
+class PushExpectation(BaseModel):
+    """WI-47: a WebSocket / SSE / push-notification message the runner
+    waits for after an action.
+
+    Models the pattern: operator triggers an async job (e.g. clicks
+    "Export") and the portal delivers the completion signal through a
+    push channel (e.g. WebSocket frame with ``{type: 'job.completed'}``
+    or SSE ``event: complete``). The legacy runner couldn't wait on
+    this -- it would either poll the DOM (race-prone) or fall back to
+    a fixed sleep.
+
+    The grabber captures WebSocket / EventSource open + message + close
+    as TraceEvents (kind=``network_request`` with method=``WS`` /
+    ``SSE`` and the frame summary in ``mutation_summary``). The runner
+    inspects the page-side request log for a matching frame.
+
+    Matching contract:
+      - ``channel`` substring-matches against the WS/SSE channel URL
+        (case-insensitive). Required.
+      - ``type`` substring-matches against the message body's ``type``
+        / ``event`` field as captured in mutation_summary. Optional --
+        absence means any message on the channel satisfies.
+      - ``payload_match`` substring-matches against the message body
+        summary captured in mutation_summary.body_summary. Optional.
+    """
+
+    channel: str
+    """Channel URL substring (case-insensitive). For WebSockets the
+    grabber records the constructor URL; for SSE the EventSource URL.
+    Substring keeps it tolerant of session IDs / cache busters."""
+    type: Optional[str] = None
+    """Optional message type / event-name substring. Examples:
+    ``job.completed``, ``ready``. None matches any frame."""
+    payload_match: Optional[str] = None
+    """Optional payload body substring (case-insensitive). Matched
+    against the captured frame body summary. None disables payload
+    matching."""
+    max_ms: int = 15000
+    """Max wait for the matching message. Default 15000ms because
+    server-side jobs can take several seconds before pushing a
+    completion frame; the operator should override this per-portal
+    via PortalContext.wait_policy when the workload's latency is
+    known."""
+
+
 class ExpectedSignals(BaseModel):
     """Per-step hints the runner uses to wait *only when needed*.
 
@@ -526,6 +571,12 @@ class ExpectedSignals(BaseModel):
 
     network: list[NetworkExpectation] = Field(default_factory=list)
     dom: list[DomExpectation] = Field(default_factory=list)
+    push: list[PushExpectation] = Field(default_factory=list)
+    """WI-47: WebSocket / SSE / push-notification frames the runner
+    waits for AFTER the action. Empty for non-push workflows. The
+    runner inspects the page-side __cp_request_log for entries whose
+    method is ``WS`` / ``SSE`` and whose URL + body summary match
+    the declared expectation."""
 
 
 # ---------------------------------------------------------------------------

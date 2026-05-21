@@ -498,6 +498,135 @@
       initiator_event_id: initiator,
     }, attr));
   }
+
+  // WI-47: WebSocket / EventSource (SSE) hook. We hook the
+  // constructors so the URL of every channel is observed, then wrap
+  // each instance's ``onmessage`` / ``addEventListener('message',...)``
+  // so push frames become TraceEvents kind=``network_request`` with
+  // method=``WS`` / ``SSE`` and the frame body summary in
+  // ``mutation_summary``. The annotator pairs an operator-triggered
+  // job with the subsequent push frame; the runner waits on the
+  // matching frame instead of polling DOM. Hooking is idempotent
+  // (uses __cp_ws_hooked / __cp_es_hooked sentinels).
+  (function _installPushHooks() {
+    function _summarizeFrame(data) {
+      try {
+        if (data == null) return null;
+        if (typeof data === "string") {
+          return { body_summary: data.slice(0, 512) };
+        }
+        if (data instanceof ArrayBuffer) {
+          return { body_summary: "[binary " + data.byteLength + "B]" };
+        }
+        if (data && typeof data === "object") {
+          return { body_summary: JSON.stringify(data).slice(0, 512) };
+        }
+        return { body_summary: String(data).slice(0, 512) };
+      } catch (e) {
+        return null;
+      }
+    }
+    if (typeof window.WebSocket === "function" && !window.__cp_ws_hooked) {
+      window.__cp_ws_hooked = true;
+      var OrigWS = window.WebSocket;
+      window.WebSocket = function (url, protocols) {
+        var ws = protocols !== undefined
+          ? new OrigWS(url, protocols) : new OrigWS(url);
+        var channelUrl = String(url || "");
+        try {
+          var openAttr = _attribution("ws_open");
+          var requestId = _newEventId();
+          post(_merge({
+            kind: "network_request",
+            page_url: location.href,
+            raw_event_kind: "ws_open",
+            request_id: requestId,
+            method: "WS",
+            url: channelUrl,
+            started_at: _now(),
+            initiator_event_id: (activeInteraction && _isWithinWindow())
+              ? activeInteraction.id : null,
+          }, openAttr));
+        } catch (e) {
+          if (DEBUG) console.warn("[cp] ws open emit failed", e);
+        }
+        ws.addEventListener("message", function (ev) {
+          try {
+            var attr = _attribution("ws_message");
+            var summary = _summarizeFrame(ev && ev.data);
+            post(_merge({
+              kind: "network_request",
+              page_url: location.href,
+              raw_event_kind: "ws_message",
+              request_id: _newEventId(),
+              method: "WS",
+              url: channelUrl,
+              started_at: _now(),
+              finished_at: _now(),
+              status: 0,
+              mutation_summary: summary,
+              initiator_event_id: (activeInteraction && _isWithinWindow())
+                ? activeInteraction.id : null,
+            }, attr));
+          } catch (e) {
+            if (DEBUG) console.warn("[cp] ws message emit failed", e);
+          }
+        });
+        return ws;
+      };
+      window.WebSocket.prototype = OrigWS.prototype;
+    }
+    if (typeof window.EventSource === "function" && !window.__cp_es_hooked) {
+      window.__cp_es_hooked = true;
+      var OrigES = window.EventSource;
+      window.EventSource = function (url, init) {
+        var es = init !== undefined
+          ? new OrigES(url, init) : new OrigES(url);
+        var channelUrl = String(url || "");
+        try {
+          var openAttr = _attribution("sse_open");
+          post(_merge({
+            kind: "network_request",
+            page_url: location.href,
+            raw_event_kind: "sse_open",
+            request_id: _newEventId(),
+            method: "SSE",
+            url: channelUrl,
+            started_at: _now(),
+            initiator_event_id: (activeInteraction && _isWithinWindow())
+              ? activeInteraction.id : null,
+          }, openAttr));
+        } catch (e) {
+          if (DEBUG) console.warn("[cp] sse open emit failed", e);
+        }
+        es.addEventListener("message", function (ev) {
+          try {
+            var attr = _attribution("sse_message");
+            var summary = _summarizeFrame(ev && ev.data);
+            post(_merge({
+              kind: "network_request",
+              page_url: location.href,
+              raw_event_kind: "sse_message",
+              request_id: _newEventId(),
+              method: "SSE",
+              url: channelUrl,
+              started_at: _now(),
+              finished_at: _now(),
+              status: 0,
+              mutation_summary: summary,
+              initiator_event_id: (activeInteraction && _isWithinWindow())
+                ? activeInteraction.id : null,
+            }, attr));
+          } catch (e) {
+            if (DEBUG) console.warn("[cp] sse message emit failed", e);
+          }
+        });
+        return es;
+      };
+      window.EventSource.prototype = OrigES.prototype;
+    }
+  })();
+
   _installQuiescenceWatchers();
 
   // ---- WI-10: observed readiness watcher ---------------------------------
