@@ -11,6 +11,110 @@
 
 ## 2026-05-21
 
+### Structural fix sprint: WI-01..WI-50 + F-01..F-10 foundation drifts
+
+**Commits:** `2ba2503` (F-01) through `45e6adb` (WI-50 regression matrix)
+on `feat/enterprise-portal-and-additive-sprint`.
+
+Complete teach/annotate/replay rebuild. The prior additive sprint
+("Day-1") shipped per-step enrichments against the existing schema;
+this sprint goes deeper -- it moves semantics to the right layer
+(grabber captures raw transitions, annotator decides intent, runner
+just executes), introduces typed effects + provenance + replay policy,
+and removes the audit's seventeen hardcoded heuristics.
+
+- **Foundation drift fixes (F-01..F-10).** OptionSnapshot typed model
+  unblocks select recordings; sample portal retry key is now
+  runner-owned; XHR + fetch idempotency shims read configurable
+  header name and seed from `Request.headers`; annotator's causality
+  graph now runs BEFORE `filter_events`; grabber populates
+  `page_state_before/after`; observed network + DOM events emit as
+  first-class `TraceEvent`s with request_id + initiator_event_id;
+  hardcoded attribution-window / opts-cap / wait-defaults / fail-open
+  patterns removed; `ReplayPolicy` normalizes `optional=True`+`abort`
+  contradiction; `ParamProvenance.confidence` constrained 0..1;
+  `TraceEvent.kind` Literal expanded; pre-existing
+  `OneTimeFailExecutor` signature mismatch fixed.
+
+- **Schema (WI-01).** New action types: `fill_submit`, `select_option`,
+  `select_autocomplete`, `set_selection`, `date_select`, `slider_set`,
+  `drag_drop`, `toggle_state`, `modal`, `popup`, `download`,
+  `scroll_until`, `rich_text_set`, `shortcut`, `canvas_gesture`.
+  Effects family (Navigation, Popup, Download, Modal, Hover, Toast,
+  StateChange) folds consequences onto the causing step. Provenance
+  + ReplayPolicy + structural sub-specs on every step.
+
+- **Causality + observed events (WI-02 + F-07).** Every TraceEvent
+  carries `event_id` / `interaction_id` / `caused_by` / `sequence` /
+  `source` / `monotonic_ts`. Network requests, DOM mutations,
+  popups, downloads, visibility changes all emit as TraceEvents so
+  expected_signals can declare action-scoped baselines.
+
+- **Click + navigation collapse (WI-08).** Click that causes SPA
+  navigation is one step with `effects.navigation`. Runner never
+  calls `page.goto` for caused nav. Legacy click+navigate pairs
+  auto-upgrade at load time. Eliminates the "open A-9003 but goto
+  A-9001" bug.
+
+- **Action-scoped waits (WI-09 / WI-10 / WI-43 / WI-47).** Network /
+  DOM / push expectations match against `started_after_event`
+  baselines so stale requests can't satisfy new steps. WI-10
+  observed readiness signals (aria-busy, field_enabled, text
+  transition) replace spinner-by-convention. WI-43 disabled->enabled
+  is a first-class wait. WI-47 WebSocket/SSE channels are first-class.
+
+- **Annotator semantic clustering (WI-12 + WI-15..WI-21 + WI-28..WI-30
+  + WI-33..WI-35 + WI-37..WI-42).** One semantic cluster per widget
+  interaction. `fill_submit` (Enter or submit), `select_autocomplete`
+  (query + result), `select_option` (no fuzzy unless declared),
+  `cascading select` (depends_on), `set_selection` (multiselect with
+  final-equality assertion), `date_select` (native + custom), slider,
+  drag/drop, accordion as desired state, modal open/close folded
+  onto cause, popup binding key for cross-tab, virtualized table as
+  `scroll_until` with declared signal, rich-text editor as one step
+  (paste-strategy aware), hover-reveal menus, global keyboard
+  shortcuts, toast undo/conflict.
+
+- **Locator safety (WI-22..WI-27).** Ambiguity detection at every
+  locator level. `LocatorProbeResult` replaces exception-masking
+  boolean helper. Safe selector escaping. Declared aliases replace
+  automatic fuzzy. `RepairPolicy` (uniqueness + features +
+  postcondition) replaces score-band L3 thresholds. Action-specific
+  postconditions replace whole-page-signature verification.
+
+- **Provenance-based templates (WI-11).** `btn-open-A-9001` templates
+  to `btn-open-{asset_id}` only when asset_id provenance is declared
+  (row_key / route_param / selected_option / request_param). Substring
+  templating remains as legacy fallback only.
+
+- **Auth + cross-tab + locale (WI-36 / WI-46 / WI-48).** Auth
+  preconditions on destructive steps (no plaintext password capture).
+  `PageContext.page_binding_key` routes steps to popup pages.
+  Recording captures locale + timezone; codecs normalize
+  date/number; `strict_locale` flag fails replay on mismatch when
+  set.
+
+- **Canvas adapter registry (WI-49).** Separate registry next to the
+  legacy portal-adapter set. Built-in `noop_click` adapter proves
+  schema + dispatch path. Third-party portals register via
+  `pilot.adapters.register_canvas_adapter`.
+
+- **Skill upgrader + regression matrix (WI-50).** New module
+  `pilot/skill_upgrade.py` upgrades legacy v1 skills to v2
+  idempotently (preserves continue-on-failure so pre-WI-07 flows
+  don't start aborting). CLI: `python -m pilot upgrade-skill <path>`.
+  `tests/agent/test_wi_regression_matrix.py` carries one test per WI
+  + foundation drift, so any regression in the structural contract
+  shows up as a red row.
+
+Final test count: 499 passing (430 baseline + 9 upgrader tests + 60
+regression matrix tests). All 17 audit-flagged hardcoded heuristics
+are CLOSED; all 17 interaction matrix rows are COVERED. See
+[`reviews/2026-05-21_droid-completion-summary.md`](reviews/2026-05-21_droid-completion-summary.md)
+for the per-WI table with commit hashes and acceptance checks, and
+[`STRUCTURAL_FIX_GUIDE.md`](STRUCTURAL_FIX_GUIDE.md) for the engineering
+guide describing the new architecture.
+
 ### Day-1 sprint: use_alternate fix + pre-flight + LLM audit + per-step diagnostics
 
 **Commit:** _(this commit)_
