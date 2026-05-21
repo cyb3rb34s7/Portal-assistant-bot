@@ -1082,6 +1082,26 @@
 
   // ---- Event hooks ---------------------------------------------------------
 
+  // WI-14: capture target state (aria-expanded/checked/pressed,
+  // disabled, selected) for a click target so the annotator can
+  // distinguish toggle / open / close / no-op gestures from a plain
+  // single click without re-querying the DOM at replay.
+  function _targetStateSnapshot(el) {
+    if (!el || !el.getAttribute) return null;
+    var s = {};
+    var ae = el.getAttribute("aria-expanded");
+    if (ae !== null) s.aria_expanded = ae;
+    var ac = el.getAttribute("aria-checked");
+    if (ac !== null) s.aria_checked = ac;
+    var ap = el.getAttribute("aria-pressed");
+    if (ap !== null) s.aria_pressed = ap;
+    var as = el.getAttribute("aria-selected");
+    if (as !== null) s.aria_selected = as;
+    var d = el.getAttribute("disabled");
+    s.disabled = (d !== null) ? (d === "" ? "true" : d) : null;
+    return s;
+  }
+
   document.addEventListener(
     "click",
     function (e) {
@@ -1107,6 +1127,13 @@
       // as "after." Async effects (XHR responses, deferred renders)
       // arrive as their own events.
       var stateBefore = _pageState();
+      // WI-14: capture click detail (count), pointer type, and target
+      // state before the page's handlers run. Pointer type is only set
+      // on PointerEvent; mouse events don't carry it directly.
+      var clickDetail = (typeof e.detail === "number" && e.detail > 0)
+        ? e.detail : 1;
+      var pointerType = (e.pointerType || null);
+      var targetStateBefore = _targetStateSnapshot(target);
       // WI-02: click is a USER-INITIATED EVENT -- it opens a fresh
       // interaction window. Subsequent consequence events (history
       // pushState, fetch starts, mutations) attribute to this click
@@ -1118,8 +1145,32 @@
         fingerprint: fingerprint(target),
         page_url: location.href,
         raw_event_kind: "click",
+        click_detail: clickDetail,
+        pointer_type: pointerType,
+        target_state_before: targetStateBefore,
       }, attr);
-      _emitWithStateSnapshot(payload, stateBefore);
+      // WI-14: schedule the after-state snapshot on the microtask the
+      // same way _emitWithStateSnapshot defers page_state_after. The
+      // page's own click handler runs synchronously after our capture-
+      // phase listener returns, so the microtask sees the post-handler
+      // attribute mutations (aria-expanded flipped, etc.).
+      payload.page_state_before = stateBefore;
+      var schedule = (typeof queueMicrotask === "function")
+        ? queueMicrotask
+        : function (fn) { Promise.resolve().then(fn); };
+      schedule(function () {
+        try {
+          payload.page_state_after = _pageState();
+        } catch (e2) {
+          payload.page_state_after = null;
+        }
+        try {
+          payload.target_state_after = _targetStateSnapshot(target);
+        } catch (e3) {
+          payload.target_state_after = null;
+        }
+        post(payload);
+      });
     },
     true
   );

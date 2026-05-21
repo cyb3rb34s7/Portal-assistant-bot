@@ -898,6 +898,32 @@ class SkillStep(BaseModel):
     the legacy annotator dropped empty inputs and lost
     "clear field and save" workflows."""
 
+    click_gesture: Optional[Literal[
+        "single", "double", "repeat", "toggle", "open", "close",
+    ]] = None
+    """WI-14: gesture classification on click steps.
+      - ``single``  -- one click; standard Playwright .click().
+      - ``double``  -- detail>=2 from the grabber; runner uses
+                       .dblclick(). For grid cell edit / file open / etc.
+      - ``repeat``  -- multiple successive clicks where the effect
+                       differs (counter increment, page advance);
+                       runner clicks N times in sequence.
+      - ``toggle``  -- clicks that flipped a state attribute
+                       (aria-expanded, aria-checked, aria-pressed).
+                       Runner prefers a desired-state target over click
+                       count (see ToggleStateSpec, WI-33).
+      - ``open``    -- state transitioned from collapsed -> expanded
+                       (or from hidden -> visible). Single-direction.
+      - ``close``   -- expanded -> collapsed.
+    None = legacy / unclassified; runner falls back to .click()."""
+
+    effect_signature: Optional[dict[str, Any]] = None
+    """WI-14: compact diff between target_state_before / target_state_
+    after captured by the grabber. Lets the annotator distinguish
+    'click did nothing' from 'click toggled state' without re-querying
+    the DOM at replay. Typical shape: ``{aria_expanded: ['false',
+    'true'], disabled: [null, 'true']}`` -- list of [before, after]."""
+
     # Debug / context
     captured_at: Optional[datetime] = None
     screenshot_path: Optional[str] = None
@@ -1397,6 +1423,29 @@ class TraceEvent(BaseModel):
     can detect a CLEAR (value_before='Old', value='') and route
     runner replay to ``locator.fill('')`` + post-assert empty. None for
     legacy traces and for non-text events (clicks, key, navigate)."""
+
+    # WI-14: click gesture + effect classification. Populated by the
+    # grabber on click events; consumed by the annotator to decide
+    # single vs double-click vs toggle vs no-op, and by the runner to
+    # pick the correct Playwright API (click() vs dblclick()).
+    click_detail: Optional[int] = None
+    """``MouseEvent.detail`` -- the system-reported click count.
+    1 = single, 2 = double, 3 = triple. Set on click events only.
+    None for legacy traces (the grabber didn't capture it pre-WI-14)."""
+    pointer_type: Optional[str] = None
+    """``PointerEvent.pointerType`` when available (``mouse`` / ``pen``
+    / ``touch``). Distinguishes a finger tap from a mouse click; some
+    portals listen specifically for touch vs mouse."""
+    target_state_before: Optional[dict[str, Any]] = None
+    """Snapshot of the click target's state immediately BEFORE the
+    click: ``{aria_expanded?, aria_checked?, aria_pressed?, disabled?,
+    selected?}``. Used by the annotator to detect a toggle (state
+    flipped) vs a no-op (state unchanged) vs an open/close (single-
+    direction expand/collapse)."""
+    target_state_after: Optional[dict[str, Any]] = None
+    """Same shape as target_state_before, captured on the microtask
+    after the click. The DIFF between before and after is the
+    ``effect_signature`` the annotator stamps onto the step."""
 
     # WI-02: identity + causality + ordering. Populated by the grabber
     # for new recordings; missing for legacy traces (Pydantic defaults

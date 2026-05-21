@@ -180,16 +180,23 @@ def filter_events(
         # downstream marks it clear_intent=True and the runner fills
         # empty string + asserts empty post-action.
 
-        # Drop click that is immediately followed by the same click (<200ms)
+        # WI-14: drop ONLY provably-duplicate transport noise (same
+        # event_id from a glitch). The legacy <200ms same-target click
+        # drop was wrong: a double-click for grid edit, an accordion
+        # double-toggle, or a counter-increment all looked like
+        # "duplicate clicks" but had distinct semantics. We now keep
+        # repeated clicks and rely on the annotator's gesture
+        # classification (single / double / repeat / toggle) to pick
+        # the right runner action.
         if (
             ev.kind == "click"
             and prev
             and prev.kind == "click"
-            and prev.fingerprint
-            and ev.fingerprint
-            and _same_target(prev.fingerprint, ev.fingerprint)
-            and (ev.ts - prev.ts).total_seconds() < 0.2
+            and prev.event_id
+            and ev.event_id
+            and prev.event_id == ev.event_id
         ):
+            # Same event_id => transport replay. Drop.
             continue
 
         out.append(ev)
@@ -466,6 +473,91 @@ def _derive_url_template(
         else "route_param"
     )
     return (templated, source)
+
+
+# ---- WI-14: click gesture / effect classification --------------------------
+
+
+_STATE_ATTRS_FOR_TOGGLE: tuple[str, ...] = (
+    "aria_expanded", "aria_checked", "aria_pressed", "aria_selected",
+    "disabled",
+)
+
+
+def _state_diff(
+    before: Optional[dict[str, Any]],
+    after: Optional[dict[str, Any]],
+) -> dict[str, list[Any]]:
+    """Return ``{attr: [before, after]}`` for every attribute whose
+    value changed between the two snapshots. Empty dict means no
+    state change observed.
+
+    WI-14: this is the ``effect_signature`` stamped onto the click
+    step. Cheap diff -- only the keys present in either snapshot are
+    considered."""
+    if not before and not after:
+        return {}
+    out: dict[str, list[Any]] = {}
+    keys: set[str] = set()
+    if before:
+        keys.update(before.keys())
+    if after:
+        keys.update(after.keys())
+    for k in keys:
+        bv = before.get(k) if before else None
+        av = after.get(k) if after else None
+        if bv != av:
+            out[k] = [bv, av]
+    return out
+
+
+def classify_click_gesture(
+    ev: TraceEvent,
+    prior_clicks: list[TraceEvent],
+) -> Optional[str]:
+    """WI-14: derive a click_gesture from the grabber-captured
+    click_detail + target_state_before/after.
+
+    Heuristics, strongest-first:
+      - ``double``: detail >= 2 (the browser already reports it as a
+        double-click on the second click of a fast pair).
+      - ``toggle``: aria-expanded / aria-checked / aria-pressed flipped
+        between before and after (state attributes diff).
+      - ``open`` / ``close``: aria-expanded went from false->true (open)
+        or true->false (close). More specific than toggle.
+      - ``repeat``: same target as the previous click, less than ~1s
+        apart, NEITHER of them double-clicks. Distinguishes from
+        accidental jitter (we keep both clicks) by the explicit gesture
+        kind so the runner can choose to .click() N times or pick a
+        desired state.
+      - ``single``: default for everything else.
+
+    Returns None when there's no fingerprint to compare (legacy events)."""
+    if ev.kind != "click":
+        return None
+    if ev.click_detail and ev.click_detail >= 2:
+        return "double"
+    diff = _state_diff(ev.target_state_before, ev.target_state_after)
+    if "aria_expanded" in diff:
+        before, after = diff["aria_expanded"]
+        if before == "false" and after == "true":
+            return "open"
+        if before == "true" and after == "false":
+            return "close"
+        return "toggle"
+    # aria_checked / aria_pressed / aria_selected flip => toggle
+    for k in ("aria_checked", "aria_pressed", "aria_selected"):
+        if k in diff:
+            return "toggle"
+    # Repeated click on same target without state change.
+    if prior_clicks and prior_clicks[-1].fingerprint and ev.fingerprint:
+        prev = prior_clicks[-1]
+        if (
+            _same_target(prev.fingerprint, ev.fingerprint)
+            and (ev.ts - prev.ts).total_seconds() < 1.0
+        ):
+            return "repeat"
+    return "single"
 
 
 # ---- WI-13: value transition + clear detection -----------------------------
@@ -763,6 +855,9 @@ def build_skill(
     # Track params-seen so navigation URL templates can substitute
     # values that appear in the URL (WI-08 + foundation for WI-11).
     params_seen: list[tuple[str, str]] = []
+    # WI-14: prior click events seen during this build, for the
+    # gesture detector (repeat detection compares against last click).
+    _prior_clicks: list[TraceEvent] = []
 
     # F-07/WI-10: observed-event kinds (dom_mutation, network_request,
     # network_response, popup, download, visibility_change) feed the
@@ -875,6 +970,17 @@ def build_skill(
         # commit-signal scan to mark clear_intent.
         v_transition = derive_value_transition(ev, events, idx)
 
+        # WI-14: click gesture + effect signature classification.
+        # Only applies to click events; other actions stay None.
+        click_gesture: Optional[str] = None
+        effect_signature: Optional[dict[str, Any]] = None
+        if ev.kind == "click":
+            click_gesture = classify_click_gesture(ev, _prior_clicks)
+            sig = _state_diff(ev.target_state_before, ev.target_state_after)
+            if sig:
+                effect_signature = sig
+            _prior_clicks.append(ev)
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -890,6 +996,8 @@ def build_skill(
             effects=effects,
             expected_signals=expected_signals,
             value_transition=v_transition,
+            click_gesture=click_gesture,  # type: ignore[arg-type]
+            effect_signature=effect_signature,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;

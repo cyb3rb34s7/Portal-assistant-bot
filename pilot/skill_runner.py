@@ -558,8 +558,24 @@ class SkillRunner:
             url_before = page.url or ""
         except Exception:
             pass
+        # WI-14: pick the click API based on the annotator's gesture
+        # classification. ``double`` => Playwright dblclick(); ``toggle``
+        # / ``open`` / ``close`` use a single click but the assertion
+        # path will verify the target state (future WI-33 handler may
+        # short-circuit when desired state is already met). ``single``
+        # / ``repeat`` / unknown fall back to plain .click(). We do NOT
+        # multiply clicks for ``repeat`` here -- repeat is preserved
+        # as a SEMANTIC marker; the annotator emits one step per
+        # recorded click. The runner could batch repeats if a future
+        # detector (WI-33 toggle, WI-37 paginated tables) declared a
+        # count, but the conservative default is one click per step.
+        gesture = step.click_gesture or "single"
+        if gesture == "double":
+            click_fn = lambda: locator.dblclick(timeout=4000)  # noqa: E731
+        else:
+            click_fn = lambda: locator.click(timeout=4000)  # noqa: E731
         verified = self._execute_with_heal_check(
-            page, level, heal, lambda: locator.click(timeout=4000)
+            page, level, heal, click_fn
         )
         # WI-08: when the recording captured a navigation effect for
         # this click, wait for the URL to settle to the templated value
