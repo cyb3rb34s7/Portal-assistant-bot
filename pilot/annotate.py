@@ -3266,6 +3266,24 @@ def build_skill(
             close_policy="explicit",
         )
 
+    # WI-45: download events indexed by causing event id. The click
+    # they attribute to becomes a ``download`` action (rather than a
+    # plain ``click``) with a DownloadSpec attached.
+    from .skill_models import DownloadSpec as _DownloadSpec
+    download_specs_by_cause: dict[str, _DownloadSpec] = {}
+    for ev in events:
+        if ev.kind != "download":
+            continue
+        cause_id = ev.caused_by or ev.initiator_event_id
+        if not cause_id:
+            continue
+        download_specs_by_cause[cause_id] = _DownloadSpec(
+            filename_template=ev.download_filename,
+            expected_mime=None,
+            expected_min_bytes=None,
+            expected_signal=None,
+        )
+
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
@@ -3454,6 +3472,17 @@ def build_skill(
                 effects = StepEffect(popup=popup_eff)
             else:
                 effects.popup = popup_eff
+
+        # WI-45: if this click had a download intent, mark the step's
+        # action as ``download`` and attach the DownloadSpec. Stored
+        # locally so the step construction below uses it; the click
+        # event itself stays the primary fingerprint (the operator
+        # clicked a button/link to start the download).
+        _attached_download_spec = None
+        if ev.event_id and ev.event_id in download_specs_by_cause:
+            _attached_download_spec = download_specs_by_cause[ev.event_id]
+            if action == "click":
+                action = "download"
 
         # WI-42: fold toast observations onto this step's effects.toast.
         # On level=error the runner fails the step with toast_error;
@@ -3959,6 +3988,7 @@ def build_skill(
             file_spec=file_spec_value,
             drag_drop=drag_drop_spec,
             toggle_state=toggle_state_spec,
+            download_spec=_attached_download_spec,
             dependency_chain=dependency_chain_spec,
             ambiguity_policy=dialog_ambiguity_policy,
             auth_precondition=auth_precondition_value,

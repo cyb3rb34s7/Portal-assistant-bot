@@ -1974,6 +1974,56 @@
         if (DEBUG) console.warn("[cp] anchor _blank emit failed", popErr);
       }
 
+      // WI-45: detect download intent on the click target. Two
+      // patterns are emitted as a kind=``download`` TraceEvent that
+      // the annotator folds onto the click step (becomes a
+      // ``download`` action with DownloadSpec):
+      //   1. <a download> / <a download="filename.csv"> -- HTML5
+      //      download attribute. The browser will start a download
+      //      when the link is clicked. ``href`` carries the source.
+      //   2. <button data-download-filename="..."> -- portal-specific
+      //      convention for buttons that trigger a download via JS.
+      // The Content-Disposition path (network_response-driven) is
+      // detected by the annotator from the kind=network_response
+      // header summary; the grabber doesn't need a separate hook for
+      // it because the response event already carries headers in its
+      // upstream pipeline.
+      try {
+        var downloadEl = (function _findDownloadIntent(el) {
+          var cur = el;
+          while (cur && cur !== document) {
+            if (
+              cur.hasAttribute &&
+              (cur.hasAttribute("download") ||
+                cur.hasAttribute("data-download-filename"))
+            ) {
+              return cur;
+            }
+            cur = cur.parentElement;
+          }
+          return null;
+        })(target);
+        if (downloadEl) {
+          var dlAttr = _attribution("download_intent");
+          var declaredName = (
+            downloadEl.getAttribute("download") ||
+            downloadEl.getAttribute("data-download-filename") ||
+            ""
+          );
+          post(_merge({
+            kind: "download",
+            page_url: location.href,
+            raw_event_kind: "download_intent",
+            initiator_event_id: attr.event_id,
+            download_filename: declaredName || null,
+            download_href: (downloadEl.getAttribute &&
+              downloadEl.getAttribute("href")) || null,
+          }, dlAttr));
+        }
+      } catch (dlErr) {
+        if (DEBUG) console.warn("[cp] download intent emit failed", dlErr);
+      }
+
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),

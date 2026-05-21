@@ -368,15 +368,35 @@ def test_check_request_completed_status_none_means_any_2xx() -> None:
     )
 
 
-def test_check_download_started_is_placeholder_until_wi45() -> None:
-    """download_started is accepted by the schema and returns True from
-    the verifier as a best-effort placeholder. The real implementation
-    lands in WI-45 (browser-side download tracking). This test pins
-    that the assertion kind is acceptable today so annotators can emit
-    it without breaking the runner."""
+def test_check_download_started_requires_captured_download_after_wi45() -> None:
+    """WI-45 wired the ``download_started`` assertion to verify a real
+    captured download recorded by _do_download instead of returning the
+    pre-WI-45 placeholder True. Without a captured download the
+    assertion FAILS (the action that should have downloaded didn't);
+    with one it succeeds, and a declared filename_pattern is matched
+    case-insensitively against the captured suggested filename."""
     runner = _runner_with_params()
     a = StepAssertion(kind="download_started")
+    # No prior download -> assertion fails (was True placeholder pre-WI-45).
+    assert runner._check_one_assertion(_StubPage(), a) is False  # type: ignore[arg-type]
+    # Simulate a captured download.
+    runner._last_download = {
+        "suggested": "export-2026-05-22.csv",
+        "saved_path": "/tmp/sessions/x/downloads/export-2026-05-22.csv",
+        "size": 1024,
+    }
     assert runner._check_one_assertion(_StubPage(), a) is True  # type: ignore[arg-type]
+    # filename_pattern substring match (case-insensitive).
+    a_with_pat = StepAssertion(
+        kind="download_started",
+        filename_pattern=".CSV",
+    )
+    assert runner._check_one_assertion(_StubPage(), a_with_pat) is True  # type: ignore[arg-type]
+    a_mismatch = StepAssertion(
+        kind="download_started",
+        filename_pattern="report.pdf",
+    )
+    assert runner._check_one_assertion(_StubPage(), a_mismatch) is False  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------

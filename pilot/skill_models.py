@@ -2062,6 +2062,148 @@ class SliderSpec(BaseModel):
     can see what was originally recorded."""
 
 
+class PageContext(BaseModel):
+    """WI-46: cross-tab / multi-window page binding for a step.
+
+    Builds on WI-35's popup capture + page registry. When a workflow
+    continues inside a popup (or any non-primary page), the affected
+    SkillStep declares a PageContext pointing at the popup's
+    ``page_binding_key`` (from PopupEffect). At replay the runner
+    routes all locator resolution + actions for the step to
+    ``BrowserSession.popup_pages[page_binding_key]`` instead of the
+    main session.page.
+
+    ``opens_via`` is informational provenance about how the page got
+    bound (which prior step's effects.popup.page_binding_key matches).
+
+    ``expected_close`` declares how the popup should leave the
+    operator's session:
+      - ``auto``: the popup closes naturally as a consequence of the
+        action; the runner verifies the popup is gone on the NEXT
+        main-page step (covers print previews that self-dismiss).
+      - ``user``: the operator closes the popup mid-workflow; the
+        runner doesn't verify, just observes.
+      - ``action``: this step's action causes the popup to close; the
+        runner verifies the popup is gone immediately after the action.
+    """
+
+    page_binding_key: str
+    """The key the runner looks up in BrowserSession.popup_pages. Must
+    match a key declared on a prior step's effects.popup."""
+
+    opens_via: Optional[str] = None
+    """Informational: the cluster_kind or step.semantic_label that
+    opened this page (e.g. ``popup_open`` step at index 4). Audit-only
+    -- the runner doesn't use it for routing."""
+
+    expected_close: Literal["auto", "user", "action"] = "auto"
+    """When the popup is expected to close relative to this step. See
+    class docstring for semantics."""
+
+
+class CanvasGestureSpec(BaseModel):
+    """WI-49: spec for a ``canvas_gesture`` step.
+
+    Canvas / SVG / media-timeline controls cannot be replayed through
+    generic DOM locators -- the operator's recorded click coordinates
+    don't survive layout changes, and the canvas pixel content is
+    invisible to ARIA. The fix is to dispatch through a per-portal
+    adapter that takes a STRUCTURED intent (e.g. ``{kind: 'draw_box',
+    coords: [x, y, w, h]}``) and produces the Playwright pointer events
+    that realize that intent on the specific canvas / SVG library the
+    portal uses.
+
+    The runner looks up the adapter by ``adapter_name`` in the
+    ``pilot.adapters`` canvas registry (see
+    ``pilot/adapters/__init__.py`` -- the WI-49 registry sits next to
+    the existing portal adapter classes but uses a separate registration
+    function so canvas gestures stay isolated from portal-wide read /
+    write methods). Unknown adapter -> the runner emits
+    ``error_kind='action_not_implemented'`` with the missing name in
+    ``error_details`` so the operator sees exactly which adapter to
+    register.
+
+    Acceptance check (from the WI brief):
+      A ``canvas_gesture`` step with ``adapter_name='noop_click'``
+      records + replays. The sample noop_click adapter dispatches a
+      click at the canvas center so the schema + dispatch path is
+      tested end-to-end without requiring a real canvas portal.
+    """
+
+    adapter_name: str
+    """Name of the registered canvas gesture adapter. Looked up via
+    ``pilot.adapters.get_canvas_adapter(name)`` -- the runner builds
+    the adapter instance lazily."""
+
+    target_descriptor: dict[str, Any] = Field(default_factory=dict)
+    """Adapter-specific target descriptor. Typical shape:
+    ``{selector: '[data-testid="chart-canvas"]'}`` or
+    ``{role: 'img', accessible_name: 'Timeline'}``. The adapter
+    interprets the descriptor -- the runner just hands it through."""
+
+    action_payload: dict[str, Any] = Field(default_factory=dict)
+    """Structured intent the adapter realizes as pointer events.
+    Typical shapes: ``{kind: 'click_center'}`` for the noop sample,
+    ``{kind: 'draw_box', coords: [10, 10, 100, 100]}`` for a real
+    portal's drawing canvas, ``{kind: 'scrub_to', value: 0.5}`` for a
+    media timeline."""
+
+    expected_postcondition: Optional[str] = None
+    """Optional StepAssertion-kind name the runner verifies after the
+    adapter dispatch completes (e.g. ``visible`` for a shape that
+    should appear after a draw_box). None disables post-action
+    verification. Audit-only today; the runner reads this off the
+    spec but the full assertion path goes through step.assert_after."""
+
+
+class DownloadSpec(BaseModel):
+    """WI-45: spec for a ``download`` step.
+
+    The grabber captures the click that triggers a browser download via
+    one of two evidence paths:
+
+      1. An anchor / button with a ``download`` attribute (HTML5
+         download attribute), OR
+      2. A click whose attributed ``network_response`` carried a
+         ``Content-Disposition: attachment`` header (server-driven
+         download).
+
+    The annotator emits a ``download`` step (action='download') with
+    this spec attached and folds the originating click into it. At
+    replay the runner wraps the click in Playwright's
+    ``page.expect_download()`` context manager, asserts the captured
+    filename / mime / size against the declared expectations, saves the
+    file under ``<sessions_dir>/<session_id>/downloads/<filename>``, and
+    surfaces the saved path on the step result.
+
+    Acceptance: a CSV export click records as a ``download`` step;
+    replay produces the file under ``sessions/<id>/downloads/``.
+    """
+
+    filename_template: Optional[str] = None
+    """Expected filename pattern. Substring match (case-insensitive) at
+    replay time after param substitution. None means the runner accepts
+    whatever filename the browser reports (audit-only)."""
+
+    expected_mime: Optional[str] = None
+    """Expected MIME type prefix (e.g. ``text/csv``,
+    ``application/pdf``). The runner reads the saved file's extension
+    via ``mimetypes`` and matches against this prefix. None disables
+    the check."""
+
+    expected_min_bytes: Optional[int] = None
+    """Minimum acceptable file size. Guards against the download
+    happening but the server returning an empty / error body. None
+    disables the size floor."""
+
+    expected_signal: Optional["NetworkExpectation"] = None
+    """Optional network expectation the runner waits for in parallel
+    with the download (e.g. the GET that streams the file). Used when
+    the download is server-driven and we want to assert the matching
+    request completed with a 2xx status. None when the download is a
+    pure client-side blob (Content-Disposition not involved)."""
+
+
 class SetSelectionSpec(BaseModel):
     """Specification for a multi-select reconciliation step.
 
@@ -2292,6 +2434,23 @@ class SkillStep(BaseModel):
     target fingerprints, the DataTransfer payload summary, drop
     effect, and coordinates policy. None for non-drag_drop actions."""
 
+    download_spec: Optional["DownloadSpec"] = None
+    """WI-45: spec for ``download`` action steps. Carries the
+    filename / mime / size expectations and an optional network
+    signal the runner waits for in parallel with the
+    ``page.expect_download()`` context. None for non-download actions
+    and for legacy traces (in which case a click + observed
+    Content-Disposition response stayed a plain click rather than
+    being folded into a download step)."""
+
+    canvas_gesture: Optional["CanvasGestureSpec"] = None
+    """WI-49: spec for ``canvas_gesture`` action steps. Carries the
+    adapter name, target descriptor, structured action payload, and
+    expected post-condition. None for non-canvas actions. The runner
+    dispatches through the registered adapter; an unknown adapter falls
+    back to ``error_kind='action_not_implemented'`` with a clear
+    diagnostic."""
+
     toggle_state: Optional["ToggleStateSpec"] = None
     """WI-33: spec for ``toggle_state`` steps (accordion / expand-
     collapse). Carries the desired target_state, the state attribute
@@ -2306,6 +2465,23 @@ class SkillStep(BaseModel):
     and re-probes the target's visibility between iterations until
     the target_visible_in_scroller DomExpectation passes or
     max_scrolls is exhausted."""
+
+    strict_locale: bool = False
+    """WI-48: when True, the runner FAILS this step with
+    ``error_kind='locale_mismatch'`` if the replay-time locale /
+    timezone differ from Skill.recording_context. Default False emits
+    a warning diagnostic instead. Operators set True on steps whose
+    correctness depends on locale-formatted input being read back the
+    same way (e.g. a date filter that the portal stores as the
+    rendered string)."""
+
+    page_context: Optional["PageContext"] = None
+    """WI-46: cross-tab / multi-window routing hint. When set, the
+    runner resolves locators + dispatches actions for THIS step on
+    ``BrowserSession.popup_pages[page_context.page_binding_key]``
+    instead of the main session.page. None means the step runs on the
+    main page (the legacy default). The annotator stamps this on
+    steps that live INSIDE a popup workflow per WI-46."""
 
     auth_precondition: Optional["AuthPrecondition"] = None
     """WI-36: declarative auth gate the runner verifies BEFORE running
@@ -2702,6 +2878,34 @@ def _upgrade_legacy_click_nav_pairs(steps: list[dict[str, Any]]) -> list[dict[st
     return out
 
 
+class RecordingContext(BaseModel):
+    """WI-48: locale + timezone snapshot taken at recording time.
+
+    The grabber captures ``document.documentElement.lang`` and
+    ``Intl.DateTimeFormat().resolvedOptions().timeZone`` once per
+    session and the annotator stamps the result onto ``Skill.recording_context``.
+
+    The runner reads this at replay-start to compare against the
+    current page's locale / timezone:
+      - If they differ AND any step declares ``strict_locale=True``,
+        the runner FAILS the step with ``error_kind='locale_mismatch'``.
+      - Otherwise the runner emits a ``locale_mismatch`` warning
+        diagnostic (audit-only) and proceeds. The codec layer's
+        ``iso_date`` / ``localized_number`` paths handle the
+        format-then-parse normalization so the page receives the
+        value its native locale expects.
+    """
+
+    locale: Optional[str] = None
+    """BCP-47 locale tag (e.g. ``en-US``, ``de-DE``) observed at
+    recording time. None when the grabber couldn't read it (page had
+    no lang attribute and Intl wasn't available)."""
+
+    timezone: Optional[str] = None
+    """IANA timezone name (e.g. ``America/New_York``,
+    ``Europe/Berlin``) from Intl. None when Intl wasn't available."""
+
+
 class Skill(BaseModel):
     """A learned, parameterized, replayable skill."""
 
@@ -2748,6 +2952,17 @@ class Skill(BaseModel):
     skills loaded from JSON default to ``semantic`` unless explicitly
     written -- safe because the semantic pipeline degrades to one
     cluster per event when no widget pattern is detected."""
+
+    recording_context: Optional["RecordingContext"] = None
+    """WI-48: locale + timezone observed at recording time. Captured
+    from the page's ``document.documentElement.lang`` and the browser's
+    ``Intl.DateTimeFormat().resolvedOptions().timeZone``. Used by the
+    runner to detect ``locale_mismatch`` when replay runs under a
+    different locale / timezone, and by the codec layer to normalize
+    date / number params through ``iso_date`` / ``localized_number``
+    instead of relying on the page's native rendering. None for legacy
+    traces (pre-WI-48) -- the runner treats absence as 'no
+    expectation, no mismatch warning'."""
 
     semantic_clusters: list["SemanticCluster"] = Field(default_factory=list)
     """WI-12: structured cluster intermediate representation, retained
@@ -3089,6 +3304,20 @@ class TraceEvent(BaseModel):
     """For ``popup`` events: the page key the grabber assigned for
     cross-page step routing. The annotator stamps this onto the
     PopupEffect so the runner knows which page key to switch to."""
+
+    # WI-45: download intent payload. Populated on kind='download'
+    # events emitted by the grabber's download-attribute / data-
+    # download-filename click watcher. The annotator folds these onto
+    # the causing click step (the step's action becomes ``download``
+    # and a DownloadSpec is attached).
+    download_filename: Optional[str] = None
+    """For ``download`` events: the declared filename hint from the
+    ``download`` attribute or ``data-download-filename``. None when
+    the attribute was empty (``<a download>`` without a value -- the
+    browser will use the URL's basename)."""
+    download_href: Optional[str] = None
+    """For ``download`` events: the anchor's ``href`` URL when the
+    download was anchor-driven. None for button-driven downloads."""
 
     # WI-37 / WI-38: scroll payload. Populated on kind='visibility_change'
     # events emitted by the grabber's scroll observer when an operator

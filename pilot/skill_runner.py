@@ -74,11 +74,9 @@ _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     #   select_option (WI-17), date_select (WI-21), slider_set (WI-28),
     #   drag_drop (WI-30), toggle_state (WI-33),
     #   scroll_until (WI-37/WI-38), rich_text_set (WI-39),
-    #   shortcut (WI-41).
+    #   shortcut (WI-41), download (WI-45), canvas_gesture (WI-49).
     "modal",                # WI-34 (as effect, not standalone action)
     "popup",                # WI-35 (as effect, not standalone action)
-    "download",             # WI-45
-    "canvas_gesture",       # WI-49
 })
 
 
@@ -571,6 +569,10 @@ class SkillRunner:
                 result, level = self._do_rich_text_set(step)
             elif step.action == "shortcut":
                 result, level = self._do_shortcut(step)
+            elif step.action == "download":
+                result, level = self._do_download(step)
+            elif step.action == "canvas_gesture":
+                result, level = self._do_canvas_gesture(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -3505,6 +3507,281 @@ class SkillRunner:
             1,
         )
 
+    def _do_download(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-45: replay a download step.
+
+        Resolves the click target via the standard locator cascade,
+        wraps the click in ``page.expect_download()`` (so Playwright
+        attaches a download listener BEFORE the click fires), saves the
+        captured download under
+        ``<sessions_dir>/<session_id>/downloads/<filename>``, and
+        verifies the declared filename / mime / size expectations.
+
+        Acceptance: a CSV export click records as a ``download`` step;
+        replay produces the file under ``sessions/<id>/downloads/`` and
+        surfaces the saved path on ``ToolResult.output['download_path']``.
+        """
+        spec = step.download_spec
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="download",
+                    error="download step has no download_spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+        # The click target resolves the same way other clicks do --
+        # download is just a click that ALSO captures a file.
+        locator, level, _heal = self._resolve_locator(step)
+        if locator is None:
+            return self._fallback_human(
+                step, "could not locate download trigger"
+            )
+        page = self._page_for_step(step)
+        downloads_dir = self.audit.session_dir / "downloads"
+        try:
+            downloads_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._diagnostic(
+                "runner.download_dir_create_failed",
+                level="warn",
+                recoverable=True,
+                error=str(e),
+            )
+
+        try:
+            with page.expect_download(timeout=10000) as dl_info:
+                locator.click(timeout=5000)
+            download = dl_info.value
+        except PWTimeoutError as e:
+            shot = self._screenshot(f"step_{step.index}_download_timeout")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="download",
+                    error=f"download did not start within timeout: {e}",
+                    error_kind="download_not_started",
+                    screenshot_path=shot,
+                ),
+                level,
+            )
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_download_error")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="download",
+                    error=str(e),
+                    error_kind="download_failed",
+                    screenshot_path=shot,
+                ),
+                level,
+            )
+
+        suggested = download.suggested_filename or "download.bin"
+        # Filename template expectation: substring match (case-
+        # insensitive) after the runner has substituted any params it
+        # knows about. The template is operator-declared and may be a
+        # literal name (``report.csv``) or a fragment (``.csv``).
+        if spec.filename_template:
+            tmpl = spec.filename_template
+            try:
+                # Best-effort param substitution (e.g. "{report_id}.csv").
+                tmpl = tmpl.format(**self.params)
+            except (KeyError, IndexError):
+                pass
+            if tmpl.lower() not in suggested.lower():
+                self._diagnostic(
+                    "runner.download_filename_mismatch",
+                    level="warn",
+                    recoverable=True,
+                    expected_template=tmpl,
+                    actual=suggested,
+                )
+
+        save_path = downloads_dir / suggested
+        try:
+            download.save_as(str(save_path))
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="download",
+                    error=f"could not save download: {e}",
+                    error_kind="download_save_failed",
+                ),
+                level,
+            )
+
+        # Verify MIME / size expectations.
+        try:
+            actual_size = save_path.stat().st_size
+        except Exception:
+            actual_size = 0
+        if (
+            spec.expected_min_bytes is not None
+            and actual_size < spec.expected_min_bytes
+        ):
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="download",
+                    error=(
+                        f"download too small: {actual_size} bytes "
+                        f"(expected >= {spec.expected_min_bytes})"
+                    ),
+                    error_kind="download_too_small",
+                    error_details={
+                        "actual_bytes": actual_size,
+                        "min_bytes": spec.expected_min_bytes,
+                    },
+                ),
+                level,
+            )
+        if spec.expected_mime:
+            import mimetypes
+            guessed, _enc = mimetypes.guess_type(str(save_path))
+            if not guessed or not guessed.startswith(spec.expected_mime):
+                self._diagnostic(
+                    "runner.download_mime_mismatch",
+                    level="warn",
+                    recoverable=True,
+                    expected_prefix=spec.expected_mime,
+                    actual=guessed or "unknown",
+                )
+
+        # WI-27 wiring: the runner records the captured download so
+        # the ``download_started`` StepAssertion verifier (in
+        # _check_assertion) can now check filename_pattern against
+        # this download instead of returning the placeholder True.
+        self._last_download = {
+            "suggested": suggested,
+            "saved_path": str(save_path),
+            "size": actual_size,
+        }
+
+        shot = self._screenshot(f"step_{step.index}_download_after")
+        return (
+            ToolResult(
+                success=True,
+                action_taken=f"downloaded {suggested}",
+                output={
+                    "download_path": str(save_path),
+                    "download_filename": suggested,
+                    "download_bytes": actual_size,
+                },
+                screenshot_path=shot,
+            ),
+            level,
+        )
+
+    def _do_canvas_gesture(
+        self, step: SkillStep
+    ) -> tuple[ToolResult, int]:
+        """WI-49: dispatch a canvas / SVG / media gesture through a
+        registered adapter.
+
+        Looks up the adapter by ``spec.adapter_name`` in the
+        ``pilot.adapters`` canvas registry. Unknown adapter -> emit
+        ``error_kind='action_not_implemented'`` with the missing name
+        so the operator sees exactly which adapter to register.
+
+        Acceptance: a step with ``adapter_name='noop_click'`` records
+        + replays; the bundled NoOp adapter dispatches a click at the
+        center of the target descriptor's selector so the schema and
+        dispatch path are exercised end-to-end.
+        """
+        spec = step.canvas_gesture
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="canvas_gesture",
+                    error="canvas_gesture step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+        from .adapters import get_canvas_adapter
+        adapter_cls = get_canvas_adapter(spec.adapter_name)
+        if adapter_cls is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"canvas_gesture {spec.adapter_name}",
+                    error=(
+                        f"canvas adapter {spec.adapter_name!r} is not "
+                        "registered. Register via "
+                        "pilot.adapters.register_canvas_adapter."
+                    ),
+                    error_kind="action_not_implemented",
+                    error_details={"adapter_name": spec.adapter_name},
+                ),
+                0,
+            )
+        page = self._page_for_step(step)
+        try:
+            adapter = adapter_cls(page=page, audit=self.audit)
+            result = adapter.dispatch(
+                target_descriptor=spec.target_descriptor,
+                action_payload=spec.action_payload,
+            )
+        except Exception as e:
+            shot = self._screenshot(
+                f"step_{step.index}_canvas_gesture_error"
+            )
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"canvas_gesture {spec.adapter_name}",
+                    error=str(e),
+                    error_kind="canvas_gesture_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+        if not isinstance(result, ToolResult):
+            # Adapter contract violation; coerce into a failure result
+            # so the diagnostic surfaces.
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"canvas_gesture {spec.adapter_name}",
+                    error=(
+                        "canvas adapter did not return a ToolResult "
+                        f"(got {type(result).__name__})"
+                    ),
+                    error_kind="canvas_gesture_bad_return",
+                ),
+                0,
+            )
+        return result, 1
+
+    def _page_for_step(self, step: SkillStep) -> Page:
+        """WI-46: pick the Playwright Page this step should run on.
+
+        Returns the popup-bound page when ``step.page_context`` is set
+        AND the binding_key exists in ``session.popup_pages``;
+        otherwise the main session.page. Emits a diagnostic when a
+        page_context is declared but the binding is missing (the
+        runner falls back to the main page rather than crash so the
+        operator can still observe the failure mode)."""
+        ctx = step.page_context
+        if ctx is None:
+            return self.session.page
+        bound = self.session.popup_pages.get(ctx.page_binding_key)
+        if bound is None:
+            self._diagnostic(
+                "runner.page_context_unbound",
+                level="warn",
+                recoverable=True,
+                page_binding_key=ctx.page_binding_key,
+            )
+            return self.session.page
+        return bound
+
     def _do_toggle_state(self, step: SkillStep) -> tuple[ToolResult, int]:
         """WI-33: accordion / expand-collapse toggle as DESIRED state.
 
@@ -5911,13 +6188,21 @@ class SkillRunner:
             except Exception:
                 return False
         if a.kind == "download_started":
-            # The runner attaches a download listener at session start
-            # in future WI-45. For WI-27 we honor the assertion only as
-            # a placeholder -- skill annotators emit this so the schema
-            # accepts it, but until WI-45 lands the verifier returns
-            # True (best-effort) so existing tests aren't blocked. The
-            # contract is documented; the implementation lands with
-            # WI-45.
+            # WI-45: verify against the captured download recorded by
+            # _do_download. Without a captured download, the assertion
+            # FAILS (the action that should have downloaded didn't).
+            # When ``filename_pattern`` is declared, the captured
+            # filename must contain that substring (case-insensitive).
+            last = getattr(self, "_last_download", None)
+            if not last:
+                return False
+            if a.filename_pattern:
+                pat = a.filename_pattern.lower()
+                try:
+                    pat = pat.format(**self.params)
+                except (KeyError, IndexError):
+                    pass
+                return pat in (last.get("suggested") or "").lower()
             return True
         if a.kind == "validation_field" and a.selector:
             # WI-44: the assertion fires when the field carries
