@@ -1683,6 +1683,18 @@ class SkillRunner:
                 level,
             )
 
+        # WI-18: when this select is the PARENT of a cascading
+        # dependency, wait for the child's option-refresh request
+        # before letting subsequent steps proceed. The child step's
+        # _do_select_option will then read the refreshed options.
+        if step.dependency_chain is not None:
+            dep = step.dependency_chain
+            if dep.option_source_request is not None:
+                from .skill_models import ExpectedSignals as _ES
+                self._wait_for_page_settle(
+                    expected=_ES(network=[dep.option_source_request])
+                )
+
         shot = self._screenshot(f"step_{step.index}_select_option")
         return self._build_action_result(
             success=True,

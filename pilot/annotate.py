@@ -1275,6 +1275,79 @@ def _detect_select_option_clusters(
     return clusters
 
 
+def _detect_cascading_select(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[tuple[str, str, Optional[TraceEvent]]]:
+    """WI-18: detect select_A change -> network call -> select_B
+    options change. Returns a list of (parent_event_id, child_event_id,
+    option_source_request_event) triples for the annotator to attach
+    DependencyChain to the PARENT step.
+
+    Differs from the other detectors in two ways:
+      (a) it does NOT create its own SemanticCluster -- the parent and
+          child remain as select_option clusters; the dependency_chain
+          is overlaid on the parent step.
+      (b) it does NOT add events to ``consumed`` -- both selects are
+          still emitted as full select_option steps.
+
+    Detection heuristic:
+      For each pair of (parent, child) select_option events:
+        - parent and child are both native single-selects
+          (control_kind=select_single, options_snapshot present),
+        - parent occurred BEFORE child in event order,
+        - there is a network_request event between them whose
+          caused_by chain traces back to the parent,
+        - the child's options_snapshot DIFFERS from any prior snapshot
+          of the same child element (the options actually changed).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    children_of: dict[str, list[str]] = causality.get("children_of") or {}
+
+    select_events: list[TraceEvent] = []
+    for ev in events:
+        if (
+            ev.kind == "input_change"
+            and ev.event_id in user_actions
+            and ev.fingerprint is not None
+            and ev.fingerprint.control_kind == "select_single"
+            and ev.fingerprint.options_snapshot
+        ):
+            select_events.append(ev)
+
+    chains: list[tuple[str, str, Optional[TraceEvent]]] = []
+    for i, parent in enumerate(select_events):
+        # Look for a child select event with a different fingerprint
+        # target that appears AFTER this parent in the event stream.
+        for child in select_events[i + 1:]:
+            if parent.event_id == child.event_id:
+                continue
+            if _fp_target_id(parent.fingerprint) == _fp_target_id(child.fingerprint):
+                continue
+            # Find an intermediate network_request caused by parent.
+            request_ev: Optional[TraceEvent] = None
+            for cid in children_of.get(parent.event_id or "", []):
+                ce = by_id.get(cid)
+                if ce is None:
+                    continue
+                if ce.kind in ("network_request", "network_response"):
+                    # request must have started before the child event
+                    # in trace order.
+                    request_ev = ce
+                    break
+            if request_ev is None:
+                continue
+            if parent.event_id and child.event_id:
+                chains.append(
+                    (parent.event_id, child.event_id, request_ev)
+                )
+            break  # Only chain to the FIRST dependent child per parent
+    _ = consumed  # WI-18 doesn't consume events
+    return chains
+
+
 def _build_select_option_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -1505,6 +1578,24 @@ def build_skill(
         if c.primary_target_event_id
     }
 
+    # WI-18: cascading-select dependencies. Detect parent->child
+    # select_option pairs with an intervening network_request from
+    # the parent. Stamp the DependencyChain onto the PARENT step.
+    cascading_chains: list[tuple[str, str, Optional[TraceEvent]]] = (
+        _detect_cascading_select(events, causality, set())
+        if annotate_mode == "semantic" else []
+    )
+    # Index parent event id -> (child event id, request event).
+    cascading_by_parent: dict[str, tuple[str, Optional[TraceEvent]]] = {
+        pid: (cid, req) for pid, cid, req in cascading_chains
+    }
+    # Index child event id -> parent event id so the param decl pass
+    # can stamp depends_on at the time the child SkillParam is
+    # constructed.
+    cascading_by_child: dict[str, str] = {
+        cid: pid for pid, cid, _ in cascading_chains
+    }
+
     # WI-15+: when a specialized cluster (fill_submit, select_autocomplete,
     # select_option, set_selection, date_select) folded multiple events,
     # the per-event loop must SKIP the non-primary members so we don't
@@ -1552,6 +1643,12 @@ def build_skill(
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
+    # WI-18: event_id -> binding_name index built as we iterate.
+    # Used by the per-event loop to resolve a cascading-child step's
+    # depends_on to the parent event's bound param name. Parent events
+    # always come BEFORE their child in event order so by the time the
+    # child step builds its binding, the parent's entry is in the map.
+    binding_name_by_event_id: dict[str, str] = {}
     # Track params-seen so navigation URL templates can substitute
     # values that appear in the URL (WI-08 + foundation for WI-11).
     params_seen: list[tuple[str, str]] = []
@@ -1735,6 +1832,67 @@ def build_skill(
                 cluster_here, events, causality, ev
             )
 
+        # WI-18: cascading-select dependency. If this select is a
+        # parent in a detected chain, attach a DependencyChain. The
+        # child param's name and the option_source_request URL are
+        # resolved here so the step carries the full contract.
+        dependency_chain_spec: Optional[DependencyChain] = None
+        if ev.event_id and ev.event_id in cascading_by_parent:
+            child_eid, req_ev = cascading_by_parent[ev.event_id]
+            child_ev = causality.get("by_id", {}).get(child_eid)
+            # Parent param name is bound to THIS event; child param
+            # name comes from the child event's binding (if any) or
+            # falls back to the child's fingerprint test_id.
+            child_param_name: Optional[str] = None
+            if child_ev is not None:
+                child_binding = infer_param_binding(
+                    child_ev, auto_label(child_ev)
+                )
+                if child_binding is not None:
+                    child_param_name = child_binding.name
+                elif child_ev.fingerprint is not None:
+                    raw = (
+                        child_ev.fingerprint.name
+                        or child_ev.fingerprint.test_id
+                        or child_ev.fingerprint.element_id
+                        or "child"
+                    )
+                    child_param_name = re.sub(
+                        r"[^a-zA-Z0-9_]+", "_", raw
+                    ).strip("_").lower() or "child"
+            parent_param_name = binding.name if binding else None
+            if parent_param_name and child_param_name:
+                opt_source: Optional[NetworkExpectation] = None
+                if req_ev is not None and req_ev.url:
+                    try:
+                        url_pattern = req_ev.url.split("?", 1)[0]
+                    except Exception:
+                        url_pattern = req_ev.url
+                    method = (req_ev.method or "GET").upper()
+                    if method not in (
+                        "GET", "POST", "PATCH", "PUT", "DELETE"
+                    ):
+                        method = "GET"
+                    opt_source = NetworkExpectation(
+                        url_pattern=url_pattern,
+                        method=method,  # type: ignore[arg-type]
+                        optional=False,
+                    )
+                # Use child's fingerprint test_id as the option-
+                # signature selector when available.
+                child_sig: Optional[str] = None
+                if child_ev is not None and child_ev.fingerprint is not None:
+                    if child_ev.fingerprint.test_id:
+                        child_sig = (
+                            f"[data-testid='{child_ev.fingerprint.test_id}']"
+                        )
+                dependency_chain_spec = DependencyChain(
+                    parent_param=parent_param_name,
+                    child_param=child_param_name,
+                    option_source_request=opt_source,
+                    child_options_signature_after=child_sig,
+                )
+
         # WI-16: build the AutocompleteSpec for select_autocomplete
         # cluster steps. The primary_target is the CLICK on the result;
         # the spec carries the separated query / selected_item params,
@@ -1777,6 +1935,7 @@ def build_skill(
             fill_submit=fill_submit_spec,
             select_autocomplete=select_autocomplete_spec,
             select_option=select_option_spec,
+            dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;
@@ -1874,6 +2033,12 @@ def build_skill(
             else:
                 final_type = inferred_type
                 final_codec = inferred_codec
+            # WI-18: stamp depends_on on the child param when this
+            # event's id is a child in the cascading-select chain.
+            depends_on_name: Optional[str] = None
+            if ev.event_id and ev.event_id in cascading_by_child:
+                parent_eid = cascading_by_child[ev.event_id]
+                depends_on_name = binding_name_by_event_id.get(parent_eid)
             declared_params[binding.name] = SkillParam(
                 name=binding.name,
                 type=final_type,  # type: ignore[arg-type]
@@ -1881,12 +2046,15 @@ def build_skill(
                 description=f"Value for step {step.index}: {label}",
                 example=example or None,
                 required=True,
+                depends_on=depends_on_name,
                 enum_options=(
                     list(fp.options_snapshot)
                     if fp and fp.options_snapshot
                     else None
                 ),
             )
+        if ev.event_id and binding:
+            binding_name_by_event_id[ev.event_id] = binding.name
 
     if skipped and not auto:
         console.print(f"[dim]Skipped {skipped} event(s) marked as noise.[/dim]")
