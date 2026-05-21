@@ -185,6 +185,14 @@ class SkillRunner:
                     continue
 
             result, level = self._execute_step(step)
+            # F-08e: drain any idempotency-shim diagnostics that accrued
+            # during this step. The page-side shim's catch blocks push
+            # entries into a window queue; we surface them through the
+            # audit log here so failures aren't invisible.
+            try:
+                self._drain_idempotency_diagnostics(self.session.page, step)
+            except Exception:
+                pass
             # Finalize + emit the diagnostic. final_level + error_kind get
             # filled here because they're only known after the action ran.
             diag = getattr(self, "_diag", None)
@@ -1578,7 +1586,13 @@ class SkillRunner:
 
       function _endpointMatches(cfg, urlStr) {
         const patterns = cfg.endpoint_patterns || [];
-        if (patterns.length === 0) return true;  // no scoping
+        // F-08d: empty patterns means "match every endpoint" ONLY
+        // when scope_all_endpoints is explicitly set. The Pydantic
+        // validator on IdempotencyCapability already rejects the
+        // ambiguous case at config time, but the page-side shim
+        // re-checks because the config arrives over the wire as a
+        // plain dict.
+        if (patterns.length === 0) return !!cfg.scope_all_endpoints;
         const lower = String(urlStr || '').toLowerCase();
         return patterns.some(p => lower.indexOf(p.toLowerCase()) >= 0);
       }
@@ -1602,6 +1616,27 @@ class SkillRunner:
         return h;
       }
 
+      // F-08e: structured diagnostics queue for idempotency-shim
+      // failures. Drained by the runner via page.evaluate() after each
+      // step so swallowed exceptions become visible in the audit log
+      // instead of silently letting un-augmented requests reach
+      // destructive endpoints.
+      if (!window.__cp_idem_diagnostics) window.__cp_idem_diagnostics = [];
+
+      function _shouldHaveAugmented(cfg, method, urlStr) {
+        // Returns true when, by config, this request was the kind we
+        // were supposed to inject onto. Used by the catch blocks
+        // below to decide between fail-open (a request we wouldn't
+        // have touched anyway) and fail-closed (a matched destructive
+        // request the shim failed to augment).
+        if (!cfg || !cfg.enabled) return false;
+        try {
+          return _methodMatches(cfg, method) && _endpointMatches(cfg, urlStr);
+        } catch (e) {
+          return false;
+        }
+      }
+
       if (window.fetch && !window.__cp_idem_fetch_wrapped) {
         window.__cp_idem_fetch_wrapped = true;
         const _f = window.fetch.bind(window);
@@ -1618,6 +1653,31 @@ class SkillRunner:
             init2.headers = _augment(seedHeaders, method, url, body);
             return _f.call(this, input, init2);
           } catch (e) {
+            // F-08e: log structured diagnostic AND, if this was a
+            // matched destructive request, fail closed by rejecting
+            // the call so the page sees a real error rather than the
+            // request silently going through without the key.
+            const cfg = window.__cp_idem_config;
+            let url = '';
+            let method = 'GET';
+            try {
+              url = typeof input === 'string' ? input : (input && input.url) || '';
+              method = (init && init.method) || (input && input.method) || 'GET';
+            } catch (_) {}
+            window.__cp_idem_diagnostics.push({
+              ts: Date.now(),
+              where: 'fetch_wrap',
+              error: String(e && e.message || e),
+              method: method,
+              url: url,
+              matched: _shouldHaveAugmented(cfg, method, url),
+            });
+            if (_shouldHaveAugmented(cfg, method, url)) {
+              return Promise.reject(new Error(
+                '[cp-idempotency] shim failed on matched destructive ' +
+                method + ' ' + url + ': ' + (e && e.message || e)
+              ));
+            }
             return _f.apply(this, arguments);
           }
         };
@@ -1636,21 +1696,41 @@ class SkillRunner:
           return _setRH.apply(this, arguments);
         };
         window.XMLHttpRequest.prototype.send = function (body) {
+          const cfg = window.__cp_idem_config;
+          const method = (this.__cp_method || 'GET').toUpperCase();
+          const url = this.__cp_url || '';
+          let matchedDestructive = false;
           try {
-            const cfg = window.__cp_idem_config;
             if (cfg && cfg.enabled) {
-              const method = (this.__cp_method || 'GET').toUpperCase();
-              const url = this.__cp_url || '';
               const headerName = cfg.header_name || 'Idempotency-Key';
               if (
                 _methodMatches(cfg, method) &&
                 _endpointMatches(cfg, url) &&
                 (!this.__cp_idem_already_set || cfg.allow_existing_header === false)
               ) {
+                matchedDestructive = true;
                 _setRH.call(this, headerName, _buildKey(cfg, method, url, body));
               }
             }
-          } catch (e) {}
+          } catch (e) {
+            // F-08e: structured diagnostic + fail-closed for matched
+            // destructive requests. Unmatched requests still proceed
+            // (we wouldn't have augmented them anyway).
+            window.__cp_idem_diagnostics.push({
+              ts: Date.now(),
+              where: 'xhr_send',
+              error: String(e && e.message || e),
+              method: method,
+              url: url,
+              matched: matchedDestructive,
+            });
+            if (matchedDestructive) {
+              throw new Error(
+                '[cp-idempotency] shim failed on matched destructive ' +
+                method + ' ' + url + ': ' + (e && e.message || e)
+              );
+            }
+          }
           return _send.apply(this, arguments);
         };
       }
@@ -1705,6 +1785,9 @@ class SkillRunner:
             "allow_existing_header": bool(
                 getattr(cap, "allow_existing_header", True)
             ),
+            "scope_all_endpoints": bool(
+                getattr(cap, "scope_all_endpoints", False)
+            ),
             "session_id": self.session_id,
             "step_index": step.index,
         }
@@ -1720,6 +1803,44 @@ class SkillRunner:
                     f"({type(e).__name__}: {e}) -- retries of this step "
                     "may double-write to destructive endpoints"
                 ),
+            )
+
+    def _drain_idempotency_diagnostics(self, page: Page, step: SkillStep) -> None:
+        """F-08e: pull the page-side shim's diagnostic queue and emit
+        any entries as audit warnings. Called after each step so the
+        operator sees shim exceptions even though the JS catch blocks
+        couldn't reach the Python audit directly.
+
+        Entries with ``matched: true`` are particularly serious -- they
+        mean a destructive request that we were configured to augment
+        threw inside our shim. The JS side fails closed for these (the
+        page sees an error), but the diagnostic still surfaces here
+        for the audit trail.
+        """
+        try:
+            entries = page.evaluate(
+                "() => { const q = window.__cp_idem_diagnostics || []; "
+                "window.__cp_idem_diagnostics = []; return q; }"
+            )
+        except Exception:
+            return
+        if not entries:
+            return
+        for entry in entries:
+            matched = bool(entry.get("matched"))
+            level = "error" if matched else "warn"
+            self.audit.log(
+                level,
+                (
+                    f"idempotency shim {'failed CLOSED on matched destructive ' if matched else 'soft-failed on '}"
+                    f"{entry.get('method', '?')} {entry.get('url', '?')}: "
+                    f"{entry.get('error', '?')}"
+                ),
+                data={
+                    "step_index": step.index,
+                    "where": entry.get("where"),
+                    "matched_destructive": matched,
+                },
             )
 
     def _wait_for_page_settle(

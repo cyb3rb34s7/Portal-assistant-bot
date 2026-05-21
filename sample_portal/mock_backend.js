@@ -16,6 +16,20 @@
  *     scenario from the operator's real-portal issue)
  */
 
+// ----- Configuration --------------------------------------------------
+//
+// F-08f: named constants for behavior that downstream tests / fixtures
+// may want to reason about. Burying these inside function bodies makes
+// it look like the values are hardcoded for tests; lifting them to the
+// top makes the contract explicit.
+
+// IDEMPOTENCY_WINDOW_MS: how long an idempotency key stays in the
+// cache. 60s matches the runner's per-step retry budget: a retry of
+// the same logical step within this window dedupes to the cached
+// response. Set well below the typical session duration so stale
+// keys eventually evict and don't bloat memory.
+const IDEMPOTENCY_WINDOW_MS = 60_000;
+
 // ----- Seed data ------------------------------------------------------
 
 const REGIONS = [
@@ -198,7 +212,7 @@ function maybeReplayIdempotent(req, res) {
   if (!key) return null;
   const cached = state.idempotency_cache.get(key);
   if (!cached) return null;
-  if (Date.now() - cached.ts > 60_000) {
+  if (Date.now() - cached.ts > IDEMPOTENCY_WINDOW_MS) {
     state.idempotency_cache.delete(key);
     return null;
   }

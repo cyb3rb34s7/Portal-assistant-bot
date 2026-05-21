@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 PORTAL_CONTEXT_SCHEMA_VERSION = 1
@@ -43,6 +43,45 @@ class SessionInfo(BaseModel):
         "unknown"
     )
     notes: str | None = None
+
+
+class WaitPolicy(BaseModel):
+    """F-08c: per-portal default wait timeouts.
+
+    Replaces the prior pattern of hardcoded class-level defaults on
+    StepEffect / NetworkExpectation / DomExpectation / StepAssertion.
+    The annotator reads these values when generating expected_signals
+    and assertions so the schema's class-level defaults are only ever
+    a last-resort fallback for legacy skills.
+
+    Tune upward on slow / queue-backed portals (the recorded ingest
+    pipeline takes a while to settle), downward on snappy portals to
+    fail fast and let recovery hooks kick in.
+    """
+
+    network_max_ms: int = 5000
+    """Default max wait for a network expectation. Equivalent of the
+    old NetworkExpectation.max_ms class default."""
+
+    dom_timeout_ms: int = 5000
+    """Default timeout for a DOM expectation."""
+
+    dom_stable_ms: int = 250
+    """Default stability window for options_changed / count_changed
+    (the value must hold this long before we proceed -- prevents
+    flicker)."""
+
+    navigation_timeout_ms: int = 5000
+    """Default timeout for NavigationEffect.assert_url verification."""
+
+    assertion_timeout_ms: int = 4000
+    """Default timeout for assert_after StepAssertion checks."""
+
+    options_snapshot_max: int = 500
+    """Cap on options captured per <select> snapshot (F-08b). When
+    hit, ElementFingerprint.options_truncated=True so the annotator
+    suggests a search step instead of treating the snapshot as
+    exhaustive. The grabber reads this via window.__cp_opts_cap."""
 
 
 class IdempotencyCapability(BaseModel):
@@ -102,6 +141,31 @@ class IdempotencyCapability(BaseModel):
     runner's key to win -- needed when the app generates a fresh key
     per call and you want retries to dedupe against the runner's key
     instead."""
+
+    scope_all_endpoints: bool = False
+    """F-08d: explicit opt-in to inject on EVERY request matching
+    ``method_patterns``. When ``enabled=True`` and ``endpoint_patterns``
+    is empty, the validator requires this flag to be True -- otherwise
+    the cap rejects the silent 'inject on every non-GET endpoint'
+    behavior that the original WI-04 spec aimed to eliminate."""
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "IdempotencyCapability":
+        """F-08d: prevent the accidental 'inject on every endpoint'
+        configuration. When the operator enables idempotency, they must
+        either declare which endpoints accept the header
+        (``endpoint_patterns``) or explicitly accept the all-endpoint
+        scope (``scope_all_endpoints=True``). Silent fall-through to
+        'inject everywhere' was the hidden default in WI-04 that this
+        validator removes."""
+        if self.enabled and not self.endpoint_patterns and not self.scope_all_endpoints:
+            raise ValueError(
+                "IdempotencyCapability.enabled=True requires either "
+                "endpoint_patterns to be non-empty or "
+                "scope_all_endpoints=True (explicit opt-in to inject "
+                "the header on every method-matched request)."
+            )
+        return self
 
 
 class AuthSignal(BaseModel):
@@ -175,6 +239,11 @@ class PortalContext(BaseModel):
     upward for portals where requests dispatch in rapid bursts (UI
     fires four GETs serially after a click) and we want to wait for
     all of them. Tune downward for snappy portals."""
+
+    wait_policy: WaitPolicy = Field(default_factory=WaitPolicy)
+    """F-08c: per-portal wait timeout defaults. Annotator reads these
+    when generating expected_signals / assertions so step-level
+    expectations no longer carry hardcoded magic numbers."""
 
     idempotency: "IdempotencyCapability" = Field(
         default_factory=lambda: IdempotencyCapability()

@@ -37,10 +37,36 @@
   // through the annotator; click-driven SPA route change has caused_by
   // and gets folded into the click's effects).
   //
+  // F-08a: synchronous-window attribution (replaces the prior
+  // ATTRIBUTION_WINDOW_MS time-based heuristic).
+  //
   // activeInteraction is set on user-initiated events (click, keydown,
-  // submit) and lives for ATTRIBUTION_WINDOW_MS so consequence events
-  // (history.pushState, popstate, fetch start, etc.) can attach to it.
-  var ATTRIBUTION_WINDOW_MS = 3000;
+  // submit, change). It lives ONLY through the synchronous call stack
+  // of the originating handler -- a microtask scheduled at the end of
+  // the handler clears it. Any History API call / fetch / XHR fired
+  // inside the handler's synchronous execution sees the interaction
+  // and attributes to it. Anything fired async (setTimeout, promise
+  // .then() after a network hop) sees no active interaction and
+  // attributes to nothing -- which is what we want for true
+  // background work.
+  //
+  // The History API wrappers below use setTimeout(0) -- those are
+  // async. We deliberately keep activeInteraction alive across
+  // exactly one microtask (which queueMicrotask runs BEFORE
+  // setTimeout(0) callbacks) so an SPA router that schedules
+  // pushState synchronously OR via a queued microtask still
+  // attributes correctly. setTimeout callbacks fire after the
+  // microtask clear, so they see no active interaction -- this
+  // is the cutoff for "really async."
+  //
+  // A small fallback timer (FALLBACK_WINDOW_MS) is kept ONLY as a
+  // safety net for legacy code paths where the History wrappers'
+  // setTimeout has already been entered. The constant is small (one
+  // event-loop tick budget) and exists so attribution doesn't get
+  // dropped purely because of our own wrapper's setTimeout(0); it is
+  // not a 3-second guess. Remove once History wrappers post events
+  // directly without setTimeout.
+  var FALLBACK_WINDOW_MS = 50;
   var activeInteraction = null;
   var _seq = 0;
 
@@ -66,20 +92,42 @@
   }
 
   function _setActiveInteraction(kind, eventId) {
-    var interactionId = activeInteraction && _isWithinWindow()
-      ? activeInteraction.interaction_id
-      : _newEventId();
     activeInteraction = {
       id: eventId,
-      interaction_id: interactionId,
+      // Each root user action opens its own interaction. Two clicks
+      // produce two interactions; we do NOT chain them via a time
+      // window. The interaction_id is the same as the event id so
+      // either lookup works.
+      interaction_id: eventId,
       kind: kind,
       ts: _now(),
     };
+    // Clear at microtask boundary so consequence events scheduled by
+    // the page's own handlers (which run after our capture-phase
+    // listener returns) still see the interaction during that
+    // microtask. Anything scheduled with setTimeout / requestAnimationFrame
+    // runs AFTER the microtask clear and sees no active interaction.
+    var schedule = (typeof queueMicrotask === "function")
+      ? queueMicrotask
+      : function (fn) { Promise.resolve().then(fn); };
+    var snapshot = activeInteraction;
+    schedule(function () {
+      if (activeInteraction === snapshot) {
+        activeInteraction = null;
+      }
+    });
   }
 
   function _isWithinWindow() {
+    // F-08a: replace time-window heuristic with synchronous-window
+    // attribution. activeInteraction is cleared at microtask boundary
+    // by _setActiveInteraction's scheduled cleanup; if it's still
+    // set, we're inside the originating handler's sync window OR
+    // within FALLBACK_WINDOW_MS (the small budget reserved for the
+    // History API wrappers' own setTimeout). Pure background work
+    // started after the handler returned sees activeInteraction=null.
     if (!activeInteraction) return false;
-    return _now() - activeInteraction.ts < ATTRIBUTION_WINDOW_MS;
+    return _now() - activeInteraction.ts < FALLBACK_WINDOW_MS;
   }
 
   function _merge(payload, attribution) {
@@ -841,10 +889,21 @@
       out.multiple = !!el.multiple;
       out.control_kind = el.multiple ? "select_multiple" : "select_single";
       out.value_kind = el.multiple ? "list" : "string";
+      // F-08b: option snapshot cap. Default is configurable via
+      // PortalContext.options_snapshot_max (read by window.__cp_opts_cap
+      // when teach is started); we keep a sane built-in ceiling of 500
+      // to bound the JSON payload size for selects with thousands of
+      // options. When the cap is hit, options_truncated=true is set so
+      // the annotator knows to suggest a search/filter step (WI-25)
+      // rather than treating the snapshot as exhaustive.
+      var optsCap = (typeof window.__cp_opts_cap === "number" && window.__cp_opts_cap > 0)
+        ? window.__cp_opts_cap : 500;
       var opts = [];
       var selected = [];
+      var truncated = false;
       try {
-        for (var i = 0; i < el.options.length && opts.length < 200; i++) {
+        for (var i = 0; i < el.options.length; i++) {
+          if (opts.length >= optsCap) { truncated = true; break; }
           var o = el.options[i];
           var entry = {
             value: o.value,
@@ -857,6 +916,7 @@
         }
         out.options_snapshot = opts;
         out.selected_options = selected;
+        out.options_truncated = truncated;
       } catch (e) {}
     } else if (tag === "button") {
       out.control_kind = "button";
@@ -1253,7 +1313,31 @@
   // string carries the EXACT mechanism so the annotator can distinguish
   // pushState (caused-by-click) from a manual address-bar entry (no
   // active interaction).
-  function postNavigate(navigationSource) {
+  //
+  // F-08a: the optional ``pinnedInteraction`` lets the History API
+  // wrappers capture the active interaction at the SYNCHRONOUS moment
+  // pushState() was called (inside the user's click/submit handler),
+  // then forward it through the wrappers' deferred setTimeout
+  // without relying on a time window. If pinnedInteraction is null
+  // we fall through to the live activeInteraction (which, under
+  // synchronous-window semantics, is null for truly background
+  // navigations).
+  function postNavigate(navigationSource, pinnedInteraction) {
+    var attr;
+    if (pinnedInteraction) {
+      // Attribute to the pinned user action regardless of whether
+      // activeInteraction has since cleared.
+      attr = {
+        event_id: _newEventId(),
+        interaction_id: pinnedInteraction.interaction_id,
+        caused_by: pinnedInteraction.id,
+        sequence: ++_seq,
+        source: navigationSource || "navigate",
+        monotonic_ts: _now(),
+      };
+    } else {
+      attr = _attribution(navigationSource || "navigate");
+    }
     post(_merge(
       {
         kind: "navigate",
@@ -1261,7 +1345,7 @@
         page_url: location.href,
         raw_event_kind: navigationSource || "navigate",
       },
-      _attribution(navigationSource || "navigate")
+      attr
     ));
     _scheduleSnapshot();
   }
@@ -1277,17 +1361,32 @@
   // Hook History API for SPA routers. The wrapped functions name the
   // exact mechanism so navigate events carry source="history.pushState"
   // vs "history.replaceState" vs "popstate" vs "hashchange".
+  //
+  // F-08a: capture activeInteraction at the SYNCHRONOUS moment
+  // pushState() / replaceState() is called -- that's inside the
+  // user's click/submit handler. Pass the snapshot through to
+  // postNavigate so the deferred setTimeout doesn't need a time
+  // window to know what to attribute to. popstate / hashchange are
+  // dispatched by the browser, so we use the live activeInteraction
+  // (which under synchronous-window semantics is null for pure
+  // back/forward; the operator's typed URL doesn't attribute).
   (function () {
     var _push = history.pushState;
     var _replace = history.replaceState;
     history.pushState = function () {
+      var pinned = activeInteraction;  // snapshot synchronously
       var r = _push.apply(this, arguments);
-      setTimeout(function () { postNavigate("history.pushState"); }, 10);
+      setTimeout(function () {
+        postNavigate("history.pushState", pinned);
+      }, 10);
       return r;
     };
     history.replaceState = function () {
+      var pinned = activeInteraction;
       var r = _replace.apply(this, arguments);
-      setTimeout(function () { postNavigate("history.replaceState"); }, 10);
+      setTimeout(function () {
+        postNavigate("history.replaceState", pinned);
+      }, 10);
       return r;
     };
     window.addEventListener("popstate", function () {

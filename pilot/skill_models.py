@@ -170,6 +170,11 @@ class ElementFingerprint(BaseModel):
     multiple: Optional[bool] = None
     """For file inputs: ``multiple`` attribute. For selects: indicates
     set semantics."""
+    options_truncated: Optional[bool] = None
+    """F-08b: True when ``options_snapshot`` hit the configured cap
+    (PortalContext.options_snapshot_max, default 500). The annotator
+    treats a truncated snapshot as 'do not assume this is exhaustive'
+    -- emit a search/filter step (WI-25) instead of declared aliases."""
 
     # Alternate fingerprints accumulated by self-heal (L3) over time.
     # On replay, each alternate is tried via L1/L2 BEFORE invoking L3
@@ -239,6 +244,8 @@ class StepAssertion(BaseModel):
     attr: Optional[str] = None
     """For attr_equals: attribute name."""
     timeout_ms: int = 4000
+    """F-08c: 4000 is a legacy fallback. New annotations should set
+    this explicitly from PortalContext.wait_policy.assertion_timeout_ms."""
 
 
 class NetworkExpectation(BaseModel):
@@ -254,9 +261,17 @@ class NetworkExpectation(BaseModel):
     method: Literal["GET", "POST", "PATCH", "PUT", "DELETE"] = "GET"
     status: Optional[int] = None
     """Expected status code. If set, the call only counts as 'completed
-    correctly' when this status is observed. None = any 2xx."""
+    correctly' when this status is observed. None means require any
+    2xx (F-09)."""
     max_ms: int = 5000
+    """F-08c: 5000 is a legacy fallback. New annotations should set
+    this explicitly from PortalContext.wait_policy.network_max_ms."""
     optional: bool = False
+    started_after_event: Optional[str] = None
+    """F-09: event_id of a baseline event the matched request must
+    have started AFTER. Without this, a stale prior request can
+    accidentally satisfy a later step's expected_signal. None = no
+    baseline (pre-F-09 behavior)."""
 
 
 class DomExpectation(BaseModel):
@@ -272,8 +287,12 @@ class DomExpectation(BaseModel):
     stable_ms: int = 250
     """How long the condition must hold before we proceed. Prevents
     flicker -- a dropdown that briefly empties then refills shouldn't
-    falsely satisfy options_changed."""
+    falsely satisfy options_changed. F-08c: 250 is a legacy fallback;
+    new annotations should set explicitly from
+    PortalContext.wait_policy.dom_stable_ms."""
     timeout_ms: int = 5000
+    """F-08c: 5000 is a legacy fallback. New annotations should set
+    this explicitly from PortalContext.wait_policy.dom_timeout_ms."""
 
 
 class ExpectedSignals(BaseModel):
@@ -342,6 +361,9 @@ class NavigationEffect(BaseModel):
     """Optional regex or substring the post-action URL must match.
     Default: derived from ``url_template`` if absent."""
     timeout_ms: int = 5000
+    """F-08c: 5000 is a legacy fallback. New annotations should set
+    this explicitly from
+    PortalContext.wait_policy.navigation_timeout_ms."""
 
 
 class PopupEffect(BaseModel):
