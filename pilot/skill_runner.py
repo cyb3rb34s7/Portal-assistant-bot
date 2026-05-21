@@ -4984,6 +4984,47 @@ class SkillRunner:
                     page.locator(de.selector).first.wait_for(
                         state="hidden", timeout=de.timeout_ms
                     )
+                elif de.kind == "target_visible_in_scroller":
+                    # WI-38: ``selector`` is the scroller; ``text`` is
+                    # the target's selector. Poll until the target is
+                    # visible inside the scroller's viewport OR the
+                    # timeout fires. The runner does NOT scroll here --
+                    # this is a wait, not a scroll_until step. A
+                    # scroll_until step uses _do_scroll_until's
+                    # iterative scroll + re-probe; this wait kind lets
+                    # OTHER steps assert "the row is visible by now"
+                    # without doing the scrolling themselves.
+                    scroller_sel = de.selector
+                    target_sel = de.text or ""
+                    if not target_sel:
+                        # Misconfigured -- a target_visible_in_scroller
+                        # without a target selector can't be satisfied.
+                        raise ValueError(
+                            "target_visible_in_scroller requires "
+                            "DomExpectation.text to carry the target "
+                            "selector"
+                        )
+                    page.wait_for_function(
+                        """([scrollerSel, targetSel]) => {
+                            const sc = document.querySelector(scrollerSel);
+                            if (!sc) return false;
+                            const sb = sc.getBoundingClientRect();
+                            const targets = sc.querySelectorAll(targetSel);
+                            for (const t of targets) {
+                                const tb = t.getBoundingClientRect();
+                                if (
+                                    tb.bottom > sb.top && tb.top < sb.bottom &&
+                                    tb.right > sb.left && tb.left < sb.right &&
+                                    tb.width > 0 && tb.height > 0
+                                ) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }""",
+                        arg=[scroller_sel, target_sel],
+                        timeout=de.timeout_ms,
+                    )
             except Exception:
                 self.audit.log(
                     "warn",
