@@ -46,6 +46,7 @@ from .skill_models import (
     ParamBinding,
     ParamConstraints,
     PopupEffect,
+    ScrollUntilSpec,
     SelectOptionSpec,
     SemanticCluster,
     SetSelectionSpec,
@@ -361,6 +362,118 @@ def _index_caused_navigates(
         if not ev.caused_by:
             continue
         out[ev.caused_by] = ev  # last write wins (router chain)
+    return out
+
+
+def _index_scroll_until_steps(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+) -> dict[str, ScrollUntilSpec]:
+    """WI-37: detect 'operator scrolled to find a row' patterns.
+
+    Walks the trace looking for visibility_change events with
+    ``scroller_selector`` set (emitted by the grabber's scroll
+    observer during a user interaction). When a subsequent click's
+    ancestor chain or fingerprint indicates the click target lived
+    INSIDE the scrolled container, we emit a ScrollUntilSpec keyed by
+    the click's event_id. The build_skill per-event loop reads this
+    map and PREPENDS a synthetic scroll_until step before the click.
+
+    Acceptance (from the plan):
+      A recording that scrolled past 50 rows to click row 75 can
+      replay against a list that has row 75 at any current scroll
+      position.
+    """
+    out: dict[str, ScrollUntilSpec] = {}
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    # Bucket scroll events by interaction_id so we can identify
+    # "this click happened after operator scrolled within the SAME
+    # interaction window". Each bucket carries the scroller selector
+    # + direction.
+    by_interaction: dict[str, list[TraceEvent]] = {}
+    for ev in events:
+        if ev.kind != "visibility_change":
+            continue
+        if not ev.scroller_selector:
+            continue
+        iid = ev.interaction_id or ev.caused_by
+        if not iid:
+            continue
+        by_interaction.setdefault(iid, []).append(ev)
+
+    if not by_interaction:
+        return out
+
+    # For each user click, look for scroll events that immediately
+    # preceded it whose scroller selector matches an ancestor of the
+    # click target.
+    for ev in events:
+        if ev.kind != "click":
+            continue
+        if ev.event_id is None or ev.fingerprint is None:
+            continue
+        # Find scroll events with this interaction OR with a prior
+        # interaction whose sequence number is just before this click.
+        candidates: list[TraceEvent] = []
+        my_iid = ev.interaction_id or ev.event_id
+        candidates.extend(by_interaction.get(my_iid, []))
+        # Also accept scrolls in the prior interaction window (operator
+        # scrolled, then click landed as a fresh interaction).
+        # Conservative: only the most recent scrolls within ~the last
+        # 30 sequence steps (the operator likely did them just before).
+        my_seq = ev.sequence or 0
+        for iid, lst in by_interaction.items():
+            if iid == my_iid:
+                continue
+            for sev in lst:
+                ssq = sev.sequence or 0
+                if 0 <= my_seq - ssq <= 30:
+                    candidates.append(sev)
+        if not candidates:
+            continue
+        # Pick the most recent scroll whose selector lives in the click
+        # target's ancestor chain (or whose selector matches a known
+        # ancestor by testId).
+        chain = getattr(ev.fingerprint, "ancestor_chain", None) or []
+        chain_test_ids = {
+            anc.get("testId")
+            for anc in chain
+            if isinstance(anc, dict) and anc.get("testId")
+        }
+        matched_scroll: Optional[TraceEvent] = None
+        for sev in candidates:
+            sel_testid = _extract_testid_from_selector(
+                sev.scroller_selector or ""
+            )
+            if sel_testid and sel_testid in chain_test_ids:
+                matched_scroll = sev
+                # keep iterating to pick the latest one
+        if matched_scroll is None:
+            continue
+        # Build the spec: scroller fingerprint approximated from the
+        # selector's testid (the click's chain confirms it exists in
+        # the recording). target_identity uses the click target's
+        # strongest identifying attribute.
+        sel_testid = _extract_testid_from_selector(
+            matched_scroll.scroller_selector or ""
+        )
+        scroller_fp = ElementFingerprint(test_id=sel_testid)
+        target_identity: dict[str, Any] = {}
+        if ev.fingerprint.test_id:
+            target_identity["test_id"] = ev.fingerprint.test_id
+        elif ev.fingerprint.element_id:
+            target_identity["element_id"] = ev.fingerprint.element_id
+        if not target_identity:
+            continue
+        direction = (
+            matched_scroll.scroll_direction or "down"
+        )
+        out[ev.event_id] = ScrollUntilSpec(
+            scroller_fp=scroller_fp,
+            target_identity=target_identity,
+            max_scrolls=50,
+            scroll_direction=direction,  # type: ignore[arg-type]
+        )
     return out
 
 
@@ -2760,6 +2873,13 @@ def build_skill(
         events, causality,
     )
 
+    # WI-37: detect 'operator scrolled to find a row' patterns. Emit a
+    # synthetic scroll_until step BEFORE the click step that lives
+    # inside the scrolled container. The map is keyed by click
+    # event_id; the per-event loop inserts the synthetic step right
+    # before its index reaches the click.
+    scroll_until_by_click = _index_scroll_until_steps(events, causality)
+
     # WI-36: index of user-action event_ids whose folded network
     # children include a destructive write (PATCH/POST/PUT/DELETE).
     # The runner gets an AuthPrecondition on these steps so it checks
@@ -2852,6 +2972,34 @@ def build_skill(
         # AND one fill_submit step for a 4-keystroke search burst.
         if ev.event_id and ev.event_id in cluster_folded_event_ids:
             continue
+
+        # WI-37: when this event is a click that was preceded by
+        # operator-driven scrolling inside an ancestor scrollable
+        # container, prepend a synthetic scroll_until step. The runner
+        # scrolls the scroller until the target is visible BEFORE
+        # clicking. This step is purely structural; it carries no
+        # fingerprint of its own (the scroller's fp + target identity
+        # live in the spec).
+        if (
+            ev.kind == "click"
+            and ev.event_id
+            and ev.event_id in scroll_until_by_click
+        ):
+            su_spec = scroll_until_by_click[ev.event_id]
+            steps.append(SkillStep(
+                index=len(steps),
+                action="scroll_until",
+                fingerprint=None,
+                semantic_label=(
+                    f"scroll_to_find_{su_spec.target_identity.get('test_id') or su_spec.target_identity.get('element_id') or 'target'}"
+                ),
+                scroll_until=su_spec,
+                provenance=StepProvenance(
+                    raw_event_ids=[ev.event_id],
+                    cluster_kind="scroll_until_prefix",
+                    detection_method="deterministic",
+                ),
+            ))
 
         label = auto_label(ev)
         action = action_for_kind(ev.kind)

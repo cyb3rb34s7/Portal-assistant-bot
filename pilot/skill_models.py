@@ -463,6 +463,12 @@ class DomExpectation(BaseModel):
         "field_enabled",            # field's :disabled flipped to false
         "text_transition",          # innerText of target changed to ``text``
         "selector_hidden",          # arbitrary selector reached display:none
+        # WI-38: target visibility inside a scroller. ``selector`` carries
+        # the scroller itself; ``text`` carries the target's selector (so
+        # the runner can re-probe the target's visibility inside the
+        # scroller's viewport). Used by scroll_until to declare the
+        # termination condition without hardcoding "N scrolls."
+        "target_visible_in_scroller",
     ]
     selector: str
     stable_ms: int = 250
@@ -1454,6 +1460,68 @@ class DatePickerSpec(BaseModel):
     by recorded click."""
 
 
+class ScrollUntilSpec(BaseModel):
+    """WI-37 + WI-38: scroll a declared scroller until a target row /
+    element is visible inside its viewport.
+
+    Replaces the legacy 'scroll for N times' heuristic with: scroll one
+    viewport, re-probe target via the declared
+    target_visible_in_scroller DomExpectation, repeat until visible or
+    ``max_scrolls`` exhausted. The scroller's identity comes from
+    ``scroller_fp`` (NOT a hardcoded window / body) so virtualized
+    tables, infinite-scroll lists, and custom scroll containers all
+    work the same way.
+
+    Acceptance (from the plan):
+      A recording that scrolled past 50 rows to click row 75 can
+      replay against a list that has row 75 at any current scroll
+      position. The runner stops scrolling as soon as the target
+      becomes visible -- it doesn't blindly replay the recorded
+      scroll count.
+    """
+
+    scroller_fp: ElementFingerprint
+    """Fingerprint of the SCROLLER -- the element that received the
+    operator's wheel/touch events. Resolved at replay through the
+    standard L1/L2/L3 cascade. The runner dispatches wheel events
+    against this element (NOT the window) so virtualized lists hosted
+    inside a div remain scrollable."""
+
+    target_identity: dict[str, Any] = Field(default_factory=dict)
+    """Identifying attributes of the TARGET the operator was scrolling
+    to find. Shape: {test_id?: str, element_id?: str, row_key?: str,
+    text?: str}. The runner uses this to materialize a target selector
+    inside the scroller via the same identity precedence as L1 lookup.
+    Empty dict means the scroll is purely time-based (no termination
+    target) -- annotator emits an empty dict only when no visibility
+    change was observed."""
+
+    max_scrolls: int = 50
+    """Hard cap on scroll iterations. 50 covers the WI-37 acceptance
+    check (row 75 at page size 20 -> ~4 scrolls; 50 is generous for
+    virtualized lists that paginate every 10 rows). Tune upward for
+    extremely deep tables."""
+
+    page_size_hint: Optional[int] = None
+    """Approximate number of rows rendered per viewport. Audit-only
+    hint -- the runner uses it to size the wheel delta (one viewport
+    = scroll by viewport height). When None the runner reads
+    scroller.clientHeight at replay."""
+
+    network_signal: Optional[NetworkExpectation] = None
+    """Optional network expectation that gates 'more rows have
+    loaded.' For virtual / infinite-scroll lists backed by a network
+    pagination endpoint -- the runner waits for this between scrolls
+    so the next scroll has rows to render. None for purely
+    client-rendered lists where scrolling alone reveals new rows."""
+
+    scroll_direction: Literal["down", "up"] = "down"
+    """Which way to scroll. ``down`` is the common case (forward
+    pagination); ``up`` for reverse / 'load earlier' patterns. Audit-
+    only; the runner dispatches wheel events with positive deltaY for
+    down and negative for up."""
+
+
 class ToggleStateSpec(BaseModel):
     """WI-33: spec for accordion/expand-collapse toggle as DESIRED
     state.
@@ -1906,6 +1974,15 @@ class SkillStep(BaseModel):
     collapse). Carries the desired target_state, the state attribute
     to read, and the controlled panel selector. None for clicks that
     weren't classified as toggles."""
+
+    scroll_until: Optional["ScrollUntilSpec"] = None
+    """WI-37 + WI-38: spec for ``scroll_until`` steps. Carries the
+    scroller fingerprint, target identity, max_scrolls, page-size
+    hint, network signal, and direction. None for non-scroll_until
+    actions. The runner dispatches wheel events against the scroller
+    and re-probes the target's visibility between iterations until
+    the target_visible_in_scroller DomExpectation passes or
+    max_scrolls is exhausted."""
 
     auth_precondition: Optional["AuthPrecondition"] = None
     """WI-36: declarative auth gate the runner verifies BEFORE running

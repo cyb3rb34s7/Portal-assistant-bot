@@ -785,6 +785,92 @@
   }
   _installDialogWatcher();
 
+  // ---- WI-37: scroll-to-find-row capture ---------------------------------
+  //
+  // Scroll events are normally filtered (the very first line of this
+  // file lists them as noise). For WI-37 we capture scrolls ONLY when:
+  //   (a) the scroll target carries a scrollable role (table / listbox
+  //       / tree / grid / generic scrollable div with overflow:auto), AND
+  //   (b) the scroll happens during an active user interaction window.
+  //
+  // Each captured scroll emits a kind="visibility_change" TraceEvent
+  // with scroller_selector + scroll_direction. The annotator detects
+  // "operator scrolled to find a row" by pairing the scrolls with a
+  // subsequent click inside the same scroller, and emits a
+  // scroll_until step before the click.
+  function _installScrollObserver() {
+    if (window.__cp_scroll_installed) return;
+    window.__cp_scroll_installed = true;
+    var lastScrollByTarget = (typeof WeakMap === "function")
+      ? new WeakMap()
+      : new Map();
+    document.addEventListener(
+      "scroll",
+      function (e) {
+        var target = e.target;
+        if (!target || target.nodeType !== 1) {
+          // The document itself scrolls; convert to the documentElement.
+          if (target === document) target = document.documentElement;
+          else return;
+        }
+        // We only care about scrollable containers, not the window /
+        // documentElement (those are typically incidental nav scrolls).
+        if (
+          target === document.documentElement ||
+          target === document.body
+        ) {
+          return;
+        }
+        // Track scroll deltas; only emit when there's an active user
+        // interaction (the operator scrolling intentionally to find a
+        // row). Background-driven scrolls (auto-scroll from a focus)
+        // don't get captured.
+        var prev = lastScrollByTarget.get(target);
+        var top = target.scrollTop || 0;
+        if (prev === undefined) {
+          lastScrollByTarget.set(target, top);
+          return;
+        }
+        var delta = top - prev;
+        lastScrollByTarget.set(target, top);
+        if (Math.abs(delta) < 16) return;  // sub-pixel noise threshold
+        if (!activeInteraction || !_isWithinWindow()) return;
+        var sel = null;
+        try {
+          var tid = target.getAttribute && target.getAttribute("data-testid");
+          if (tid) {
+            sel = "[data-testid=\"" + tid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
+          } else if (target.id) {
+            sel = "#" + cssEscape(target.id);
+          } else {
+            sel = buildCssPath(target);
+          }
+        } catch (er) {}
+        if (!sel) return;
+        try {
+          var attr = _attribution("scroll_observer");
+          post(_merge({
+            kind: "visibility_change",
+            page_url: location.href,
+            raw_event_kind: "scroll",
+            scroller_selector: sel,
+            scroll_direction: delta > 0 ? "down" : "up",
+            // visible_row_count_delta is not measured here; the
+            // annotator only needs the direction + scroller identity
+            // to detect "operator scrolled to find a row" with the
+            // subsequent click inside the same scroller.
+            visible_row_count_delta: null,
+            initiator_event_id: activeInteraction.id,
+          }, attr));
+        } catch (e2) {
+          if (DEBUG) console.warn("[cp] scroll emit failed", e2);
+        }
+      },
+      true,
+    );
+  }
+  _installScrollObserver();
+
   // ---- WI-35: window.open / popup hook ------------------------------------
   //
   // Hook window.open synchronously inside a user interaction so popups

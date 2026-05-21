@@ -72,11 +72,11 @@ _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     # Implemented in subsequent WIs and removed from this set:
     #   fill_submit (WI-15), select_autocomplete (WI-16),
     #   select_option (WI-17), date_select (WI-21), slider_set (WI-28),
-    #   drag_drop (WI-30), toggle_state (WI-33).
-    "modal",                # WI-34
-    "popup",                # WI-35
+    #   drag_drop (WI-30), toggle_state (WI-33),
+    #   scroll_until (WI-37/WI-38).
+    "modal",                # WI-34 (as effect, not standalone action)
+    "popup",                # WI-35 (as effect, not standalone action)
     "download",             # WI-45
-    "scroll_until",         # WI-38
     "rich_text_set",        # WI-39
     "shortcut",             # WI-41
     "canvas_gesture",       # WI-49
@@ -566,6 +566,8 @@ class SkillRunner:
                 result, level = self._do_drag_drop(step)
             elif step.action == "toggle_state":
                 result, level = self._do_toggle_state(step)
+            elif step.action == "scroll_until":
+                result, level = self._do_scroll_until(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2883,6 +2885,234 @@ class SkillRunner:
             level,
         )
 
+    def _do_scroll_until(
+        self, step: SkillStep
+    ) -> tuple[ToolResult, int]:
+        """WI-37 + WI-38: scroll a declared scroller until the target
+        becomes visible.
+
+        Each iteration: scroll ONE viewport, wait (optional network
+        signal) for new rows to render, re-probe the target's
+        visibility. Stops on success (target visible) or
+        ``max_scrolls`` exhaustion. The scroller's identity comes from
+        the spec's ``scroller_fp`` (NOT a hardcoded window / body).
+
+        Acceptance (from the plan):
+          A recording that scrolled past 50 rows to click row 75
+          replays against a list that has row 75 at any current scroll
+          position. The runner stops as soon as the target becomes
+          visible -- it doesn't blindly replay the recorded count.
+        """
+        spec = step.scroll_until
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="scroll_until",
+                    error="scroll_until step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        # Resolve the scroller. The fingerprint lookup uses the same
+        # L1/L2 cascade as any other locator -- L3 healing is not
+        # used here because scrollers are structural; if the fingerprint
+        # doesn't resolve at L1/L2 the page shape has changed enough to
+        # warrant a halt rather than a heal.
+        page = self.session.page
+        scroller = None
+        try:
+            scroller = self._level1(page, spec.scroller_fp)
+            if scroller is None:
+                scroller = self._level2(page, spec.scroller_fp)
+        except Exception:
+            scroller = None
+        if scroller is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="scroll_until: scroller not found",
+                    error="could not resolve scroller fingerprint",
+                    error_kind="scroller_not_found",
+                ),
+                0,
+            )
+
+        # Materialize the target selector from spec.target_identity.
+        target_sel = _target_identity_to_selector(spec.target_identity)
+        if not target_sel:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="scroll_until: no target identity",
+                    error=(
+                        "scroll_until spec has no target_identity to "
+                        "probe; refusing to scroll blindly"
+                    ),
+                    error_kind="scroll_target_undeclared",
+                ),
+                0,
+            )
+
+        # Initial visibility check -- target may already be in view.
+        if self._target_visible_in_scroller(page, scroller, target_sel):
+            shot = self._screenshot(f"step_{step.index}_scroll_init_visible")
+            return (
+                ToolResult(
+                    success=True,
+                    action_taken=(
+                        f"scroll_until: target {target_sel} already visible "
+                        f"(no scrolling needed)"
+                    ),
+                    screenshot_path=shot,
+                ),
+                1,
+            )
+
+        direction_sign = -1 if spec.scroll_direction == "up" else 1
+        scrolls_done = 0
+        for i in range(spec.max_scrolls):
+            scrolls_done = i + 1
+            # WI-38: scroll by ONE viewport against the SCROLLER -- not
+            # window. The scroller's clientHeight is the page-size hint
+            # at runtime; we use the hint when set, else the actual
+            # client height. This is the "scroll one viewport, re-probe"
+            # contract from the plan.
+            try:
+                delta_y = scroller.evaluate(
+                    "el => el.clientHeight"
+                )
+                if not isinstance(delta_y, (int, float)) or delta_y <= 0:
+                    delta_y = 400
+                delta_y = int(delta_y) * direction_sign
+                # Dispatch the wheel event against the scroller, NOT
+                # window. Playwright's mouse.wheel scrolls the active
+                # window; we want the named scroller's scrollTop to
+                # change.
+                scroller.evaluate(
+                    "(el, dy) => { el.scrollTop = (el.scrollTop || 0) + dy; }",
+                    delta_y,
+                )
+            except Exception:
+                # Fall back to dispatching a wheel event via mouse
+                # wheel after centering the cursor on the scroller.
+                try:
+                    box = scroller.bounding_box(timeout=1000)
+                    if box:
+                        page.mouse.move(
+                            box["x"] + box["width"] / 2,
+                            box["y"] + box["height"] / 2,
+                        )
+                    page.mouse.wheel(0, 400 * direction_sign)
+                except Exception:
+                    pass
+
+            # Wait for the declared network signal (e.g. /api/rows?page=2)
+            # so the newly-revealed rows have rendered before we re-probe.
+            # When no signal is declared, give the DOM a beat to update.
+            if spec.network_signal is not None:
+                from .skill_models import ExpectedSignals as _ES
+                self._wait_for_page_settle(
+                    expected=_ES(network=[spec.network_signal])
+                )
+            else:
+                try:
+                    page.wait_for_timeout(250)
+                except Exception:
+                    pass
+
+            # Re-probe target visibility inside the scroller's viewport.
+            if self._target_visible_in_scroller(page, scroller, target_sel):
+                shot = self._screenshot(
+                    f"step_{step.index}_scroll_until_hit"
+                )
+                return (
+                    ToolResult(
+                        success=True,
+                        action_taken=(
+                            f"scroll_until: target {target_sel} visible "
+                            f"after {scrolls_done} scrolls"
+                        ),
+                        screenshot_path=shot,
+                    ),
+                    1,
+                )
+
+        # Exhausted max_scrolls without finding the target.
+        shot = self._screenshot(f"step_{step.index}_scroll_exhausted")
+        return (
+            ToolResult(
+                success=False,
+                action_taken=(
+                    f"scroll_until: max_scrolls={spec.max_scrolls} "
+                    f"exhausted without finding {target_sel}"
+                ),
+                error=(
+                    f"target {target_sel!r} not visible inside scroller "
+                    f"after {scrolls_done} viewport scrolls"
+                ),
+                error_kind="scroll_target_not_found",
+                error_details={
+                    "target_selector": target_sel,
+                    "max_scrolls": spec.max_scrolls,
+                    "direction": spec.scroll_direction,
+                },
+                screenshot_path=shot,
+            ),
+            0,
+        )
+
+    def _target_visible_in_scroller(
+        self,
+        page: Page,
+        scroller: Locator,
+        target_selector: str,
+    ) -> bool:
+        """WI-38: check whether ``target_selector`` resolves to an
+        element that's inside the scroller's viewport AND visible.
+
+        Cheap implementation: query the scroller's children for the
+        target; for each match, intersect the target's
+        getBoundingClientRect with the scroller's. We don't use
+        IntersectionObserver because we need a synchronous answer
+        between scrolls.
+        """
+        try:
+            return bool(
+                scroller.evaluate(
+                    """(el, sel) => {
+                        const targets = el.querySelectorAll(sel);
+                        if (!targets || targets.length === 0) return false;
+                        const sb = el.getBoundingClientRect();
+                        for (const t of targets) {
+                            const tb = t.getBoundingClientRect();
+                            // Intersect: target overlaps scroller's
+                            // visible area in BOTH axes.
+                            const overlapsY = (
+                                tb.bottom > sb.top && tb.top < sb.bottom
+                            );
+                            const overlapsX = (
+                                tb.right > sb.left && tb.left < sb.right
+                            );
+                            // Also require non-zero render area --
+                            // hidden elements (display:none) report
+                            // 0x0 rects.
+                            if (
+                                overlapsY && overlapsX &&
+                                tb.width > 0 && tb.height > 0
+                            ) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""",
+                    target_selector,
+                )
+            )
+        except Exception:
+            return False
+
     def _locate_via_template(
         self,
         fp: ElementFingerprint,
@@ -5135,6 +5365,44 @@ class SkillRunner:
 
 
 # ---- Helpers --------------------------------------------------------------
+
+
+def _target_identity_to_selector(identity: dict[str, Any]) -> Optional[str]:
+    """WI-37 + WI-38: materialize a CSS selector from a
+    ScrollUntilSpec.target_identity dict.
+
+    Precedence mirrors L1 lookup:
+      test_id > element_id > row_key > text.
+
+    Returns None when no identifying attribute is present (the spec is
+    structurally invalid; the runner refuses to scroll blindly).
+    """
+    if not isinstance(identity, dict):
+        return None
+    tid = identity.get("test_id")
+    if isinstance(tid, str) and tid:
+        return f'[data-testid="{tid}"]'
+    eid = identity.get("element_id")
+    if isinstance(eid, str) and eid:
+        # Element ID -- use CSS id selector. We don't escape because
+        # element IDs in well-formed HTML can be appended to # cleanly.
+        # WI-24's safe escape applies to attribute selectors; #id
+        # accepts a wider character set without escape for our needs.
+        return f"#{eid}"
+    row_key = identity.get("row_key")
+    if isinstance(row_key, str) and row_key:
+        return f'[data-row-key="{row_key}"]'
+    text = identity.get("text")
+    if isinstance(text, str) and text:
+        # Text-based selector via the Playwright pseudo-class for the
+        # embedded scroller scan; we fall back to first match by text
+        # via the :has-text() pseudo-class supported by Playwright's
+        # evaluate() path through querySelectorAll.
+        # Conservative: return a selector that resolves to elements
+        # whose direct text contains the value. Used only when no
+        # stronger identifier exists.
+        return f'[aria-label="{text}"], [title="{text}"]'
+    return None
 
 
 def _css_escape(s: str) -> str:
