@@ -665,7 +665,96 @@ class SkillRunner:
             1,
         )
 
+    def _perform_hover_prerequisite(
+        self, step: SkillStep, hover_eff: Any
+    ) -> tuple[bool, Optional[str]]:
+        """WI-40: dispatch the hover required to reveal a submenu
+        before a click is attempted.
+
+        Builds a synthetic SkillStep with the hover_eff.target_fp so
+        the standard L1/L2 cascade can resolve the parent trigger,
+        then calls locator.hover() (which dispatches the right
+        pointerenter/mouseover events for React/Vue listeners), then
+        waits for opens_submenu_selector (when declared) to become
+        visible. Returns (ok, error_msg).
+
+        Failure modes:
+          - hover_target_unresolved: trigger not found by L1/L2
+          - hover_dispatch_failed: hover API raised
+          - submenu_not_visible: declared selector didn't appear in
+            time
+        """
+        page = self.session.page
+        trigger_fp = hover_eff.target_fp
+        # Reuse the L1/L2 cascade via a synthetic step. We don't go
+        # to L3 here -- if the hover trigger can't be resolved by
+        # stable attributes, the recording is probably broken and
+        # we should fail loudly rather than self-heal blindly.
+        synthetic_step = SkillStep(
+            index=step.index,
+            action="click",
+            fingerprint=trigger_fp,
+        )
+        trigger_loc = self._level1(page, trigger_fp)
+        if trigger_loc is None:
+            trigger_loc = self._level2(page, trigger_fp)
+        if trigger_loc is None:
+            return False, "hover trigger not resolvable at L1/L2"
+        try:
+            trigger_loc.hover(timeout=3000)
+        except Exception as e:
+            return False, f"hover dispatch failed: {e}"
+        # When the spec declared a submenu selector, wait for it to
+        # become visible. Without an explicit selector, the runner
+        # gives the page a small fixed budget (the recorded dwell_ms
+        # is observational; we cap it at 500ms to avoid hangs).
+        sel = hover_eff.opens_submenu_selector
+        if sel:
+            try:
+                page.wait_for_selector(sel, state="visible", timeout=3000)
+            except Exception as e:
+                return False, f"submenu selector {sel!r} not visible: {e}"
+        else:
+            # Best-effort wait when no selector was declared. Use the
+            # smaller of recorded dwell_ms and 500ms cap.
+            dwell = max(0, min(int(hover_eff.dwell_ms or 0), 500))
+            if dwell:
+                try:
+                    page.wait_for_timeout(dwell)
+                except Exception:
+                    pass
+        return True, None
+
     def _do_click(self, step: SkillStep) -> tuple[ToolResult, int]:
+        # WI-40: when the recorded click required a hover to reveal
+        # its submenu, perform the hover BEFORE attempting to resolve
+        # the click target. Without the hover the submenu doesn't
+        # exist in the DOM and L1/L2 lookups for the child item would
+        # fail or self-heal to the wrong element. The runner moves
+        # the mouse to the hover trigger, waits for the declared
+        # opens_submenu_selector to be visible, then resolves the
+        # click locator.
+        hover_eff = (
+            step.effects.hover
+            if step.effects is not None and step.effects.hover is not None
+            else None
+        )
+        if hover_eff is not None:
+            ok, err = self._perform_hover_prerequisite(step, hover_eff)
+            if not ok:
+                shot = self._screenshot(f"step_{step.index}_hover_failed")
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="click (hover prerequisite failed)",
+                        error=err or "hover prerequisite failed",
+                        error_kind="hover_reveal_failed",
+                        error_details={"step_index": step.index},
+                        screenshot_path=shot,
+                    ),
+                    0,
+                )
+
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
             ambig = self._consume_ambiguity()

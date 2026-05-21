@@ -871,6 +871,243 @@
   }
   _installScrollObserver();
 
+  // Module-level visibility helper -- duplicates the one inside
+  // _installDialogWatcher (which is scoped). Cheap to define twice;
+  // moving them into one place is out of scope for WI-40 (and would
+  // re-touch every observer install site).
+  function _isHoverElVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    try {
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      var style = (el.ownerDocument && el.ownerDocument.defaultView)
+        ? el.ownerDocument.defaultView.getComputedStyle(el)
+        : null;
+      if (style && (style.display === "none" || style.visibility === "hidden")) {
+        return false;
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  // ---- WI-40: hover -> submenu reveal capture ----------------------------
+  //
+  // Hover menus / mega menus: the operator moves the cursor over a
+  // parent trigger, the page renders a submenu container, and the
+  // operator clicks a child item inside. The grabber records the click
+  // normally; this watcher pairs it with the originating hover so the
+  // annotator can fold them into ONE click step with a HoverEffect.
+  //
+  // We don't capture every pointerenter (the page is full of incidental
+  // hovers). Only hovers that:
+  //   (a) targeted a hoverable parent (role=menuitem / menubar / has
+  //       aria-haspopup OR a known menu testid pattern), AND
+  //   (b) were followed by a NEW visible element appearing inside or
+  //       near the hovered parent within HOVER_REVEAL_WINDOW_MS
+  // produce a kind="hover" event.
+  //
+  // The annotator pairs the hover with the next click whose target is
+  // a descendant of the hovered parent's revealed submenu.
+  function _installHoverWatcher() {
+    if (window.__cp_hover_installed) return;
+    window.__cp_hover_installed = true;
+    var HOVER_REVEAL_WINDOW_MS = 800;  // generous; portals vary
+    var pendingHover = null;
+    var pendingHoverTimer = null;
+
+    function _isHoverTrigger(el) {
+      if (!el || el.nodeType !== 1) return false;
+      // Explicit menu-trigger markers
+      if (el.getAttribute && el.getAttribute("aria-haspopup")) return true;
+      var role = el.getAttribute && el.getAttribute("role");
+      if (role === "menuitem" || role === "menubar" || role === "menu") return true;
+      // Common testid / class patterns. Conservative: only well-known
+      // mega-menu markers, not arbitrary nav links (those produce too
+      // many false-positive hovers).
+      var tid = el.getAttribute && el.getAttribute("data-testid");
+      if (tid && /menu|nav-|mega-|dropdown/i.test(tid)) return true;
+      var cls = (el.className && typeof el.className === "string")
+        ? el.className.toLowerCase() : "";
+      if (/menu-trigger|mega-menu|has-submenu|dropdown-toggle/.test(cls)) {
+        return true;
+      }
+      return false;
+    }
+
+    function _snapshotVisibleSet(scope) {
+      // Snapshot a Set of visible elements inside the given scope. Used
+      // to detect "new element appeared" between pre-hover and post-
+      // hover. Bounded by 200 to cap cost for huge subtrees.
+      var out = new Set();
+      try {
+        var nodes = scope.querySelectorAll("*");
+        var cap = Math.min(nodes.length, 200);
+        for (var i = 0; i < cap; i++) {
+          var n = nodes[i];
+          if (n.nodeType === 1 && _isHoverElVisible(n)) {
+            out.add(n);
+          }
+        }
+      } catch (e) {}
+      return out;
+    }
+
+    function _findRevealedSubmenu(trigger, preVisibleSet) {
+      // Walk up to find the menu's container (typically the trigger's
+      // parent or grandparent), then find a child of the container
+      // that's now visible but wasn't in the pre-hover snapshot.
+      try {
+        var scope = trigger.parentElement || trigger;
+        var nodes = scope.querySelectorAll("*");
+        for (var i = 0; i < nodes.length && i < 200; i++) {
+          var n = nodes[i];
+          if (n.nodeType !== 1) continue;
+          if (n === trigger) continue;
+          if (preVisibleSet.has(n)) continue;
+          if (!_isHoverElVisible(n)) continue;
+          // Prefer a node carrying role=menu / role=listbox / aria-
+          // expanded=true; fall back to the first visible non-trigger
+          // descendant.
+          var role = n.getAttribute && n.getAttribute("role");
+          if (role === "menu" || role === "listbox") {
+            return n;
+          }
+        }
+        // Fallback: first newly-visible element
+        for (var j = 0; j < nodes.length && j < 200; j++) {
+          var m = nodes[j];
+          if (m.nodeType !== 1 || m === trigger) continue;
+          if (preVisibleSet.has(m)) continue;
+          if (_isHoverElVisible(m)) return m;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    document.addEventListener(
+      "pointerenter",
+      function (e) {
+        var target = e.target;
+        if (!target || target.nodeType !== 1) return;
+        // Walk up to a hover trigger if the pointer entered a descendant
+        // of the trigger (icon inside the menu button).
+        var trigger = target;
+        var depth = 0;
+        while (trigger && depth < 5 && !_isHoverTrigger(trigger)) {
+          trigger = trigger.parentElement;
+          depth++;
+        }
+        if (!trigger || !_isHoverTrigger(trigger)) return;
+        // Snapshot pre-hover visible set inside the trigger's container
+        // so we can diff after the window.
+        var scope = trigger.parentElement || trigger;
+        var preVisible = _snapshotVisibleSet(scope);
+        var hoverStart = _now();
+        pendingHover = {
+          trigger: trigger,
+          scope: scope,
+          preVisible: preVisible,
+          ts: hoverStart,
+        };
+        if (pendingHoverTimer) clearTimeout(pendingHoverTimer);
+        pendingHoverTimer = setTimeout(function () {
+          if (!pendingHover || pendingHover.trigger !== trigger) return;
+          // Window expired; check for a revealed submenu.
+          var revealed = _findRevealedSubmenu(trigger, preVisible);
+          if (revealed) {
+            var dwell = Math.round(_now() - hoverStart);
+            var revealedSel = null;
+            try {
+              var rtid = revealed.getAttribute && revealed.getAttribute("data-testid");
+              if (rtid) {
+                revealedSel = "[data-testid=\"" + rtid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
+              } else if (revealed.id) {
+                revealedSel = "#" + cssEscape(revealed.id);
+              } else {
+                revealedSel = buildCssPath(revealed);
+              }
+            } catch (er) {}
+            // Emit ONE hover event for the trigger -> reveal pair.
+            // We open a fresh interaction so the subsequent child
+            // click attributes correctly via causality.
+            var attr = _rootAttribution("user_hover");
+            _setActiveInteraction("hover", attr.event_id);
+            try {
+              post(_merge({
+                kind: "hover",
+                fingerprint: fingerprint(trigger),
+                page_url: location.href,
+                raw_event_kind: "pointerenter",
+                submenu_selector: revealedSel,
+                dwell_ms: dwell,
+              }, attr));
+            } catch (he) {
+              if (DEBUG) console.warn("[cp] hover emit failed", he);
+            }
+          }
+          pendingHover = null;
+          pendingHoverTimer = null;
+        }, HOVER_REVEAL_WINDOW_MS);
+      },
+      true
+    );
+    // Cancel pending hover detection if the operator clicks before the
+    // window expires -- the click handler will still get the click
+    // normally; we just don't want a delayed phantom hover to fire
+    // after the operator already committed.
+    document.addEventListener(
+      "click",
+      function () {
+        if (pendingHoverTimer) {
+          // Force an immediate check so a hover-revealed submenu that
+          // the operator IS clicking inside still emits its hover
+          // event BEFORE the click. The setTimeout callback runs the
+          // diff logic; trigger it now.
+          var t = pendingHoverTimer;
+          pendingHoverTimer = null;
+          clearTimeout(t);
+          if (pendingHover) {
+            var trig = pendingHover.trigger;
+            var preV = pendingHover.preVisible;
+            var startedTs = pendingHover.ts;
+            pendingHover = null;
+            var revealed = _findRevealedSubmenu(trig, preV);
+            if (revealed) {
+              var dwell = Math.round(_now() - startedTs);
+              var revealedSel = null;
+              try {
+                var rtid = revealed.getAttribute && revealed.getAttribute("data-testid");
+                if (rtid) {
+                  revealedSel = "[data-testid=\"" + rtid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
+                } else if (revealed.id) {
+                  revealedSel = "#" + cssEscape(revealed.id);
+                } else {
+                  revealedSel = buildCssPath(revealed);
+                }
+              } catch (er) {}
+              var attr = _rootAttribution("user_hover");
+              _setActiveInteraction("hover", attr.event_id);
+              try {
+                post(_merge({
+                  kind: "hover",
+                  fingerprint: fingerprint(trig),
+                  page_url: location.href,
+                  raw_event_kind: "pointerenter_pre_click",
+                  submenu_selector: revealedSel,
+                  dwell_ms: dwell,
+                }, attr));
+              } catch (he) {
+                if (DEBUG) console.warn("[cp] hover pre-click emit failed", he);
+              }
+            }
+          }
+        }
+      },
+      true
+    );
+  }
+  _installHoverWatcher();
+
   // ---- WI-35: window.open / popup hook ------------------------------------
   //
   // Hook window.open synchronously inside a user interaction so popups

@@ -3028,6 +3028,38 @@ def build_skill(
                 destructive_user_events.add(user_id)
                 break
 
+    # WI-40: hover events indexed by the FOLLOWING click's event_id.
+    # The grabber emits ONE hover event when a pointerenter on a menu
+    # trigger revealed a submenu within the window. The annotator pairs
+    # the hover with the next click event whose target descends from
+    # the trigger's container, and folds the hover into the click's
+    # effects.hover (HoverEffect). The hover event itself is consumed
+    # (added to a skip set) and never emitted as its own step.
+    hover_events_by_click: dict[str, TraceEvent] = {}
+    hover_event_ids_consumed: set[str] = set()
+    _pending_hover_ev: Optional[TraceEvent] = None
+    for ev in events:
+        if ev.kind == "hover":
+            # Replace any prior unconsumed hover -- only the most
+            # recent hover before a click matters.
+            _pending_hover_ev = ev
+            continue
+        if ev.kind == "click" and _pending_hover_ev is not None:
+            # Pair this click with the pending hover. We always pair
+            # the most recent hover with the next click; the grabber's
+            # _isHoverTrigger filter is conservative enough that
+            # spurious hover events outside menu workflows are rare.
+            if ev.event_id and _pending_hover_ev.event_id:
+                hover_events_by_click[ev.event_id] = _pending_hover_ev
+                hover_event_ids_consumed.add(_pending_hover_ev.event_id)
+            _pending_hover_ev = None
+            continue
+        if ev.kind in ("input_change", "submit", "key", "navigate"):
+            # A non-click user action invalidates a pending hover. The
+            # operator hovered but did something else; the hover was
+            # observational, not a menu reveal.
+            _pending_hover_ev = None
+
     # WI-35: popup events indexed by causing event id. Each entry
     # becomes effects.popup on the causing step.
     popup_effects_by_cause: dict[str, PopupEffect] = {}
@@ -3090,6 +3122,13 @@ def build_skill(
         # readiness_by_cause / caused_navs / future WI-09 expected
         # signal indexes but don't become steps themselves.
         if ev.kind in _OBSERVED_KINDS:
+            continue
+        # WI-40: hover events that the pair-with-next-click pass
+        # consumed are folded into the click step's effects.hover. Skip
+        # them here so they don't produce standalone steps. Unconsumed
+        # hovers (no following click) also drop out -- they're
+        # observational only.
+        if ev.kind == "hover":
             continue
 
         # WI-15+: skip events that a specialized cluster folded into a
@@ -3224,6 +3263,29 @@ def build_skill(
                 effects = StepEffect(popup=popup_eff)
             else:
                 effects.popup = popup_eff
+
+        # WI-40: fold the preceding hover (paired by the
+        # hover_events_by_click pass above) onto this step's
+        # effects.hover. The runner moves the mouse to the trigger,
+        # waits for opens_submenu_selector to become visible, then
+        # performs the click.
+        if (
+            ev.event_id
+            and ev.kind == "click"
+            and ev.event_id in hover_events_by_click
+        ):
+            hover_ev = hover_events_by_click[ev.event_id]
+            if hover_ev.fingerprint is not None:
+                from .skill_models import HoverEffect as _HoverEff
+                hover_eff = _HoverEff(
+                    target_fp=hover_ev.fingerprint,
+                    dwell_ms=hover_ev.dwell_ms or 0,
+                    opens_submenu_selector=hover_ev.submenu_selector,
+                )
+                if effects is None:
+                    effects = StepEffect(hover=hover_eff)
+                else:
+                    effects.hover = hover_eff
 
         # WI-10: collect readiness signals attributed to this user
         # event so the step's expected_signals.dom gets populated.

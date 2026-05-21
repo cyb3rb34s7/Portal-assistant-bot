@@ -670,6 +670,49 @@ class ModalEffect(BaseModel):
     field is kept so pre-WI-34 skills still validate."""
 
 
+class HoverEffect(BaseModel):
+    """WI-40: a parent element the operator hovered to reveal a
+    submenu, which then became visible and was clicked.
+
+    Hover menus / mega menus / dropdown navigation are recorded as a
+    sequence of pointerenter -> mouseover (parent) -> submenu DOM
+    mutation -> click (child). The annotator collapses this into ONE
+    click step with a HoverEffect attached that tells the runner:
+
+      1. mouse.move to ``target_fp`` (the parent menu trigger),
+      2. wait for ``opens_submenu_selector`` to become visible, then
+      3. click the step's primary fingerprint (the child item).
+
+    Dwell time captured at record is observational evidence only --
+    the runner DOES NOT sleep for ``dwell_ms``. It waits for the
+    declared visibility signal so a fast portal doesn't wait
+    unnecessarily and a slow portal doesn't race the submenu render.
+
+    Acceptance check (from the WI brief):
+      A 'File > Save As' mega-menu click records and replays even
+      though the submenu doesn't render until the parent is hovered.
+    """
+
+    target_fp: ElementFingerprint
+    """Fingerprint of the parent menu trigger the operator hovered.
+    The runner dispatches a synthetic mouse.move to this element's
+    centroid before clicking the step's primary fingerprint."""
+
+    dwell_ms: int = 0
+    """Observed hover dwell at record time (ms). Audit-only; the
+    runner uses the visibility signal as the gate, not this value.
+    Kept on the spec so an operator can see what was originally
+    needed during recording."""
+
+    opens_submenu_selector: Optional[str] = None
+    """CSS selector for the submenu container expected to become
+    visible after the hover. The runner waits for this selector to
+    reach display:not-none + visibility:visible before clicking the
+    primary target. None means the runner just dispatches the hover
+    and immediately clicks -- works for very fast portals but is the
+    fragile fallback."""
+
+
 class ToastEffect(BaseModel):
     """A transient toast/snackbar that appeared after the action.
 
@@ -717,6 +760,12 @@ class StepEffect(BaseModel):
     toast: Optional[ToastEffect] = None
     new_tab: Optional[NewTabEffect] = None
     state_change: Optional[StateChangeEffect] = None
+    hover: Optional["HoverEffect"] = None
+    """WI-40: hover prerequisite for the action's primary target. When
+    set, the runner moves the mouse to the hover target, waits for the
+    declared opens_submenu_selector to appear, then performs the
+    action. None = no hover prerequisite (the action's target is
+    directly visible)."""
     network: list["NetworkExpectation"] = Field(default_factory=list)
     """Network calls the action is expected to cause. Different from the
     legacy step.expected_signals.network which gates a wait; these are
@@ -2679,6 +2728,15 @@ class TraceEvent(BaseModel):
         "dragstart",
         "dragover",
         "drop",
+        # WI-40: hover that revealed a submenu. Emitted by the grabber
+        # when a pointerenter / mouseover fires on a menu-trigger
+        # element AND a subsequent DOM mutation makes a submenu visible
+        # within a small window. We don't capture every hover (most are
+        # incidental noise); only hovers that caused a visibility
+        # transition are emitted. The annotator pairs the hover with
+        # the subsequent click on a child item and folds both into ONE
+        # click step with a HoverEffect.
+        "hover",
         # F-07 / F-09: observed page-side events. network_request and
         # network_response carry request_id + method + url + status +
         # initiator_event_id so WI-09 / WI-10 / WI-43 / WI-47 can wait
@@ -2886,6 +2944,22 @@ class TraceEvent(BaseModel):
     by the scroll detector to confirm the scroll caused new rows to
     render (positive delta) rather than just shifting the viewport
     within already-rendered content (zero delta)."""
+
+    # WI-40: hover payload. Populated on kind='hover' events emitted
+    # by the grabber's pointerenter listener when a hover revealed a
+    # submenu within a short window. Audit + annotator inputs only;
+    # the runner consumes the HoverEffect built from these fields.
+    submenu_selector: Optional[str] = None
+    """For ``hover`` events: CSS selector of the submenu container
+    that became visible after the hover. None means the grabber
+    couldn't pinpoint a single submenu (multiple appeared, or none
+    appeared within the window). The annotator may still emit a
+    HoverEffect with opens_submenu_selector=None and let the runner
+    fall back to a small fixed dwell."""
+    dwell_ms: Optional[int] = None
+    """For ``hover`` events: how long the operator hovered before the
+    submenu appeared (ms). Audit-only -- the runner waits for the
+    visibility signal, not for this duration."""
 
     # WI-39: rich-text editor burst payload. Populated by the grabber's
     # contenteditable input listener on raw_event_kind="rich_text_input"
