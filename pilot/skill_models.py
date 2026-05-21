@@ -90,6 +90,78 @@ class ElementFingerprint(BaseModel):
     frame_path: list[str] = Field(default_factory=list)
     in_shadow_root: bool = False
 
+    # WI-03: richer control metadata captured at record time. These let
+    # the annotator pick the right semantic action (select_option,
+    # date_select, slider_set, rich_text_set, ...) and let the runner
+    # know the control's contract without guessing from the DOM at
+    # replay (when state may differ from recording). Each is optional
+    # and Pydantic defaults to None / False for legacy fingerprints.
+    control_kind: Optional[Literal[
+        "button", "link", "text_input", "password_input", "number_input",
+        "email_input", "url_input", "search_input", "tel_input",
+        "textarea", "select_single", "select_multiple", "combobox_aria",
+        "listbox_aria", "checkbox", "radio", "date_input", "time_input",
+        "datetime_input", "month_input", "week_input", "color_input",
+        "range_slider", "file_input", "contenteditable", "anchor",
+        "tab", "menuitem", "treeitem", "option", "unknown",
+    ]] = None
+    """Semantic kind of control. ``text_input`` covers free-text; the
+    specific input_type subtypes are kept for codec routing (date vs
+    number vs email). ``select_multiple`` distinguishes from
+    ``select_single`` so the annotator emits set_selection vs
+    select_option. ``combobox_aria`` and ``listbox_aria`` cover custom
+    widgets implementing the WAI-ARIA combobox/listbox patterns."""
+    value_kind: Optional[Literal[
+        "string", "number", "boolean", "date", "datetime", "time",
+        "color", "file", "list", "html", "none",
+    ]] = None
+    """Type of value the control yields. ``html`` is for
+    contenteditable / rich-text editors. ``none`` is for clickable
+    elements that don't carry a value (buttons, links)."""
+    options_snapshot: Optional[list[dict[str, str]]] = None
+    """For selects, listboxes, comboboxes: every option's value + label
+    + selected flag at the moment of recording. The annotator uses
+    this to emit declared aliases (WI-25) so replay doesn't fuzzy-
+    match wrong locale/status options. Each entry: ``{value, label,
+    selected?}``."""
+    selected_options: Optional[list[str]] = None
+    """Currently-selected option values at record time. For
+    select_multiple / combobox, may carry multiple. For
+    select_single, one entry. Used by the annotator to bind the param
+    value back to a specific option."""
+    aria_expanded: Optional[bool] = None
+    aria_disabled: Optional[bool] = None
+    aria_busy: Optional[bool] = None
+    """ARIA state flags. ``aria_expanded`` is critical for accordions /
+    expand-collapse / combobox open-state (WI-33). ``aria_disabled``
+    and ``aria_busy`` feed readiness-aware waits (WI-43)."""
+    disabled: Optional[bool] = None
+    readonly: Optional[bool] = None
+    """Native HTML attribute equivalents. The runner waits for
+    disabled-to-enabled transitions (WI-43) before interacting."""
+    contenteditable: Optional[bool] = None
+    """True if the element (or an ancestor) has contenteditable. Routes
+    the annotator to emit rich_text_set actions (WI-39) instead of
+    treating typing as plain input_change."""
+    locale_hint: Optional[str] = None
+    timezone_hint: Optional[str] = None
+    """Page-level locale + timezone snapshot. The annotator uses these
+    to normalize date / number values to canonical form (WI-48) so
+    a date recorded under en-US doesn't get reinterpreted under
+    en-GB at replay."""
+    min: Optional[str] = None
+    max: Optional[str] = None
+    step: Optional[str] = None
+    """Numeric/range/date constraints from the HTML attributes. Used
+    by slider_set (WI-28) and date_select (WI-21) to validate replay
+    values before page mutation."""
+    accept: Optional[str] = None
+    """For file inputs: the accept attribute. Lets the runner validate
+    file MIME / extension before upload (WI-29)."""
+    multiple: Optional[bool] = None
+    """For file inputs: ``multiple`` attribute. For selects: indicates
+    set semantics."""
+
     # Alternate fingerprints accumulated by self-heal (L3) over time.
     # On replay, each alternate is tried via L1/L2 BEFORE invoking L3
     # again, so a portal that drifted once stays cheap to re-execute.

@@ -417,6 +417,7 @@
   function fingerprint(el) {
     if (!el || el.nodeType !== 1) return null;
     var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+    var meta = _controlMetadata(el);
     return {
       test_id: (el.getAttribute && el.getAttribute("data-testid")) || null,
       element_id: el.id || null,
@@ -437,7 +438,237 @@
         : null,
       frame_path: [],
       in_shadow_root: !!(el.getRootNode && el.getRootNode().host),
+      // WI-03: enriched control metadata. control_kind + value_kind
+      // drive semantic action selection; options_snapshot +
+      // selected_options + min/max/step support typed-param codecs;
+      // ARIA flags + disabled/readonly feed readiness-aware waits.
+      control_kind: meta.control_kind,
+      value_kind: meta.value_kind,
+      options_snapshot: meta.options_snapshot,
+      selected_options: meta.selected_options,
+      aria_expanded: meta.aria_expanded,
+      aria_disabled: meta.aria_disabled,
+      aria_busy: meta.aria_busy,
+      disabled: meta.disabled,
+      readonly: meta.readonly,
+      contenteditable: meta.contenteditable,
+      locale_hint: meta.locale_hint,
+      timezone_hint: meta.timezone_hint,
+      min: meta.min,
+      max: meta.max,
+      step: meta.step,
+      accept: meta.accept,
+      multiple: meta.multiple,
     };
+  }
+
+  // ---- WI-03: control metadata extraction ----------------------------------
+
+  function _controlMetadata(el) {
+    var out = {
+      control_kind: null,
+      value_kind: null,
+      options_snapshot: null,
+      selected_options: null,
+      aria_expanded: null,
+      aria_disabled: null,
+      aria_busy: null,
+      disabled: null,
+      readonly: null,
+      contenteditable: null,
+      locale_hint: null,
+      timezone_hint: null,
+      min: null,
+      max: null,
+      step: null,
+      accept: null,
+      multiple: null,
+    };
+    if (!el || !el.tagName) return out;
+
+    // Locale / timezone are page-level signals. Cheap to read on every
+    // fingerprint (Intl.DateTimeFormat is fast); annotator deduplicates.
+    try {
+      out.locale_hint = (document.documentElement &&
+        document.documentElement.lang) || navigator.language || null;
+    } catch (e) {}
+    try {
+      var dtf = Intl.DateTimeFormat().resolvedOptions();
+      out.timezone_hint = dtf && dtf.timeZone ? dtf.timeZone : null;
+    } catch (e) {}
+
+    // ARIA state
+    var ariaExpanded = el.getAttribute && el.getAttribute("aria-expanded");
+    if (ariaExpanded !== null && ariaExpanded !== undefined) {
+      out.aria_expanded = ariaExpanded === "true";
+    }
+    var ariaDisabled = el.getAttribute && el.getAttribute("aria-disabled");
+    if (ariaDisabled !== null && ariaDisabled !== undefined) {
+      out.aria_disabled = ariaDisabled === "true";
+    }
+    var ariaBusy = el.getAttribute && el.getAttribute("aria-busy");
+    if (ariaBusy !== null && ariaBusy !== undefined) {
+      out.aria_busy = ariaBusy === "true";
+    }
+
+    // contenteditable cascades up the DOM (a <p> inside a
+    // <div contenteditable> is editable). Check ancestors.
+    var ceNode = el;
+    while (ceNode && ceNode.nodeType === 1) {
+      var ce = ceNode.getAttribute && ceNode.getAttribute("contenteditable");
+      if (ce !== null) {
+        out.contenteditable = ce === "" || ce === "true";
+        break;
+      }
+      ceNode = ceNode.parentElement;
+    }
+
+    var tag = el.tagName.toLowerCase();
+    var role = computedRole(el);
+
+    if (tag === "input") {
+      var t = (el.getAttribute("type") || "text").toLowerCase();
+      out.disabled = !!el.disabled;
+      out.readonly = !!el.readOnly;
+      out.min = el.getAttribute("min");
+      out.max = el.getAttribute("max");
+      out.step = el.getAttribute("step");
+      switch (t) {
+        case "checkbox":
+          out.control_kind = "checkbox";
+          out.value_kind = "boolean";
+          break;
+        case "radio":
+          out.control_kind = "radio";
+          out.value_kind = "boolean";
+          break;
+        case "date":
+          out.control_kind = "date_input";
+          out.value_kind = "date";
+          break;
+        case "time":
+          out.control_kind = "time_input";
+          out.value_kind = "time";
+          break;
+        case "datetime-local":
+          out.control_kind = "datetime_input";
+          out.value_kind = "datetime";
+          break;
+        case "month":
+          out.control_kind = "month_input";
+          out.value_kind = "date";
+          break;
+        case "week":
+          out.control_kind = "week_input";
+          out.value_kind = "date";
+          break;
+        case "color":
+          out.control_kind = "color_input";
+          out.value_kind = "color";
+          break;
+        case "range":
+          out.control_kind = "range_slider";
+          out.value_kind = "number";
+          break;
+        case "file":
+          out.control_kind = "file_input";
+          out.value_kind = "file";
+          out.accept = el.getAttribute("accept");
+          out.multiple = !!el.multiple;
+          break;
+        case "number":
+          out.control_kind = "number_input";
+          out.value_kind = "number";
+          break;
+        case "password":
+          out.control_kind = "password_input";
+          out.value_kind = "string";
+          break;
+        case "email":
+          out.control_kind = "email_input";
+          out.value_kind = "string";
+          break;
+        case "url":
+          out.control_kind = "url_input";
+          out.value_kind = "string";
+          break;
+        case "search":
+          out.control_kind = "search_input";
+          out.value_kind = "string";
+          break;
+        case "tel":
+          out.control_kind = "tel_input";
+          out.value_kind = "string";
+          break;
+        case "submit":
+        case "button":
+          out.control_kind = "button";
+          out.value_kind = "none";
+          break;
+        default:
+          out.control_kind = "text_input";
+          out.value_kind = "string";
+      }
+    } else if (tag === "textarea") {
+      out.control_kind = "textarea";
+      out.value_kind = "string";
+      out.disabled = !!el.disabled;
+      out.readonly = !!el.readOnly;
+    } else if (tag === "select") {
+      out.disabled = !!el.disabled;
+      out.multiple = !!el.multiple;
+      out.control_kind = el.multiple ? "select_multiple" : "select_single";
+      out.value_kind = el.multiple ? "list" : "string";
+      var opts = [];
+      var selected = [];
+      try {
+        for (var i = 0; i < el.options.length && opts.length < 200; i++) {
+          var o = el.options[i];
+          var entry = {
+            value: o.value,
+            label: trim(o.textContent || ""),
+          };
+          if (o.selected) entry.selected = true;
+          opts.push(entry);
+          if (o.selected) selected.push(o.value);
+        }
+        out.options_snapshot = opts;
+        out.selected_options = selected;
+      } catch (e) {}
+    } else if (tag === "button") {
+      out.control_kind = "button";
+      out.value_kind = "none";
+      out.disabled = !!el.disabled;
+    } else if (tag === "a") {
+      out.control_kind = el.href ? "anchor" : "unknown";
+      out.value_kind = "none";
+    } else if (out.contenteditable) {
+      out.control_kind = "contenteditable";
+      out.value_kind = "html";
+    } else if (role === "combobox") {
+      out.control_kind = "combobox_aria";
+      out.value_kind = "string";
+    } else if (role === "listbox") {
+      out.control_kind = "listbox_aria";
+      out.value_kind = "list";
+    } else if (role === "tab") {
+      out.control_kind = "tab";
+      out.value_kind = "none";
+    } else if (role === "menuitem") {
+      out.control_kind = "menuitem";
+      out.value_kind = "none";
+    } else if (role === "treeitem") {
+      out.control_kind = "treeitem";
+      out.value_kind = "none";
+    } else if (role === "option") {
+      out.control_kind = "option";
+      out.value_kind = "none";
+    } else {
+      out.control_kind = role === "button" ? "button" : "unknown";
+      out.value_kind = "none";
+    }
+
+    return out;
   }
 
   // ---- Interaction detection ----------------------------------------------
