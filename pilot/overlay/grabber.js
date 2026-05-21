@@ -601,6 +601,229 @@
   }
   _installReadinessWatcher();
 
+  // ---- WI-34: dialog mount/unmount watcher --------------------------------
+  //
+  // Detects modals appearing or disappearing during an active user
+  // interaction. Emits ``kind: "modal"`` TraceEvents with dialog_state
+  // ("open" / "closed"), dialog_selector (stable; testid > role+nth),
+  // and dialog_aria_modal. The annotator pairs these with the causing
+  // user action via caused_by (set by _attribution when an interaction
+  // is active) and folds them into the step's effects.modal field.
+  //
+  // We track CURRENTLY-visible dialog elements in a Set so we can
+  // distinguish "newly appeared" from "already-there." The set is
+  // refreshed on every mutation tick rather than on full DOM scans;
+  // the cost is one querySelectorAll('[role="dialog"]') per mutation
+  // burst which is cheap compared to fingerprinting.
+  function _installDialogWatcher() {
+    if (window.__cp_dialog_installed) return;
+    window.__cp_dialog_installed = true;
+    // Seed with whatever dialogs are already mounted at install time
+    // so "we just installed" doesn't appear as a mount event.
+    var trackedDialogs = new WeakSet();
+    try {
+      var initial = document.querySelectorAll('[role="dialog"], dialog');
+      for (var i = 0; i < initial.length; i++) {
+        if (_isElementVisible(initial[i])) {
+          trackedDialogs.add(initial[i]);
+        }
+      }
+    } catch (e) {}
+
+    function _isElementVisible(el) {
+      if (!el || !el.getBoundingClientRect) return false;
+      try {
+        var rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        var style = (el.ownerDocument && el.ownerDocument.defaultView)
+          ? el.ownerDocument.defaultView.getComputedStyle(el)
+          : null;
+        if (style && (style.display === "none" || style.visibility === "hidden")) {
+          return false;
+        }
+      } catch (e) {}
+      return true;
+    }
+
+    function _dialogSelector(el) {
+      // Prefer testid; fall back to role + index among visible dialogs
+      // so multiple stacked dialogs each get a distinct selector.
+      var tid = el.getAttribute && el.getAttribute("data-testid");
+      if (tid) {
+        return "[data-testid=\"" + tid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
+      }
+      var id = el.id;
+      if (id) return "#" + cssEscape(id);
+      // Compute the dialog's index among the currently-visible dialogs
+      // (DOM order). Stable enough for replay so long as the dialog
+      // count is consistent.
+      try {
+        var all = document.querySelectorAll('[role="dialog"], dialog');
+        var idx = 0;
+        for (var i = 0; i < all.length; i++) {
+          if (all[i] === el) break;
+          if (_isElementVisible(all[i])) idx++;
+        }
+        return '[role="dialog"]:nth-of-type(' + (idx + 1) + ')';
+      } catch (e) {}
+      return '[role="dialog"]';
+    }
+
+    function _emitDialog(el, state) {
+      // Modal events are CONSEQUENCE events -- caused_by is the active
+      // interaction (the click that opened/closed the dialog). When no
+      // interaction is active (background-mounted dialogs / toasts that
+      // claim role=dialog), we still emit but caused_by=null.
+      var attr = _attribution("dialog_observer");
+      var ariaModal = null;
+      try {
+        var amv = el.getAttribute && el.getAttribute("aria-modal");
+        if (amv !== null && amv !== undefined) {
+          ariaModal = amv === "true";
+        }
+      } catch (e) {}
+      try {
+        post(_merge({
+          kind: "modal",
+          page_url: location.href,
+          raw_event_kind: "dialog_" + state,
+          dialog_state: state,
+          dialog_selector: _dialogSelector(el),
+          dialog_aria_modal: ariaModal,
+          // initiator_event_id mirrors caused_by but is the explicit
+          // F-07 field used by the annotator for non-network events.
+          initiator_event_id: (activeInteraction && _isWithinWindow())
+            ? activeInteraction.id : null,
+        }, attr));
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] modal emit failed", e);
+      }
+    }
+
+    try {
+      var root = document.body || document.documentElement;
+      if (!root) {
+        return setTimeout(_installDialogWatcher, 100);
+      }
+      var mo = new MutationObserver(function (records) {
+        // Find all currently-visible dialogs. Anything in the tracked
+        // set that's no longer visible -> emit "closed." Anything
+        // newly visible -> emit "open."
+        var currentlyVisible = [];
+        try {
+          var all = document.querySelectorAll('[role="dialog"], dialog');
+          for (var i = 0; i < all.length; i++) {
+            if (_isElementVisible(all[i])) {
+              currentlyVisible.push(all[i]);
+            }
+          }
+        } catch (e) {}
+        // Detect mounts.
+        for (var j = 0; j < currentlyVisible.length; j++) {
+          var el = currentlyVisible[j];
+          if (!trackedDialogs.has(el)) {
+            trackedDialogs.add(el);
+            _emitDialog(el, "open");
+          }
+        }
+        // Detect unmounts -- we can't iterate a WeakSet, so we walk
+        // the mutation records and check the targets. Targets removed
+        // from the DOM (or whose subtree had role=dialog removed) get
+        // visited here.
+        for (var k = 0; k < records.length; k++) {
+          var r = records[k];
+          if (!r.removedNodes) continue;
+          for (var m = 0; m < r.removedNodes.length; m++) {
+            var rn = r.removedNodes[m];
+            if (rn && rn.nodeType === 1 && trackedDialogs.has(rn)) {
+              trackedDialogs.delete(rn);
+              _emitDialog(rn, "closed");
+            }
+            // Also walk into the removed subtree for nested dialogs.
+            try {
+              if (rn && rn.querySelectorAll) {
+                var inner = rn.querySelectorAll('[role="dialog"], dialog');
+                for (var n = 0; n < inner.length; n++) {
+                  if (trackedDialogs.has(inner[n])) {
+                    trackedDialogs.delete(inner[n]);
+                    _emitDialog(inner[n], "closed");
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+        }
+        // Attribute changes that hide a dialog (display:none,
+        // aria-hidden=true) also count as close events.
+        for (var p = 0; p < records.length; p++) {
+          var rec = records[p];
+          if (rec.type !== "attributes") continue;
+          var t = rec.target;
+          if (!t || t.nodeType !== 1) continue;
+          var role = t.getAttribute && t.getAttribute("role");
+          var isDialog = role === "dialog" ||
+            (t.tagName && t.tagName.toLowerCase() === "dialog");
+          if (!isDialog) continue;
+          if (trackedDialogs.has(t) && !_isElementVisible(t)) {
+            trackedDialogs.delete(t);
+            _emitDialog(t, "closed");
+          } else if (!trackedDialogs.has(t) && _isElementVisible(t)) {
+            trackedDialogs.add(t);
+            _emitDialog(t, "open");
+          }
+        }
+      });
+      mo.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-hidden", "style", "class", "hidden", "open"],
+      });
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] dialog watcher install failed", e);
+    }
+  }
+  _installDialogWatcher();
+
+  // ---- WI-35: window.open / popup hook ------------------------------------
+  //
+  // Hook window.open synchronously inside a user interaction so popups
+  // are attributed to the click that opened them. Each call emits a
+  // ``kind: "popup"`` TraceEvent with popup_url, popup_target,
+  // popup_features, and popup_binding_key (a stable key the runner can
+  // use to register the new page in its page registry).
+  //
+  // Also detects target=_blank link clicks by inspecting the click
+  // target inside the click handler -- those don't fire window.open
+  // but the browser still opens a new tab.
+  (function _installPopupHook() {
+    if (window.__cp_popup_hooked) return;
+    window.__cp_popup_hooked = true;
+    var _origOpen = window.open;
+    if (typeof _origOpen !== "function") return;
+    var _popupSeq = 0;
+    window.open = function (url, target, features) {
+      try {
+        var attr = _attribution("window_open");
+        var bindingKey = "popup_" + (++_popupSeq);
+        post(_merge({
+          kind: "popup",
+          page_url: location.href,
+          raw_event_kind: "window_open",
+          popup_url: url ? String(url) : null,
+          popup_target: target ? String(target) : null,
+          popup_features: features ? String(features) : null,
+          popup_binding_key: bindingKey,
+          initiator_event_id: (activeInteraction && _isWithinWindow())
+            ? activeInteraction.id : null,
+        }, attr));
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] popup emit failed", e);
+      }
+      return _origOpen.apply(this, arguments);
+    };
+  })();
+
   // ---- Transport -----------------------------------------------------------
 
   function post(payload) {
@@ -1213,6 +1436,42 @@
       // until the window closes.
       var attr = _rootAttribution("user_click");
       _setActiveInteraction("click", attr.event_id);
+
+      // WI-35: detect target=_blank link clicks. These open a new tab
+      // without firing window.open (the browser does it natively). We
+      // emit a popup event inline so the annotator can fold it into
+      // the click's PopupEffect.
+      try {
+        var anchorTarget = (function _findAnchor(el) {
+          var cur = el;
+          while (cur && cur !== document) {
+            if (cur.tagName && cur.tagName.toLowerCase() === "a") return cur;
+            cur = cur.parentElement;
+          }
+          return null;
+        })(target);
+        if (
+          anchorTarget &&
+          anchorTarget.getAttribute &&
+          anchorTarget.getAttribute("target") === "_blank" &&
+          anchorTarget.getAttribute("href")
+        ) {
+          var blankAttr = _attribution("anchor_blank");
+          post(_merge({
+            kind: "popup",
+            page_url: location.href,
+            raw_event_kind: "anchor_blank",
+            popup_url: anchorTarget.getAttribute("href"),
+            popup_target: "_blank",
+            popup_features: null,
+            popup_binding_key: "popup_anchor_" + attr.event_id.slice(0, 8),
+            initiator_event_id: attr.event_id,
+          }, blankAttr));
+        }
+      } catch (popErr) {
+        if (DEBUG) console.warn("[cp] anchor _blank emit failed", popErr);
+      }
+
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
@@ -1842,6 +2101,47 @@
       var t = e.target;
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
+      // WI-34: global Escape -- when Escape is pressed and ANY dialog
+      // is currently open (visible), we still emit a key event even
+      // if focus isn't on a textbox. The annotator pairs the global
+      // Escape with a subsequent dialog-closed modal event to
+      // construct a ModalCloseAction(kind="escape").
+      var dialogOpen = false;
+      try {
+        var all = document.querySelectorAll('[role="dialog"], dialog');
+        for (var i = 0; i < all.length; i++) {
+          var el = all[i];
+          var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+          if (rect && rect.width > 0 && rect.height > 0) {
+            dialogOpen = true;
+            break;
+          }
+        }
+      } catch (er) {}
+      if (
+        e.key === "Escape" &&
+        dialogOpen &&
+        tag !== "input" &&
+        tag !== "textarea"
+      ) {
+        // Global Escape with a dialog open. The fingerprint here is
+        // the focused element (or document.body if none) so the
+        // annotator has SOMETHING to bind to; the key value carries
+        // the semantic intent.
+        var keyTarget = (document.activeElement && document.activeElement !== document.body)
+          ? document.activeElement : t;
+        var stateBefore2 = _pageState();
+        var attr2 = _rootAttribution("user_keydown");
+        _setActiveInteraction("key", attr2.event_id);
+        _emitWithStateSnapshot(_merge({
+          kind: "key",
+          fingerprint: fingerprint(keyTarget),
+          value: e.key,
+          page_url: location.href,
+          raw_event_kind: "keydown",
+        }, attr2), stateBefore2);
+        return;
+      }
       if (tag !== "input" && tag !== "textarea") return;
       var stateBefore = _pageState();
       var attr = _rootAttribution("user_keydown");

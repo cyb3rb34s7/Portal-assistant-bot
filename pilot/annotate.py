@@ -26,6 +26,7 @@ from rich.table import Table
 from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
+    AmbiguityPolicy,
     AutocompleteSpec,
     DatePickerSpec,
     DependencyChain,
@@ -36,11 +37,14 @@ from .skill_models import (
     FileMetadata,
     FileSpec,
     FillSubmitSpec,
+    ModalCloseAction,
+    ModalEffect,
     NavigationEffect,
     NetworkExpectation,
     OptionSnapshot,
     ParamBinding,
     ParamConstraints,
+    PopupEffect,
     SelectOptionSpec,
     SemanticCluster,
     SetSelectionSpec,
@@ -357,6 +361,182 @@ def _index_caused_navigates(
             continue
         out[ev.caused_by] = ev  # last write wins (router chain)
     return out
+
+
+def _index_modal_effects(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+) -> tuple[dict[str, ModalEffect], dict[str, str]]:
+    """WI-34: build a {causing_event_id -> ModalEffect} map plus a
+    {dialog_selector -> opening_event_id} index for scoping in-dialog
+    interactions.
+
+    Walks the event list looking for ``kind="modal"`` observations
+    (emitted by the grabber's dialog watcher). Each open observation
+    that's attributed to a user interaction (caused_by != null) sets
+    ``opens_on_action=True`` on the causing event's effect. A close
+    observation attributed to the SAME interaction or the next user
+    interaction sets ``closes_on_action=True`` on the appropriate
+    step.
+
+    Close mechanisms:
+      - The opening event is the click that triggered the dialog mount.
+      - A close attributed to a SUBSEQUENT user interaction's
+        event_id means that interaction CLOSED the dialog. If the
+        interaction is a click inside the dialog -> kind="click" with
+        target_fp=the click's fingerprint. If it's a key event with
+        value=="Escape" -> kind="escape". If it's a click whose
+        fingerprint resolves outside the dialog (backdrop) -> kind=
+        "backdrop". Conservative default when classification fails:
+        kind="click" with the recorded fingerprint.
+
+    Returns:
+      - effects_by_cause: causing_event_id -> ModalEffect with
+        opens_on_action / closes_on_action / close_actions populated.
+      - dialog_scope_by_event: event_id -> dialog_selector for any
+        user event that occurred while a dialog was open (so the
+        runner / step builder can scope its locator inside the
+        dialog).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    effects_by_cause: dict[str, ModalEffect] = {}
+    dialog_scope_by_event: dict[str, str] = {}
+    # Active dialog stack -- (dialog_selector, opening_event_id, aria_modal)
+    # in DOM open order. Most operations affect the topmost dialog.
+    open_dialogs: list[tuple[str, Optional[str], Optional[bool]]] = []
+
+    for ev in events:
+        # Track scope of subsequent user events while dialogs are open.
+        if ev.kind not in ("modal",) and ev.event_id and open_dialogs:
+            # Most-recently-opened dialog wins (scope nests).
+            dialog_scope_by_event[ev.event_id] = open_dialogs[-1][0]
+
+        if ev.kind != "modal":
+            continue
+        sel = ev.dialog_selector or '[role="dialog"]'
+        state = ev.dialog_state
+
+        if state == "open":
+            opening_id = ev.caused_by or ev.initiator_event_id
+            open_dialogs.append((sel, opening_id, ev.dialog_aria_modal))
+            if opening_id:
+                eff = effects_by_cause.get(opening_id) or ModalEffect()
+                eff.opens_on_action = True
+                eff.dialog_selector = sel
+                # Audit-only legacy fields.
+                if eff.dialog_test_id is None:
+                    eff.dialog_test_id = _extract_testid_from_selector(sel)
+                effects_by_cause[opening_id] = eff
+            continue
+
+        if state == "closed":
+            # Match the closed dialog to a tracked open one (by selector).
+            matched_idx = None
+            for i in range(len(open_dialogs) - 1, -1, -1):
+                if open_dialogs[i][0] == sel:
+                    matched_idx = i
+                    break
+            if matched_idx is None:
+                # Unmatched close (dialog opened before recording started
+                # or selector changed). Still record as a close effect on
+                # the causing event so the runner verifies dismissal.
+                cause_id = ev.caused_by or ev.initiator_event_id
+                if cause_id:
+                    eff = effects_by_cause.get(cause_id) or ModalEffect()
+                    eff.closes_on_action = True
+                    eff.dialog_selector = sel
+                    effects_by_cause[cause_id] = eff
+                continue
+            # Pop the matched dialog from the stack.
+            opening_tuple = open_dialogs.pop(matched_idx)
+            cause_id = ev.caused_by or ev.initiator_event_id
+            if not cause_id:
+                continue
+            cause_ev = by_id.get(cause_id)
+            # Decide whether the close belongs on the OPENER's step or
+            # on the closing user event's step. Convention: a close that
+            # happens DURING the same interaction as the open (same
+            # cause_id) folds onto the opener. A close caused by a
+            # DIFFERENT user interaction folds onto that interaction.
+            if cause_id == opening_tuple[1]:
+                eff = effects_by_cause.get(cause_id) or ModalEffect()
+                eff.opens_on_action = True
+                eff.closes_on_action = True
+                eff.dialog_selector = sel
+                effects_by_cause[cause_id] = eff
+                continue
+            # Close belongs to ``cause_id`` (a later user event).
+            eff = effects_by_cause.get(cause_id) or ModalEffect()
+            eff.closes_on_action = True
+            eff.dialog_selector = sel
+            # Classify the close mechanism from the causing event.
+            close_kind: Literal["click", "escape", "backdrop"] = "click"
+            close_target_fp: Optional[ElementFingerprint] = None
+            if cause_ev is not None:
+                if cause_ev.kind == "key" and (cause_ev.value or "") == "Escape":
+                    close_kind = "escape"
+                    close_target_fp = None
+                elif cause_ev.kind == "click":
+                    # Backdrop vs in-dialog click distinction: if the
+                    # click target's ancestor chain doesn't carry the
+                    # dialog selector / role=dialog, classify as
+                    # backdrop. Conservative: when we can't tell, treat
+                    # as click so the runner has a fingerprint to use.
+                    if _click_inside_dialog(cause_ev, sel):
+                        close_kind = "click"
+                        close_target_fp = cause_ev.fingerprint
+                    else:
+                        close_kind = "backdrop"
+                        close_target_fp = None
+            eff.close_actions.append(
+                ModalCloseAction(
+                    kind=close_kind,
+                    target_fp=close_target_fp,
+                )
+            )
+            effects_by_cause[cause_id] = eff
+            continue
+
+    return effects_by_cause, dialog_scope_by_event
+
+
+def _extract_testid_from_selector(sel: str) -> Optional[str]:
+    """Extract a testid from a ``[data-testid="..."]`` selector when
+    possible. Returns None for role / index-based selectors."""
+    if not sel:
+        return None
+    m = re.match(r'\[data-testid="([^"]+)"\]', sel)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _click_inside_dialog(ev: TraceEvent, dialog_selector: str) -> bool:
+    """Best-effort check whether a click happened INSIDE the given
+    dialog. Walks the click's ancestor_chain looking for an element
+    that matches the dialog selector or carries role=dialog.
+
+    Conservative: when the chain is missing or inconclusive, returns
+    True (so the runner has a fingerprint to use rather than falling
+    back to backdrop). The audit's WI-34 acceptance check pairs this
+    with the runner verifying the dialog actually dismisses, so a
+    mis-classified close still fails loudly rather than silently
+    completing."""
+    fp = ev.fingerprint
+    if fp is None:
+        return True
+    chain = getattr(fp, "ancestor_chain", None) or []
+    target_testid = _extract_testid_from_selector(dialog_selector)
+    for anc in chain:
+        if not isinstance(anc, dict):
+            continue
+        if anc.get("role") == "dialog":
+            return True
+        if anc.get("tag") == "dialog":
+            return True
+        if target_testid and anc.get("testId") == target_testid:
+            return True
+    return False
 
 
 def _index_readiness_signals(
@@ -693,6 +873,11 @@ def derive_value_transition(
 _OBSERVED_EVENT_KINDS: frozenset[str] = frozenset({
     "dom_mutation", "network_request", "network_response",
     "popup", "download", "visibility_change",
+    # WI-34: dialog mount/unmount observations. The grabber emits
+    # ``modal`` events when a role=dialog appears/disappears; the
+    # annotator folds them into the causing user action's
+    # effects.modal field rather than producing standalone steps.
+    "modal",
 })
 
 
@@ -2567,6 +2752,33 @@ def build_skill(
     # declared readiness instead of the legacy spinner-by-convention.
     readiness_by_cause = _index_readiness_signals(events)
 
+    # WI-34: dialog mount/unmount observations indexed by causing
+    # event id. Each entry becomes effects.modal on the causing step;
+    # in-dialog interactions get their locator_scope narrowed.
+    modal_effects_by_cause, modal_scope_by_event = _index_modal_effects(
+        events, causality,
+    )
+
+    # WI-35: popup events indexed by causing event id. Each entry
+    # becomes effects.popup on the causing step.
+    popup_effects_by_cause: dict[str, PopupEffect] = {}
+    for ev in events:
+        if ev.kind != "popup":
+            continue
+        cause_id = ev.caused_by or ev.initiator_event_id
+        if not cause_id:
+            continue
+        # Last-write-wins: if multiple popups attribute to the same
+        # click (rare), the latest one (most likely the intended one)
+        # is kept. We do not yet support multi-popup per click.
+        popup_effects_by_cause[cause_id] = PopupEffect(
+            url_template=None,
+            window_name=ev.popup_target,
+            page_binding_key=ev.popup_binding_key,
+            switch_policy="switch",
+            close_policy="explicit",
+        )
+
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
@@ -2591,6 +2803,9 @@ def build_skill(
     _OBSERVED_KINDS: frozenset[str] = frozenset({
         "dom_mutation", "network_request", "network_response",
         "popup", "download", "visibility_change",
+        # WI-34: dialog mount/unmount observations -- folded into the
+        # causing click's effects.modal, never emitted as their own step.
+        "modal",
     })
 
     for idx, ev in enumerate(events):
@@ -2689,6 +2904,27 @@ def build_skill(
                     assert_url=assert_url,
                 )
             )
+
+        # WI-34: fold modal open/close observations onto this step's
+        # effects.modal when the dialog watcher attributed them to this
+        # event. The runner waits for the dialog visible/hidden state
+        # according to opens_on_action / closes_on_action.
+        if ev.event_id and ev.event_id in modal_effects_by_cause:
+            modal_eff = modal_effects_by_cause[ev.event_id]
+            if effects is None:
+                effects = StepEffect(modal=modal_eff)
+            else:
+                effects.modal = modal_eff
+
+        # WI-35: fold popup observations onto this step's effects.popup.
+        # The runner uses Playwright expect_popup + page registry to
+        # switch to the new page if switch_policy="switch".
+        if ev.event_id and ev.event_id in popup_effects_by_cause:
+            popup_eff = popup_effects_by_cause[ev.event_id]
+            if effects is None:
+                effects = StepEffect(popup=popup_eff)
+            else:
+                effects.popup = popup_eff
 
         # WI-10: collect readiness signals attributed to this user
         # event so the step's expected_signals.dom gets populated.
@@ -3001,6 +3237,31 @@ def build_skill(
             _build_file_spec(ev) if ev.kind == "file_selected" else None
         )
 
+        # WI-34: when this user event happened while a dialog was open,
+        # scope locator lookups inside the dialog so the runner doesn't
+        # accidentally bind to a same-named control on the backing
+        # page. Skipped when the event IS the OPENER -- the opening
+        # click's target lives outside the dialog by definition. The
+        # closer's target lives INSIDE the dialog (in-dialog click) or
+        # is keyboard/backdrop (no fingerprint scope needed), so we
+        # still set scope on closers and let the ambiguity policy
+        # apply when there's a fingerprint to resolve.
+        dialog_ambiguity_policy: Optional[AmbiguityPolicy] = None
+        if (
+            ev.event_id
+            and ev.event_id in modal_scope_by_event
+            and not (
+                ev.event_id in modal_effects_by_cause
+                and modal_effects_by_cause[ev.event_id].opens_on_action
+                and not modal_effects_by_cause[ev.event_id].closes_on_action
+            )
+        ):
+            dialog_ambiguity_policy = AmbiguityPolicy(
+                locator_scope=modal_scope_by_event[ev.event_id],
+                expected_candidate_count=1,
+                ambiguity_policy="fail_if_multiple",
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -3028,6 +3289,7 @@ def build_skill(
             drag_drop=drag_drop_spec,
             toggle_state=toggle_state_spec,
             dependency_chain=dependency_chain_spec,
+            ambiguity_policy=dialog_ambiguity_policy,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;

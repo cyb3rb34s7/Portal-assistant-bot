@@ -591,14 +591,77 @@ class DownloadEffect(BaseModel):
     ``user_path``."""
 
 
-class ModalEffect(BaseModel):
-    """An action that opens or closes a modal/dialog."""
+class ModalCloseAction(BaseModel):
+    """WI-34: one mechanism by which a modal was closed during the
+    recorded interaction window. The annotator captures every close
+    mechanism observed (button click, Escape, backdrop click) so the
+    runner can pick a stable one at replay -- a portal whose Close
+    button gets a different testid still closes via Escape."""
 
-    kind: Literal["open", "close"]
+    kind: Literal["click", "escape", "backdrop"]
+    """``click`` -- the operator clicked a button/icon inside the
+    dialog. ``target_fp`` carries that element's fingerprint.
+    ``escape`` -- the operator pressed Escape while focused inside
+    the dialog. No target. ``backdrop`` -- the operator clicked
+    outside the dialog (on the backdrop / overlay). No target."""
+
+    target_fp: Optional[ElementFingerprint] = None
+    """For ``kind='click'``: fingerprint of the in-dialog close
+    control. None for ``escape`` / ``backdrop`` kinds."""
+
+
+class ModalEffect(BaseModel):
+    """WI-34: an action that opens and/or closes a modal/dialog.
+
+    A "confirm publish" workflow records as ONE step:
+      - click Publish button (the step's primary action)
+      - dialog appears (opens_on_action=True)
+      - click Yes inside dialog (folded as a close_action of kind=click)
+      - dialog disappears (closes_on_action=True)
+
+    The runner waits for the dialog to be visible after the opening
+    action, then for the close_actions to dismiss it, then verifies the
+    dialog is gone. When the modal contains its OWN interactive steps
+    (e.g. fill a form, click Submit), those steps live as separate
+    SkillSteps; the runner scopes their locators to inside the dialog
+    when ``opens_on_action=True`` is in effect on a prior step.
+
+    Backward compatibility: the legacy ``kind="open"``/``"close"`` +
+    ``dialog_selector`` shape pre-WI-34 is still accepted. The two
+    new boolean fields ``opens_on_action`` / ``closes_on_action`` are
+    the WI-34 contract; the runner prefers them when set and falls
+    back to ``kind`` otherwise.
+    """
+
+    # WI-34 contract (preferred):
+    opens_on_action: bool = False
+    """True when the action causes the dialog to MOUNT (transition from
+    not-present / hidden to visible). Runner waits for the dialog to
+    become visible after the action."""
+
+    closes_on_action: bool = False
+    """True when the action causes the dialog to UNMOUNT (transition
+    from visible to hidden / removed). Runner verifies the dialog is
+    gone after the close_actions fire."""
+
+    close_actions: list[ModalCloseAction] = Field(default_factory=list)
+    """One or more close mechanisms folded into THIS step. When
+    ``closes_on_action=True``, the runner picks the first viable
+    close_action (click target visible -> use it; otherwise fall back
+    to escape; backdrop is last). Empty when the close is purely a
+    consequence of the action itself (e.g. submit click that auto-
+    dismisses the dialog -- no extra interaction needed)."""
+
+    # Legacy shape (pre-WI-34); kept for back-compat with skills built
+    # before this WI landed. New annotations populate the WI-34 fields
+    # above and leave ``kind`` None.
+    kind: Optional[Literal["open", "close"]] = None
     dialog_test_id: Optional[str] = None
     dialog_selector: Optional[str] = None
     expected_visibility: Optional[bool] = None
-    """After the action: True = dialog visible, False = dialog hidden."""
+    """Legacy field. After the action: True = dialog visible, False =
+    dialog hidden. WI-34 prefers the two boolean fields above; this
+    field is kept so pre-WI-34 skills still validate."""
 
 
 class ToastEffect(BaseModel):
@@ -2377,6 +2440,13 @@ class TraceEvent(BaseModel):
         "popup",
         "download",
         "visibility_change",
+        # WI-34: dialog mount/unmount observed by the grabber's
+        # role=dialog MutationObserver. ``modal`` events carry a
+        # dialog_state ('open' or 'closed'), a dialog_selector (the
+        # stable selector the runner can re-resolve to), and the
+        # initiator_event_id when emitted during a user interaction
+        # window (e.g. clicked Publish -> dialog opens).
+        "modal",
     ]
     fingerprint: Optional[ElementFingerprint] = None
     value: Optional[str] = None
@@ -2509,3 +2579,58 @@ class TraceEvent(BaseModel):
     {types: [...], text_plain: 'first 200 chars or null',
     drop_effect: 'move'|'copy'|'link'|'none'}. None for legacy traces
     and for events the grabber couldn't snapshot."""
+
+    # WI-34: dialog mount/unmount payload. Populated only on
+    # kind='modal' events emitted by the grabber's role=dialog
+    # MutationObserver.
+    dialog_state: Optional[Literal["open", "closed"]] = None
+    """For ``modal`` events: ``open`` when a dialog mounted (added to
+    the DOM or visibility became true) during the active user
+    interaction; ``closed`` when it unmounted / hidden."""
+    dialog_selector: Optional[str] = None
+    """For ``modal`` events: a stable selector the runner can re-resolve
+    to. Prefers ``[data-testid="..."]`` when the dialog carries one;
+    falls back to ``[role="dialog"]`` with a count index when multiple
+    are present."""
+    dialog_aria_modal: Optional[bool] = None
+    """For ``modal`` events: aria-modal attribute observed on the
+    dialog at mount time. True for modals that trap focus (the usual
+    case); False / None for non-modal dialogs."""
+
+    # WI-35: popup / new-window payload. Populated on kind='popup'
+    # events emitted by the grabber's window.open hook.
+    popup_url: Optional[str] = None
+    """For ``popup`` events: the URL the popup was opened to (the
+    first argument to window.open). May be empty/null when the popup
+    opened about:blank and was then navigated by the opener."""
+    popup_target: Optional[str] = None
+    """For ``popup`` events: the window.open() target argument
+    (``_blank`` / window name / etc.). None for target=_blank link
+    clicks where the grabber inferred the popup from the click handler
+    rather than a window.open call."""
+    popup_features: Optional[str] = None
+    """For ``popup`` events: the window.open() features argument
+    (``width=800,height=600,...``). Audit-only; the runner doesn't
+    replay window features."""
+    popup_binding_key: Optional[str] = None
+    """For ``popup`` events: the page key the grabber assigned for
+    cross-page step routing. The annotator stamps this onto the
+    PopupEffect so the runner knows which page key to switch to."""
+
+    # WI-37 / WI-38: scroll payload. Populated on kind='visibility_change'
+    # events emitted by the grabber's scroll observer when an operator
+    # scrolled a scroller and a previously-hidden row came into view.
+    scroller_selector: Optional[str] = None
+    """For scroll-driven ``visibility_change`` events: the scroller's
+    selector (the element that received the scroll). Used by WI-37/38
+    to detect 'operator scrolled to find a row' patterns."""
+    scroll_direction: Optional[Literal["up", "down", "left", "right"]] = None
+    """For scroll-driven ``visibility_change`` events: which way the
+    operator scrolled. ``down`` is the most common; ``up`` indicates
+    the operator overshot then came back."""
+    visible_row_count_delta: Optional[int] = None
+    """For scroll-driven ``visibility_change`` events: change in the
+    count of visible rows inside the scroller after the scroll. Used
+    by the scroll detector to confirm the scroll caused new rows to
+    render (positive delta) rather than just shifting the viewport
+    within already-rendered content (zero delta)."""

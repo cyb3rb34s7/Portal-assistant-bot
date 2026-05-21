@@ -615,9 +615,32 @@ class SkillRunner:
                     error=nav_error,
                     url_before=url_before,
                 )
+
+        # WI-34: verify the click's declared modal effect. If
+        # opens_on_action -> wait for dialog visible; if
+        # closes_on_action -> verify the dialog is gone. Both can be
+        # true for a "click button that opens AND closes a dialog
+        # within the same interaction" pattern (rare; supported for
+        # completeness).
+        modal_ok = True
+        modal_error: Optional[str] = None
+        if (
+            verified
+            and step.effects is not None
+            and step.effects.modal is not None
+        ):
+            modal_ok, modal_error = self._assert_modal_effect(page, step)
+            if not modal_ok:
+                self._diagnostic(
+                    "runner.click_modal_effect_unmet",
+                    level="warn",
+                    recoverable=True,
+                    error=modal_error,
+                )
+
         shot = self._screenshot(f"step_{step.index}_click")
         result, ret_level = self._build_action_result(
-            success=verified and nav_result_ok,
+            success=verified and nav_result_ok and modal_ok,
             level=level,
             heal=heal,
             action_taken=f"clicked {step.semantic_label} [{LEVEL_LABELS[level]}]",
@@ -637,7 +660,124 @@ class SkillRunner:
                 screenshot_path=result.screenshot_path,
                 healed=result.healed,
             )
+        elif verified and not modal_ok and result.success is False:
+            result = ToolResult(
+                success=False,
+                action_taken=result.action_taken,
+                error=modal_error or "modal effect not satisfied",
+                error_kind="modal_effect_unmet",
+                error_details={
+                    "dialog_selector": (
+                        step.effects.modal.dialog_selector
+                        if step.effects and step.effects.modal
+                        else None
+                    ),
+                },
+                screenshot_path=result.screenshot_path,
+                healed=result.healed,
+            )
         return result, ret_level
+
+    def _assert_modal_effect(
+        self,
+        page: Page,
+        step: SkillStep,
+    ) -> tuple[bool, Optional[str]]:
+        """WI-34: verify a click's declared modal effect.
+
+        When ``opens_on_action`` is True, wait for the dialog selector
+        to become visible. When ``closes_on_action`` is True, wait for
+        it to become hidden / detached. If close_actions are declared
+        and the dialog is still visible after the click, fire the
+        first viable close action (click target visible -> click it;
+        else fall back to Escape).
+
+        Returns (ok, error_message). On success error_message is None;
+        on failure it carries a short structured description.
+        """
+        eff = step.effects.modal  # type: ignore[union-attr]
+        assert eff is not None
+        sel = eff.dialog_selector
+        if not sel:
+            # No selector to verify; treat as no-op success so legacy
+            # ModalEffects (pre-WI-34) without selectors still pass.
+            return True, None
+
+        # 1) opens_on_action: wait for dialog visible.
+        if eff.opens_on_action:
+            try:
+                page.locator(sel).first.wait_for(state="visible", timeout=4000)
+            except Exception:
+                return False, (
+                    f"dialog {sel!r} did not become visible "
+                    f"within 4000ms after open action"
+                )
+
+        # 2) closes_on_action: fire close_actions if declared, then
+        #    verify the dialog is gone.
+        if eff.closes_on_action:
+            # If the dialog isn't visible already (the click that
+            # opened+closed it within the same interaction), we're
+            # done.
+            try:
+                still_visible = page.locator(sel).first.is_visible(timeout=500)
+            except Exception:
+                still_visible = False
+            if still_visible:
+                # Fire the first viable close mechanism.
+                fired = False
+                for ca in eff.close_actions:
+                    try:
+                        if ca.kind == "click" and ca.target_fp is not None:
+                            # Resolve the close button inside the dialog.
+                            scope = page.locator(sel).first
+                            tid = ca.target_fp.test_id
+                            if tid:
+                                # Use Playwright's get_by_test_id for
+                                # safe escaping (mirrors the WI-24
+                                # selector construction approach).
+                                target = scope.get_by_test_id(tid).first
+                            elif ca.target_fp.accessible_name:
+                                target = scope.get_by_role(
+                                    "button",
+                                    name=ca.target_fp.accessible_name,
+                                ).first
+                            else:
+                                continue
+                            target.click(timeout=2000)
+                            fired = True
+                            break
+                        if ca.kind == "escape":
+                            page.keyboard.press("Escape")
+                            fired = True
+                            break
+                        if ca.kind == "backdrop":
+                            # Click the page body at (5, 5) to hit the
+                            # backdrop. Many backdrop implementations
+                            # also accept Escape so we fall through if
+                            # this fails.
+                            try:
+                                page.mouse.click(5, 5)
+                                fired = True
+                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        continue
+                if not fired:
+                    return False, (
+                        "dialog still visible and no close_action could be "
+                        "fired (close_actions exhausted)"
+                    )
+            # Verify the dialog is gone.
+            try:
+                page.locator(sel).first.wait_for(state="hidden", timeout=4000)
+            except Exception:
+                return False, (
+                    f"dialog {sel!r} did not dismiss within 4000ms after "
+                    f"close action(s)"
+                )
+        return True, None
 
     def _assert_nav_effect(
         self,
