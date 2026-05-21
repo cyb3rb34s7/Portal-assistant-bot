@@ -2207,7 +2207,7 @@ class SkillRunner:
         # --- Level 3 — self-heal via locator_repair ----
         if diag is not None:
             diag["levels_attempted"].append(3)
-        return self._level3(page, fp, step.semantic_label)
+        return self._level3(page, fp, step.semantic_label, step=step)
 
     def _resolve_with_hint(
         self,
@@ -2764,12 +2764,30 @@ class SkillRunner:
         page: Page,
         fp: ElementFingerprint,
         semantic_label: Optional[str],
+        step: Optional[SkillStep] = None,
     ) -> tuple[Optional[Locator], int, Optional[dict[str, Any]]]:
         """Self-heal via pilot.agent.locator_repair.
 
         Returns (locator, 3, heal_info) on a confident pick. Returns
         (None, 4, None) if the repair refuses or fails — caller will
         escalate to human takeover.
+
+        WI-26: gates acceptance on the step's RepairPolicy BEFORE the
+        score band check.
+          - test_id_required, role_match_required, landmark_match_required
+            assert the structural drift contract; a high-score heal
+            without the required feature is rejected.
+          - uniqueness_scope is approximated as 'whole_page' here (the
+            current candidate enumerator scans interactables once); the
+            structural-contract assertion happens after click in
+            _execute_with_heal_check + post-condition.
+          - medium_confidence_pauses: when True (default for
+            destructive actions), a medium-score result is converted
+            to (None, 4, None) so the runner escalates to operator
+            takeover rather than executing a probably-wrong click.
+
+        Score bands stay as a tiebreaker for the AUDIT log but are no
+        longer the gate -- the structural policy is.
         """
         repair = self._get_repair()
         result = repair.heal(page, fp, semantic_label)
@@ -2777,6 +2795,45 @@ class SkillRunner:
             self.audit.log(
                 "info",
                 f"L3 refused: confidence={result.confidence} reason={result.reason}",
+            )
+            return None, 4, None
+
+        # WI-26: enforce the step's RepairPolicy (or action-class
+        # defaults). Reject candidates that fail the structural
+        # contract regardless of similarity score.
+        policy_reject = self._policy_reject_reason(step, fp, result)
+        if policy_reject is not None:
+            self.audit.log(
+                "info",
+                f"L3 refused by repair policy: {policy_reject}",
+            )
+            self._diagnostic(
+                "runner.l3_policy_reject",
+                level="warn",
+                recoverable=True,
+                reason=policy_reject,
+                confidence=result.confidence,
+            )
+            return None, 4, None
+
+        # WI-26: medium confidence triggers pause for destructive
+        # steps unless the step's policy explicitly allows
+        # execute-then-don't-persist (medium_confidence_pauses=False).
+        effective_policy = self._effective_repair_policy(step)
+        if (
+            result.confidence == "medium"
+            and effective_policy.medium_confidence_pauses
+        ):
+            self.audit.log(
+                "info",
+                "L3 medium-confidence: pausing for operator confirmation",
+            )
+            self._diagnostic(
+                "runner.l3_medium_paused",
+                level="warn",
+                recoverable=True,
+                confidence=result.confidence,
+                reason=result.reason,
             )
             return None, 4, None
 
@@ -2803,6 +2860,10 @@ class SkillRunner:
             "post_condition_passed": False,  # filled by action method
             "new_fingerprint": new_fp_dump,
             "backend": result.backend,
+            # WI-26: carries the policy's required_postcondition so the
+            # action method's verifier can route to the right assertion
+            # kind instead of falling back to whole-page-signature.
+            "required_postcondition": effective_policy.required_postcondition,
         }
         self.audit.log(
             "info",
@@ -2815,6 +2876,87 @@ class SkillRunner:
             diag["heal_backend"] = result.backend
             diag["heal_confidence"] = result.confidence
         return result.locator, 3, heal_info
+
+    def _effective_repair_policy(self, step: Optional[SkillStep]):
+        """WI-26: resolve the step's RepairPolicy with defaults.
+
+        Returns a RepairPolicy instance whose fields are either the
+        step's declared values or the action-class defaults. Destructive
+        actions get medium_confidence_pauses=True (the safe default).
+        Non-destructive (wait, navigate, assert, key) get
+        medium_confidence_pauses=False so observational replay isn't
+        gated on operator confirmation.
+        """
+        from .skill_models import RepairPolicy as _RP
+        if step is not None and step.repair_policy is not None:
+            return step.repair_policy
+        is_destructive = step is not None and (
+            step.action in self._DESTRUCTIVE_ACTIONS
+            or bool(step.requires_gate)
+        )
+        return _RP(
+            medium_confidence_pauses=is_destructive,
+        )
+
+    def _policy_reject_reason(
+        self,
+        step: Optional[SkillStep],
+        original_fp: ElementFingerprint,
+        result: "Any",  # locator_repair.HealResult
+    ) -> Optional[str]:
+        """WI-26: structural-contract gate. Returns a reason string when
+        the candidate fails the policy, or None to accept.
+
+        Checks executed in order:
+          1. test_id_required: original_fp had a test_id but new_fp
+             doesn't -- drift to a less-stable locator, rejected.
+          2. role_match_required: roles don't match.
+          3. landmark_match_required: landmarks don't match.
+
+        Each check honors allowed_drift_fields -- if a field is
+        explicitly declared as expected to drift, the contract for
+        that field is waived.
+        """
+        policy = self._effective_repair_policy(step)
+        new_fp = result.new_fingerprint
+        if new_fp is None:
+            return None  # repair already refused; nothing to gate
+
+        if (
+            policy.test_id_required
+            and "test_id" not in policy.allowed_drift_fields
+            and original_fp.test_id
+            and not new_fp.test_id
+        ):
+            return (
+                "test_id_required: recorded element had a test_id but the "
+                "healed candidate carries none -- WI-26 refuses the drift "
+                "to a less-stable locator"
+            )
+        if (
+            policy.role_match_required
+            and "role" not in policy.allowed_drift_fields
+            and original_fp.role
+            and new_fp.role
+            and original_fp.role != new_fp.role
+        ):
+            return (
+                f"role_match_required: recorded role {original_fp.role!r} "
+                f"vs healed role {new_fp.role!r}"
+            )
+        if (
+            policy.landmark_match_required
+            and "landmark" not in policy.allowed_drift_fields
+            and original_fp.landmark
+            and new_fp.landmark
+            and original_fp.landmark != new_fp.landmark
+        ):
+            return (
+                f"landmark_match_required: recorded landmark "
+                f"{original_fp.landmark!r} vs healed landmark "
+                f"{new_fp.landmark!r}"
+            )
+        return None
 
     def _get_repair(self):
         """Lazily build a deterministic LocatorRepair if none was injected.

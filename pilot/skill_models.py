@@ -752,6 +752,106 @@ class SemanticCluster(BaseModel):
     for the LLM enrichment pass (WI-31) and operator review UI."""
 
 
+class RepairPolicy(BaseModel):
+    """WI-26: declarative policy for L3 (self-heal) acceptance.
+
+    Today the L3 deterministic scorer maps best-match similarity to a
+    confidence band via fixed thresholds (0.85 / 0.65 / 0.55), and the
+    runner persists a "high" heal back onto the skill. The audit
+    pointed out two problems:
+
+      1. Score is meaningful only relative to candidate uniqueness.
+         A 0.90-similarity match to one of TWO indistinguishable
+         "Approve" buttons is still wrong.
+      2. Score is not action-specific evidence. A click on a button
+         that LOOKS like the recorded target but does nothing (e.g.
+         disabled internally) gets persisted because the score was
+         high enough, even when the action's intended postcondition
+         never happened.
+
+    RepairPolicy turns this into a structural contract:
+
+      - required_features: which fingerprint attributes MUST match
+        for the heal to be accepted (e.g. test_id_required = True
+        means: heal candidate must carry a test_id; if score is high
+        but candidate has none, reject).
+      - uniqueness_scope: where the candidate must be unique
+        (whole_page | within_section | within_row). A "high" score
+        that's not unique under the declared scope -> reject.
+      - allowed_drift_fields: fingerprint fields that are EXPECTED
+        to change at replay (operator marks these as known-portal-
+        drift; the scorer doesn't penalize their mismatch).
+      - required_postcondition: an action-specific assertion kind
+        (from StepAssertion) that MUST pass after the healed action
+        for the heal to be PERSISTED. Score bands become tiebreakers,
+        not gates.
+      - medium_confidence_pauses: when True (default) a medium-score
+        heal pauses for operator confirmation; legacy behavior was
+        execute-without-verify-then-not-persist.
+
+    The annotator emits RepairPolicy from observed fingerprint quality
+    (test_id present => test_id_required; landmark stable =>
+    within_section uniqueness) and the action's risk
+    (requires_gate => stricter policy).
+    """
+
+    test_id_required: bool = False
+    """When True, the heal candidate MUST carry a test_id. A high-
+    similarity match without one is rejected. Default False (legacy
+    skills); annotator sets True for steps whose original fingerprint
+    had a test_id (the WI-26 contract: don't drift to a less-stable
+    locator)."""
+
+    role_match_required: bool = False
+    """When True, the heal candidate MUST have the same ARIA role as
+    the recorded fingerprint. Default False (back-compat). Annotator
+    sets True for steps whose role was clearly the disambiguator
+    (e.g. role=button on a click step)."""
+
+    landmark_match_required: bool = False
+    """When True, the heal candidate MUST live within the same landmark
+    (dialog / panel / section) as the recorded fingerprint. Default
+    False. Annotator sets True when landmark provenance was strong."""
+
+    uniqueness_scope: Literal[
+        "whole_page",
+        "within_section",
+        "within_row",
+        "within_dialog",
+    ] = "whole_page"
+    """Where the healed candidate must be unique.
+      - whole_page (default, legacy): only one such interactable on
+        the page. Strictest for repeated controls.
+      - within_section: only one inside the same landmark. Lets a
+        page have multiple sections each with their own "Save."
+      - within_row: only one inside the same table row. Strictest
+        for row-scoped actions.
+      - within_dialog: only one inside the active modal."""
+
+    allowed_drift_fields: list[str] = Field(default_factory=list)
+    """Fingerprint field names the annotator declares as expected to
+    drift at replay (operator-curated). The scorer doesn't penalize
+    their mismatch. Typical: ``element_id`` for ID-by-content-hash
+    pages, ``css_path`` for shadow-DOM-heavy portals."""
+
+    required_postcondition: Optional[str] = None
+    """Action-specific assertion kind from StepAssertion that MUST
+    pass post-action for the heal to be persisted. E.g.
+    ``"selection_equals"`` for select_option, ``"url_matches_template"``
+    for click-with-navigation. None means: legacy whole-page-signature
+    check (the WI-27 replacement)."""
+
+    medium_confidence_pauses: bool = True
+    """WI-26: when True (default for destructive actions), a medium-
+    score heal pauses for operator confirmation BEFORE the runner
+    clicks. Pre-WI-26 medium executed silently then refused to
+    persist on post-action drift; the operator never got to see /
+    approve the substitution.
+
+    Set False to preserve the legacy execute-but-don't-persist
+    behavior (typically only for read-only / observational steps)."""
+
+
 class AmbiguityPolicy(BaseModel):
     """WI-22: ambiguity detection configuration per step.
 
@@ -1295,6 +1395,15 @@ class SkillStep(BaseModel):
     set_selection) and ``prompt`` for non-destructive observations.
     Annotator emits this with the recorded ancestor chain as
     locator_scope when available."""
+
+    repair_policy: Optional[RepairPolicy] = None
+    """WI-26: per-step L3 heal acceptance policy. None means the
+    runner uses defaults derived from the action's risk: destructive
+    actions get medium_confidence_pauses=True; non-destructive get
+    legacy execute-but-don't-persist. The annotator emits this from
+    observed fingerprint quality (test_id present => test_id_required)
+    and the action's risk. When set, the runner gates L3 heal
+    acceptance on the declared policy BEFORE the score band check."""
 
     set_selection: Optional[SetSelectionSpec] = None
     """Spec for action='set_selection' steps. Carries the picker
