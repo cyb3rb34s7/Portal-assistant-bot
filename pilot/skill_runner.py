@@ -585,12 +585,61 @@ class SkillRunner:
             click_fn = lambda: locator.dblclick(timeout=4000)  # noqa: E731
         else:
             click_fn = lambda: locator.click(timeout=4000)  # noqa: E731
-        # WI-27: pass step so the verifier can route to declared
-        # assert_after assertions instead of the legacy whole-page
-        # signature.
-        verified = self._execute_with_heal_check(
-            page, level, heal, click_fn, step=step
+
+        # WI-35: when the click declared a popup effect, wrap the click
+        # in expect_page so the new tab/window is captured and bound to
+        # the operator's binding_key. Subsequent steps that declare
+        # page_context can look up the registered popup; without
+        # explicit binding, the runner stays on the original page (the
+        # popup is captured so it doesn't escape Playwright's
+        # awareness, but the main page remains active).
+        popup_eff = (
+            step.effects.popup
+            if step.effects is not None and step.effects.popup is not None
+            else None
         )
+        popup_page = None
+        if popup_eff is not None:
+            try:
+                with self.session.context.expect_page(timeout=4000) as page_info:
+                    verified = self._execute_with_heal_check(
+                        page, level, heal, click_fn, step=step
+                    )
+                popup_page = page_info.value
+                # Register under the declared binding key (fall back to
+                # an auto-named key when none was captured).
+                binding_key = (
+                    popup_eff.page_binding_key
+                    or f"popup_step_{step.index}"
+                )
+                self.session.popup_pages[binding_key] = popup_page
+                self._diagnostic(
+                    "runner.popup_captured",
+                    level="info",
+                    recoverable=True,
+                    binding_key=binding_key,
+                    popup_url=popup_page.url or "",
+                )
+            except Exception as pop_err:
+                # No popup appeared OR the click itself failed during
+                # expect_page. Fall back to a plain click + best-effort
+                # detection.
+                self._diagnostic(
+                    "runner.popup_expect_failed",
+                    level="warn",
+                    recoverable=True,
+                    error=str(pop_err),
+                )
+                verified = self._execute_with_heal_check(
+                    page, level, heal, click_fn, step=step
+                )
+        else:
+            # WI-27: pass step so the verifier can route to declared
+            # assert_after assertions instead of the legacy whole-page
+            # signature.
+            verified = self._execute_with_heal_check(
+                page, level, heal, click_fn, step=step
+            )
         # WI-08: when the recording captured a navigation effect for
         # this click, wait for the URL to settle to the templated value
         # and assert the route. NEVER call page.goto() -- the click is
