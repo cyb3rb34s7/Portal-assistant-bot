@@ -80,3 +80,52 @@ class AuditEvent(BaseModel):
     kind: str  # "task_start" / "task_end" / "gate" / "error" / "info"
     message: str
     data: Optional[dict[str, Any]] = None
+
+
+class Diagnostic(BaseModel):
+    """WI-06: structured diagnostic emitted when a previously-silent
+    failure site (bad payload, screenshot fail, watcher install fail,
+    persistence fail, ambiguity scan crash, set_selection swallow) is
+    converted from ``except: pass`` into a surfaced event.
+
+    The replay event stream (orchestrator) surfaces these at
+    ``level="warn"`` for non-fatal and ``level="error"`` for fatal.
+    The Replay UI's PausedModal / LogPane renders them.
+
+    Each diagnostic carries:
+      - ``code``: short stable identifier (snake_case). Used by tests +
+        UI to route to the right rendering. Examples:
+        ``teach.bad_payload_json``, ``teach.invalid_fingerprint``,
+        ``teach.screenshot_failed``, ``teach.snapshot_drop``,
+        ``runner.watcher_install_failed``,
+        ``runner.set_selection_search_failed``,
+        ``runner.ambiguity_scan_failed``,
+        ``executor.hint_persist_failed``,
+        ``executor.alternate_persist_failed``.
+      - ``context``: structured details. Whatever the call site can
+        capture without leaking secrets.
+      - ``recoverable``: True if the calling code is continuing (the
+        operator can ignore); False if the calling code is also
+        bubbling up a failure. Drives the UI's severity badge.
+    """
+
+    code: str
+    """Stable snake_case identifier for the diagnostic site. UI routes
+    on this; tests assert on it."""
+    context: dict[str, Any] = Field(default_factory=dict)
+    """Structured details: file paths, exception class + message,
+    relevant identifiers (step_index, session_id, payload size).
+    Should not contain secrets / passwords."""
+    recoverable: bool = True
+    """True: the calling code continued past the failure; the user
+    can ignore. False: the calling code also surfaced a hard failure;
+    this diagnostic explains WHY for the audit trail.
+
+    Defaults to True because the predominant audit pattern is
+    'we swallowed this exception and continued' -- WI-06 surfaces it
+    rather than changing the recoverability."""
+    level: Literal["warn", "error", "debug"] = "warn"
+    """warn = non-fatal, surfaces in the log pane.
+    error = fatal, also routed through StepFailed event when applicable.
+    debug = noisy, off by default in the UI."""
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

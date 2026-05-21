@@ -42,7 +42,7 @@ from rich.table import Table
 
 from .audit import AuditLogger
 from .browser import BrowserSession, connect_to_chrome
-from .models import ToolResult
+from .models import Diagnostic, ToolResult
 from .param_codecs import ParamValidationError, resolve_param
 from .skill_models import (
     ElementFingerprint,
@@ -158,6 +158,63 @@ class SkillRunner:
         # instead of falling through to generic L4 takeover. Cleared on
         # every step entry.
         self._pending_ambiguity: list[dict[str, Any]] | None = None
+
+        # WI-06: structured-diagnostic accumulator. Each call to
+        # ``_diagnostic`` appends a Diagnostic to this list AND logs via
+        # the existing audit pipeline so the JSONL record is searchable
+        # later. The orchestrator (or a host inspecting a runner-only
+        # session) can read self.diagnostics to surface them through
+        # the replay event stream.
+        self.diagnostics: list[Diagnostic] = []
+
+    # ---- WI-06: diagnostics --------------------------------------------
+
+    def _diagnostic(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        step_index: Optional[int] = None,
+        **context,
+    ) -> None:
+        """Record a structured diagnostic for a previously-silent
+        failure site. Each call:
+          1. Appends a Diagnostic to self.diagnostics (in-memory list
+             so the host can surface them after run() returns).
+          2. Writes to the audit log so the JSONL artifact carries the
+             same record (same shape as other audit entries plus a
+             ``diagnostic_code`` field).
+
+        Choose ``code`` from the WI-06 stable set: ``runner.*`` for
+        skill_runner failures, ``executor.*`` for executor_real
+        failures, ``teach.*`` for teach failures. Tests assert on
+        these codes."""
+        if step_index is None:
+            diag = getattr(self, "_diag", None)
+            if isinstance(diag, dict):
+                step_index = diag.get("step_index")
+        d = Diagnostic(
+            code=code,
+            context=context,
+            recoverable=recoverable,
+            level=level,  # type: ignore[arg-type]
+        )
+        self.diagnostics.append(d)
+        try:
+            self.audit.log(
+                level if level in ("warn", "error", "debug") else "warn",
+                f"diagnostic[{code}]: {context}",
+                data={
+                    "diagnostic_code": code,
+                    "diagnostic_context": context,
+                    "recoverable": recoverable,
+                    "step_index": step_index,
+                },
+            )
+        except Exception:
+            # Never let the audit emit itself crash the runner.
+            pass
 
     # ---- Public --------------------------------------------------------
 
@@ -707,7 +764,22 @@ class SkillRunner:
                     " return out; }",
                     [spec.current_items_selector, attr, prefix],
                 )
-            except Exception:
+            except Exception as e:
+                # WI-06: was silent. Failed current-selection read used
+                # to make set_selection believe the picker was empty,
+                # so it added everything (mode=replace) regardless of
+                # what was actually selected. Surface so the operator
+                # sees the structural read failed.
+                self._diagnostic(
+                    "runner.set_selection_current_read_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                    selector=spec.current_items_selector,
+                    attr=attr,
+                    prefix=prefix,
+                )
                 current_ids = []
 
         current_set = set(current_ids)
@@ -765,8 +837,19 @@ class SkillRunner:
                         search_loc.fill(item)
                         # Wait for the filter to apply; the list re-renders.
                         page.wait_for_timeout(150)
-                except Exception:
-                    pass  # search is a convenience; the checkbox locator below is what matters
+                except Exception as e:
+                    # WI-06: search is a convenience; we still proceed
+                    # to the checkbox locator. But surface the failure
+                    # so the operator can see when the picker's search
+                    # field stopped matching.
+                    self._diagnostic(
+                        "runner.set_selection_search_failed",
+                        level="warn",
+                        recoverable=True,
+                        exc_type=type(e).__name__,
+                        exc_msg=str(e)[:200],
+                        item=item,
+                    )
             if spec.checkbox_template_fp is None:
                 return (
                     ToolResult(
@@ -817,9 +900,20 @@ class SkillRunner:
                 )
                 if loc is not None:
                     loc.click(timeout=3000)
-            except Exception:
-                # Removal failures are softer -- if we can't find a chip
-                # to remove it may already be gone.
+            except Exception as e:
+                # WI-06: Removal failures are softer -- if we can't
+                # find a chip to remove it may already be gone. But
+                # surface the diagnostic so the operator notices when
+                # this is repeatedly failing instead of believing the
+                # set-selection succeeded.
+                self._diagnostic(
+                    "runner.set_selection_remove_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                    item=item,
+                )
                 continue
 
         # Commit (close picker) if recorded.
@@ -828,8 +922,18 @@ class SkillRunner:
                 loc = self._locate_via_template(spec.commit_fp, {})
                 if loc:
                     loc.click(timeout=3000)
-            except Exception:
-                pass
+            except Exception as e:
+                # WI-06: commit-click failure used to disappear silently
+                # -- a picker that didn't close left the next step's
+                # locator inside the popover. Surface so the operator
+                # sees the structural commit failed.
+                self._diagnostic(
+                    "runner.set_selection_commit_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                )
 
         return (
             ToolResult(
@@ -1120,8 +1224,22 @@ class SkillRunner:
                     visible = self._collect_candidate_summaries(loc, count)
                     if len(visible) > 1:
                         candidates_per_attr.append(visible)
-            except Exception:
-                pass
+            except Exception as e:
+                # WI-06: silent exception in ambiguity detection used to
+                # let .first win on a clearly ambiguous locator. Surface
+                # the failure -- the runner then falls through to L1/L2
+                # which would do the same .first, but at least the
+                # operator knows the safety net misfired.
+                self._diagnostic(
+                    "runner.ambiguity_scan_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                    step_index=step.index,
+                    attr="test_id",
+                    test_id=fp.test_id,
+                )
 
         # Templated id (less common but possible).
         if fp.element_id and "element_id" in fp.templates:
@@ -1132,8 +1250,17 @@ class SkillRunner:
                     visible = self._collect_candidate_summaries(loc, count)
                     if len(visible) > 1:
                         candidates_per_attr.append(visible)
-            except Exception:
-                pass
+            except Exception as e:
+                self._diagnostic(
+                    "runner.ambiguity_scan_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                    step_index=step.index,
+                    attr="element_id",
+                    element_id=fp.element_id,
+                )
 
         if not candidates_per_attr:
             return None
@@ -1565,8 +1692,21 @@ class SkillRunner:
             page.evaluate(self._WATCHER_INSTALL_JS)
             if self._idempotency_enabled():
                 page.evaluate(self._IDEMPOTENCY_INSTALL_JS)
-        except Exception:
-            pass
+        except Exception as e:
+            # WI-06: was a silent ``pass``. Watcher-install failure
+            # silently leaves ``__cp_inflight`` undefined, which makes
+            # the in-flight wait predicate return true unconditionally
+            # (page LOOKS idle). Surface so the operator sees the
+            # missing instrumentation; the runner continues with the
+            # cheaper spinner-only wait.
+            self._diagnostic(
+                "runner.watcher_install_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                idempotency=self._idempotency_enabled(),
+            )
 
     def _idempotency_enabled(self) -> bool:
         cfg = getattr(self, "idempotency_capability", None)
@@ -2376,7 +2516,20 @@ class SkillRunner:
     def _screenshot(self, label: str) -> Optional[str]:
         try:
             return self.audit.screenshot(self.session.page, label) or None
-        except Exception:
+        except Exception as e:
+            # WI-06: screenshot capture used to fail silently. The
+            # operator then saw a step-failed event with no
+            # screenshot_path and no clue why. Surface so the
+            # screenshot subsystem can be debugged separately from the
+            # step's actual outcome.
+            self._diagnostic(
+                "runner.screenshot_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                label=label,
+            )
             return None
 
     def _summary(self) -> None:

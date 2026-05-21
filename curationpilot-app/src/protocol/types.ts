@@ -22,6 +22,7 @@ export type AgentEventType =
   | "task.completed"
   | "task.failed"
   | "task.cancelled"
+  | "diagnostic"
   | "teach.event_count"; // server-side custom event for teach pump
 
 export interface AgentEventBase {
@@ -152,6 +153,20 @@ export interface TeachEventCountEvent extends AgentEventBase {
   count: number;
 }
 
+// WI-06: structured diagnostic for previously-silent failure sites.
+// Emitted by teach.py / skill_runner.py / executor_real.py whenever an
+// `except: pass` site is converted into a surfaced event. UI's
+// PausedModal/LogPane renders these so operators can see what failed
+// at recording / runner / persistence time.
+export interface DiagnosticEvent extends AgentEventBase {
+  type: "diagnostic";
+  code: string;
+  level: "warn" | "error" | "debug";
+  recoverable: boolean;
+  context: Record<string, unknown>;
+  step_index?: number | null;
+}
+
 export type AgentEvent =
   | AgentReadyEvent
   | AgentLogEvent
@@ -165,6 +180,7 @@ export type AgentEvent =
   | PausedEvent
   | ReportReadyEvent
   | TeachEventCountEvent
+  | DiagnosticEvent
   | AgentEventBase;
 
 // ---- /api/portal -------------------------------------------------------

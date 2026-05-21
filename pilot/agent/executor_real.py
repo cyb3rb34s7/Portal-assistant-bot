@@ -47,6 +47,7 @@ from pilot.browser import (
     DEFAULT_CDP_ENDPOINT,
     connect_to_chrome,
 )
+from pilot.models import Diagnostic
 from pilot.skill_models import Skill
 from pilot.skill_runner import SkillRunner
 
@@ -119,6 +120,40 @@ class RealExecutor(StepExecutor):
             max_workers=1, thread_name_prefix="real-executor"
         )
         self._session: BrowserSession | None = None
+        # WI-06: structured-diagnostic accumulator. Previously-silent
+        # persistence failures (hint sidecar write, alternate JSON
+        # write-back) push entries here so the orchestrator can drain
+        # them through the event stream after each execute().
+        self.diagnostics: list[Diagnostic] = []
+
+    def _record_diagnostic(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        **context: Any,
+    ) -> None:
+        """WI-06: record a structured diagnostic for a previously-silent
+        executor failure site. The list is drained by the caller (the
+        orchestrator) via ``drain_diagnostics`` after each execute().
+        """
+        self.diagnostics.append(
+            Diagnostic(
+                code=code,
+                context=context,
+                recoverable=recoverable,
+                level=level,  # type: ignore[arg-type]
+            )
+        )
+
+    def drain_diagnostics(self) -> list[Diagnostic]:
+        """Return + clear the accumulated diagnostics. Called by the
+        orchestrator after each step so they can be emitted onto the
+        event stream."""
+        out = list(self.diagnostics)
+        self.diagnostics.clear()
+        return out
 
     # ---- Public API ----------------------------------------------------
 
@@ -420,6 +455,7 @@ class RealExecutor(StepExecutor):
                 ),
             )
 
+        runner: SkillRunner | None = None
         try:
             runner = SkillRunner(
                 session=session,
@@ -441,7 +477,18 @@ class RealExecutor(StepExecutor):
                     runner.disambiguation_hints = self._load_hints_sidecar(
                         skill_path
                     )
-                except Exception:
+                except Exception as e:
+                    # WI-06: hint sidecar load failure used to silently
+                    # leave disambiguation off. Diagnostic surfaces so
+                    # the learning loop's no-op state is visible.
+                    self._record_diagnostic(
+                        "executor.hint_sidecar_runtime_load_failed",
+                        level="warn",
+                        recoverable=True,
+                        exc_type=type(e).__name__,
+                        exc_msg=str(e)[:200],
+                        skill_path=str(skill_path),
+                    )
                     runner.disambiguation_hints = {}
             runner.portal_network_ignore = list(
                 self.config.portal_network_ignore or []
@@ -449,8 +496,21 @@ class RealExecutor(StepExecutor):
             runner.network_quiet_ms = int(self.config.network_quiet_ms)
             runner.idempotency_capability = self.config.idempotency_capability
             results = runner.run()
+            # WI-06: forward runner diagnostics (watcher_install,
+            # set_selection swallows, ambiguity_scan, screenshot
+            # failures) onto the executor's own queue so the
+            # orchestrator can surface them through DiagnosticEvent.
+            for d in getattr(runner, "diagnostics", []) or []:
+                self.diagnostics.append(d)
         except Exception as e:  # noqa: BLE001
             # Drop the session on a crash; the next step will re-attach.
+            # WI-06: forward any diagnostics the runner collected before
+            # crashing, so the operator can see what failed.
+            try:
+                for d in getattr(runner, "diagnostics", []) or []:
+                    self.diagnostics.append(d)
+            except Exception:
+                pass
             self._close_session_in_worker()
             return StepResult(
                 succeeded=False,
@@ -544,7 +604,19 @@ class RealExecutor(StepExecutor):
             return {}
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            # WI-06: malformed sidecar used to silently return empty;
+            # now record the diagnostic so the operator sees the
+            # hints aren't being applied because the file is broken
+            # (vs because no hints have been learned yet).
+            self._record_diagnostic(
+                "executor.hint_sidecar_parse_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                sidecar_path=str(p),
+            )
             return {}
         out: dict[int, dict[str, Any]] = {}
         for k, v in (data or {}).items():
@@ -568,10 +640,24 @@ class RealExecutor(StepExecutor):
         """
         skill_path = self._locate_skill_file(skill_id)
         if skill_path is None:
+            self._record_diagnostic(
+                "executor.hint_persist_skill_not_found",
+                level="warn",
+                recoverable=True,
+                skill_id=skill_id,
+            )
             return False
         try:
             existing = self._load_hints_sidecar(skill_path)
-        except Exception:
+        except Exception as e:
+            self._record_diagnostic(
+                "executor.hint_persist_load_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_id=skill_id,
+            )
             existing = {}
         existing[sub_step_index] = hint
         sidecar = self._hints_sidecar_path(skill_path)
@@ -585,7 +671,22 @@ class RealExecutor(StepExecutor):
                 encoding="utf-8",
             )
             return True
-        except Exception:
+        except Exception as e:
+            # WI-06: hint persistence used to silently return False --
+            # the next ambiguity pause would happen again with no hint
+            # to auto-resolve, and the operator had no visibility into
+            # why the "learning loop" wasn't learning. Surface so
+            # missing-permissions or disk-full failures are visible.
+            self._record_diagnostic(
+                "executor.hint_persist_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_id=skill_id,
+                sidecar_path=str(sidecar),
+                sub_step_index=sub_step_index,
+            )
             return False
 
     # ---- Skill JSON write-back -----------------------------------------
@@ -602,10 +703,28 @@ class RealExecutor(StepExecutor):
         """
         try:
             data = json.loads(skill_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            # WI-06: skill JSON parse failure used to return 0 silently
+            # -- a corrupted skill file would keep healing forever
+            # without persisting, with no operator-visible signal.
+            self._record_diagnostic(
+                "executor.alternate_persist_load_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_path=str(skill_path),
+            )
             return 0
         steps = data.get("steps")
         if not isinstance(steps, list):
+            self._record_diagnostic(
+                "executor.alternate_persist_bad_shape",
+                level="warn",
+                recoverable=True,
+                skill_path=str(skill_path),
+                steps_type=type(steps).__name__,
+            )
             return 0
 
         appended = 0
@@ -642,6 +761,15 @@ class RealExecutor(StepExecutor):
                 json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
+        except Exception as e:
+            self._record_diagnostic(
+                "executor.alternate_persist_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_path=str(skill_path),
+                count=appended,
+            )
             return 0
         return appended

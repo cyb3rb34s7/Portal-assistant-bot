@@ -47,6 +47,7 @@ from pilot.agent.schemas.protocol import (
     ClarifyAnswer as ClarifyAnswerCmd,
     ClarifyAsk,
     ClarifyOption,
+    DiagnosticEvent,
     HostCommand,
     IntakeExtracted,
     PauseResolve,
@@ -253,6 +254,70 @@ class Orchestrator:
 
     async def _log(self, message: str, *, level: str = "info", **ctx: Any) -> None:
         await self._emit(AgentLog(level=level, message=message, context=ctx))  # type: ignore[arg-type]
+
+    async def _drain_executor_diagnostics(self, step_index: int | None = None) -> None:
+        """WI-06: surface structured diagnostics the executor /
+        skill_runner collected during the most recent execute(). Each
+        Diagnostic becomes one DiagnosticEvent on the stream so the
+        Replay UI can render them.
+
+        We probe the executor's drain method via getattr so a
+        FakeExecutor that doesn't implement diagnostics is silently
+        skipped -- consistent with the protocol §8 'log-and-ignore'
+        rule."""
+        drain = getattr(self.executor, "drain_diagnostics", None)
+        if not callable(drain):
+            return
+        try:
+            entries = drain()
+        except Exception as e:
+            await self._log(
+                f"diagnostic drain failed: {type(e).__name__}: {e}",
+                level="warn",
+                source="orchestrator",
+            )
+            return
+        for d in entries or []:
+            try:
+                await self._emit_diagnostic(
+                    d.code,
+                    level=getattr(d, "level", "warn") or "warn",
+                    recoverable=getattr(d, "recoverable", True),
+                    step_index=step_index,
+                    **(d.context or {}),
+                )
+            except Exception:
+                # Surfacing a diagnostic shouldn't itself crash the run.
+                continue
+
+    async def _emit_diagnostic(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        step_index: int | None = None,
+        **context: Any,
+    ) -> None:
+        """WI-06: emit a structured diagnostic for previously-silent
+        failure sites (bad payload, screenshot fail, persistence fail).
+
+        Drains a runner-side or executor-side diagnostic queue and
+        publishes each entry through the event stream so the Replay UI
+        surfaces it. ``recoverable=True`` (default) signals the calling
+        code continued; ``recoverable=False`` means the failure also
+        bubbled up as a hard error -- the diagnostic explains WHY for
+        the audit trail."""
+        await self._emit(
+            DiagnosticEvent(  # type: ignore[call-arg]
+                task_id=self.task_id,  # type: ignore[arg-type]
+                code=code,
+                level=level,  # type: ignore[arg-type]
+                recoverable=recoverable,
+                context=context,
+                step_index=step_index,
+            )
+        )
 
     async def _audit_external_llm(
         self, stage: str, model: str | None = None
@@ -705,6 +770,16 @@ class Orchestrator:
 
                 emit_progress = _make_progress_emitter(step.idx)
                 result = await self.executor.execute(step, skill, emit_progress)
+                # WI-06: drain any structured diagnostics the executor /
+                # runner recorded during this step (previously-silent
+                # failure sites: hint persistence, alternate persistence,
+                # watcher install, set_selection swallows, screenshot
+                # failures). Each becomes a DiagnosticEvent on the
+                # stream so the UI's PausedModal / LogPane can render
+                # them. recoverable=True ones surface as warn; the
+                # error-level ones are also surfaced as warn here (the
+                # step-level event already carries success/fail).
+                await self._drain_executor_diagnostics(step.idx)
 
                 # Emit one StepHealed per heal that happened during this
                 # plan step, BEFORE succeeded/failed so the UI can show
@@ -891,6 +966,10 @@ class Orchestrator:
         retry = await self.executor.execute(
             step, skill, emit_progress, sub_step_overrides=overrides
         )
+        # WI-06: drain diagnostics from the retry attempt too. Hint
+        # persistence happens on retry success below; if THAT
+        # persistence silently fails, we now see it on the stream.
+        await self._drain_executor_diagnostics(step.idx)
         status = "succeeded" if retry.succeeded else "failed"
         await self._record_step(step, status=status, duration_ms=retry.duration_ms)
         if retry.succeeded:

@@ -28,6 +28,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .browser import BrowserSession, connect_to_chrome
+from .models import Diagnostic
 from .skill_models import ElementFingerprint, TraceEvent
 
 
@@ -72,6 +73,57 @@ class TeachRecorder:
 
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.shots_dir.mkdir(parents=True, exist_ok=True)
+
+        # WI-06: structured diagnostics path. Previously-silent failure
+        # sites in teach (bad payload JSON, invalid fingerprint, page
+        # snapshot drop, screenshot failure) write one JSON line per
+        # diagnostic here, so the operator + replay UI can surface them.
+        self.diagnostics_path = self.session_dir / "diagnostics.jsonl"
+        self._diagnostics: list[Diagnostic] = []
+
+    # ---- Diagnostics ---------------------------------------------------
+
+    def _diag(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        **context,
+    ) -> None:
+        """WI-06: emit a structured diagnostic for a previously-silent
+        teach failure site. Persists to diagnostics.jsonl AND prints a
+        one-line summary to the operator console so an active recording
+        session surfaces the failure live.
+
+        Failure-of-the-diagnostic-itself is intentionally swallowed --
+        we don't want our own diagnostic write to crash a teach
+        session. The persisted file is the durable artifact; the
+        console line is the live feedback."""
+        d = Diagnostic(
+            code=code,
+            context=context,
+            recoverable=recoverable,
+            level=level,  # type: ignore[arg-type]
+        )
+        self._diagnostics.append(d)
+        try:
+            with self.diagnostics_path.open("a", encoding="utf-8") as f:
+                f.write(d.model_dump_json() + "\n")
+        except Exception:
+            # Writing diagnostics shouldn't itself fail teach. The
+            # in-memory list is still available via _finalize.
+            pass
+        try:
+            badge = (
+                "[red]ERROR[/red]" if level == "error"
+                else "[yellow]WARN[/yellow]"
+            )
+            self.console.print(
+                f"  {badge} {code}: {context}"
+            )
+        except Exception:
+            pass
 
     # ---- Setup ---------------------------------------------------------
 
@@ -188,7 +240,18 @@ class TeachRecorder:
     def _process_payload(self, payload_json: str) -> None:
         try:
             raw = json.loads(payload_json)
-        except Exception:
+        except Exception as e:
+            # WI-06: previously dropped silently. Emit a structured
+            # diagnostic so the operator + replay UI see "the grabber
+            # sent us malformed JSON" instead of "nothing happened."
+            self._diag(
+                "teach.bad_payload_json",
+                level="warn",
+                exc_type=type(e).__name__,
+                exc_msg=str(e),
+                payload_preview=payload_json[:200],
+                payload_len=len(payload_json),
+            )
             return
 
         # page_snapshot events feed the passive catalog (one of the
@@ -200,10 +263,24 @@ class TeachRecorder:
             return
 
         fp_raw = raw.get("fingerprint")
-        try:
-            fp = ElementFingerprint.model_validate(fp_raw) if fp_raw else None
-        except Exception:
-            fp = None
+        fp: Optional[ElementFingerprint] = None
+        if fp_raw:
+            try:
+                fp = ElementFingerprint.model_validate(fp_raw)
+            except Exception as e:
+                # WI-06: pydantic validation failure used to downgrade
+                # the entire trace event to fp=None silently. Surface
+                # the validation error so we can spot regressions in
+                # the grabber's payload shape.
+                self._diag(
+                    "teach.invalid_fingerprint",
+                    level="warn",
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:300],
+                    fp_keys=list(fp_raw.keys()) if isinstance(fp_raw, dict) else None,
+                    event_kind=raw.get("kind"),
+                )
+                fp = None
 
         ev = TraceEvent(
             ts=datetime.utcnow(),
@@ -264,6 +341,17 @@ class TeachRecorder:
         wouldn't have a target file to land in.
         """
         if not self.portal_id:
+            # WI-06: surface the drop. The reason is structural (no
+            # portal id wired) but used to be invisible; now an
+            # operator running teach without `portal_id` set sees a
+            # one-line debug diagnostic per snapshot and can wire it
+            # up if catalog observations are desired.
+            self._diag(
+                "teach.snapshot_drop_no_portal_id",
+                level="debug",
+                page_url=raw.get("page_url", ""),
+                recoverable=True,
+            )
             return
         try:
             from pilot.agent.catalog import (
@@ -271,7 +359,13 @@ class TeachRecorder:
                 merge_snapshot,
                 save_catalog,
             )
-        except Exception:
+        except Exception as e:
+            self._diag(
+                "teach.catalog_import_failed",
+                level="warn",
+                exc_type=type(e).__name__,
+                exc_msg=str(e),
+            )
             return
         if self._catalog is None:
             self._catalog = load_catalog(
@@ -282,8 +376,14 @@ class TeachRecorder:
         try:
             merge_snapshot(self._catalog, raw)
             self._catalog_dirty = True
-        except Exception:
-            pass
+        except Exception as e:
+            self._diag(
+                "teach.snapshot_merge_failed",
+                level="warn",
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                portal_id=self.portal_id,
+            )
 
     def _flush_catalog(self) -> None:
         """Save the in-memory catalog to disk if it was modified.
@@ -296,8 +396,14 @@ class TeachRecorder:
 
             save_catalog(self._catalog, self.portals_dir)
             self._catalog_dirty = False
-        except Exception:
-            pass
+        except Exception as e:
+            self._diag(
+                "teach.catalog_flush_failed",
+                level="warn",
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                portal_id=self.portal_id,
+            )
 
     def _screenshot(self, label: str) -> Optional[str]:
         try:
@@ -305,7 +411,14 @@ class TeachRecorder:
             path = self.shots_dir / f"{ts}_{label}.png"
             self.session.page.screenshot(path=str(path), full_page=False)
             return str(path)
-        except Exception:
+        except Exception as e:
+            self._diag(
+                "teach.screenshot_failed",
+                level="warn",
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                label=label,
+            )
             return None
 
     def _render_live(self, ev: TraceEvent) -> None:

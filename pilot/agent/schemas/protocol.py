@@ -290,6 +290,36 @@ class TaskCancelled(_Envelope):
     task_id: str
 
 
+class DiagnosticEvent(_Envelope):
+    """WI-06: structured diagnostic emitted when a previously-silent
+    failure site reports through the event stream.
+
+    Replaces ``except: pass`` / ``return None`` in teach.py,
+    skill_runner.py, and executor_real.py. The Replay UI's PausedModal /
+    LogPane renders these so operators can see what failed at recording
+    time, runner time, or persistence time -- a class of failure that
+    used to be invisible.
+    """
+
+    type: Literal["diagnostic"] = "diagnostic"
+    task_id: str | None = None
+    code: str
+    """Stable snake_case identifier (e.g. ``teach.bad_payload_json``,
+    ``runner.watcher_install_failed``,
+    ``executor.alternate_persist_failed``). UI routes on this."""
+    level: Literal["warn", "error", "debug"] = "warn"
+    """warn = non-fatal continued; error = fatal also surfaced via
+    StepFailed; debug = noisy / off by default."""
+    recoverable: bool = True
+    """True: the calling code continued past the failure; False: the
+    calling code raised."""
+    context: dict[str, Any] = Field(default_factory=dict)
+    """Structured details: file paths, exception classes, identifiers."""
+    step_index: int | None = None
+    """Optional step index when the diagnostic occurred during step
+    execution. UI groups diagnostics by step."""
+
+
 AgentEvent = Union[
     AgentReady,
     AgentHeartbeat,
@@ -307,6 +337,7 @@ AgentEvent = Union[
     TaskCompleted,
     TaskFailed,
     TaskCancelled,
+    DiagnosticEvent,
 ]
 
 
