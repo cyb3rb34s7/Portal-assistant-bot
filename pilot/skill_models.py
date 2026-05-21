@@ -1746,6 +1746,85 @@ class FileSpec(BaseModel):
     only -- replay still supplies its own paths."""
 
 
+class ShortcutSpec(BaseModel):
+    """WI-41: spec for a global keyboard shortcut (Ctrl+S, Cmd+K,
+    Escape, etc.).
+
+    Distinguished from a text-input ``key`` event: a shortcut is a
+    chord (modifiers + key) fired OUTSIDE a text input, OR is one of
+    the universal shortcuts (Escape, Tab) that's meaningful even
+    inside an input. The grabber emits ``kind='key'`` with
+    raw_event_kind='shortcut' to mark these; the annotator collapses
+    them into a single ``shortcut`` step.
+
+    At replay the runner:
+      1. Optionally focuses a specific element when scope=focused_element.
+      2. Issues page.keyboard.press(combo) -- single call; Playwright
+         dispatches the right keydown/keyup pairs.
+      3. Waits for expected_effect (URL change / DOM appears / network)
+         when declared. Without an expected_effect the runner returns
+         immediately after the press.
+
+    Acceptance check (from the WI brief):
+      Ctrl+S as a save shortcut records once + replays without typing
+      into the focused field.
+    """
+
+    modifiers: list[Literal["Control", "Meta", "Shift", "Alt"]] = Field(
+        default_factory=list
+    )
+    """The chord's modifier keys, normalized to Playwright key names
+    (Control / Meta / Shift / Alt). Order doesn't matter; the runner
+    joins them with '+' in the press call. Empty list = bare key
+    (e.g. Escape, Tab)."""
+
+    key: str
+    """The non-modifier key in Playwright's keyboard-event-key form.
+    e.g. 's' (Ctrl+S), 'k' (Cmd+K), 'Escape', 'Tab', '/' (search
+    shortcut). NOT the KeyboardEvent.code -- Playwright maps the
+    'key' form to the right physical key on the active layout."""
+
+    scope: Literal["global", "focused_element", "command_palette"] = "global"
+    """Where the shortcut applies.
+      - ``global``: fired against document.activeElement at replay --
+        Playwright's page.keyboard.press without an element focus.
+      - ``focused_element``: shortcut requires a specific element to
+        be focused first (e.g. Ctrl+Enter inside a comment box).
+        ``focus_target_fp`` carries the element to focus before
+        pressing.
+      - ``command_palette``: invokes a command palette overlay
+        (Ctrl+K / Cmd+P). Same dispatch as ``global``; the scope is
+        a hint for documentation / future palette-aware verification.
+    """
+
+    focus_target_fp: Optional[ElementFingerprint] = None
+    """For scope=focused_element: the element to focus before pressing.
+    None for ``global`` / ``command_palette``."""
+
+    expected_effect: Optional[Literal[
+        "navigation", "modal_open", "save_completes",
+        "command_palette_open", "form_submit", "noop",
+    ]] = None
+    """Declarative hint about what the shortcut SHOULD do. Drives the
+    runner's post-press wait:
+      - ``navigation``: wait for URL change.
+      - ``modal_open``: wait for a role=dialog to appear.
+      - ``save_completes``: wait for the step's expected_signals
+        (declared separately on the step) -- the shortcut step still
+        carries its own expected_signals; this enum just documents
+        intent.
+      - ``command_palette_open``: wait for a known palette selector
+        (declared via command_palette_selector when set).
+      - ``form_submit``: like save_completes; expects a POST/PATCH.
+      - ``noop``: documentation-only; no wait.
+    """
+
+    command_palette_selector: Optional[str] = None
+    """For expected_effect=command_palette_open: CSS selector for the
+    palette container expected to appear. None falls back to the
+    step's expected_signals."""
+
+
 class RichTextSpec(BaseModel):
     """WI-39: spec for setting a contenteditable / rich-text editor's
     content as ONE semantic step.
@@ -2116,6 +2195,12 @@ class SkillStep(BaseModel):
     """WI-28: spec for action='slider_set' steps. Carries the value
     param, the min/max/step constraints, orientation, and the event
     dispatch mode. None for non-slider actions."""
+
+    shortcut: Optional["ShortcutSpec"] = None
+    """WI-41: spec for action='shortcut' steps. Carries the modifiers
+    + key + scope + expected_effect. The runner calls
+    page.keyboard.press(combo) and waits for the declared effect.
+    None for non-shortcut actions."""
 
     rich_text: Optional["RichTextSpec"] = None
     """WI-39: spec for action='rich_text_set' steps. Carries the value
@@ -2944,6 +3029,16 @@ class TraceEvent(BaseModel):
     by the scroll detector to confirm the scroll caused new rows to
     render (positive delta) rather than just shifting the viewport
     within already-rendered content (zero delta)."""
+
+    # WI-41: keyboard shortcut payload. Populated on kind='key' events
+    # whose raw_event_kind='shortcut' (the grabber sets this for
+    # modifier+key chords and standalone F-keys / '/' / '?'). The list
+    # is the chord's modifiers in Playwright key-name form (Control /
+    # Meta / Shift / Alt) for the annotator to feed straight into
+    # ShortcutSpec.modifiers. ``value`` carries the non-modifier key.
+    shortcut_modifiers: Optional[list[Literal[
+        "Control", "Meta", "Shift", "Alt",
+    ]]] = None
 
     # WI-40: hover payload. Populated on kind='hover' events emitted
     # by the grabber's pointerenter listener when a hover revealed a

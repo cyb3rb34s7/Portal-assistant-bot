@@ -569,6 +569,8 @@ class SkillRunner:
                 result, level = self._do_scroll_until(step)
             elif step.action == "rich_text_set":
                 result, level = self._do_rich_text_set(step)
+            elif step.action == "shortcut":
+                result, level = self._do_shortcut(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2906,6 +2908,131 @@ class SkillRunner:
             action_taken=f"rich_text_set({spec.value_param}, format={spec.format})",
             screenshot_path=shot,
             unverified_error="rich_text_set: post-action verify failed",
+        )
+
+    def _do_shortcut(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-41: dispatch a global keyboard shortcut.
+
+        Builds the Playwright key combo (``Control+S`` etc.) from
+        spec.modifiers + spec.key, optionally focuses
+        spec.focus_target_fp when scope=focused_element, then issues
+        ``page.keyboard.press(combo)``. Subsequent expected_signals
+        on the step (declared by the operator) drive the post-press
+        wait via the existing ``_wait_for_page_settle`` path; the
+        spec's expected_effect is documentation-only today.
+
+        Failure modes:
+          - bad_step: no spec on the step
+          - focus_target_unresolved: scope=focused_element and the
+            target couldn't be focused via L1/L2
+          - shortcut_dispatch_failed: page.keyboard.press raised
+        """
+        spec = step.shortcut
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="shortcut",
+                    error="shortcut step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+        page = self.session.page
+
+        if spec.scope == "focused_element" and spec.focus_target_fp is not None:
+            # Resolve via L1/L2 (no L3 -- if the focus target isn't on
+            # stable attrs, surface that as a structural failure).
+            target_loc = self._level1(page, spec.focus_target_fp)
+            if target_loc is None:
+                target_loc = self._level2(page, spec.focus_target_fp)
+            if target_loc is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="shortcut focus target",
+                        error="focus target not resolvable at L1/L2",
+                        error_kind="focus_target_unresolved",
+                    ),
+                    0,
+                )
+            try:
+                target_loc.focus(timeout=3000)
+            except Exception as e:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="shortcut focus",
+                        error=f"focus failed: {e}",
+                        error_kind="focus_target_unresolved",
+                    ),
+                    0,
+                )
+
+        # Build the combo string. Playwright expects modifiers joined
+        # with '+' (Control+S, Meta+K, Control+Shift+P). Order doesn't
+        # matter to Playwright but we sort for stability in logs.
+        mods = list(spec.modifiers or [])
+        # Sort modifiers in a stable order so the audit log is
+        # deterministic (Control, Meta, Alt, Shift -- matches MDN's
+        # convention).
+        order = {"Control": 0, "Meta": 1, "Alt": 2, "Shift": 3}
+        mods.sort(key=lambda m: order.get(m, 9))
+        parts = list(mods) + [spec.key]
+        combo = "+".join(parts)
+
+        try:
+            page.keyboard.press(combo, timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"shortcut {combo}",
+                    error=f"keyboard.press({combo!r}) failed: {e}",
+                    error_kind="shortcut_dispatch_failed",
+                ),
+                0,
+            )
+
+        # WI-41: command-palette specific wait when declared. The
+        # step's expected_signals (run after each step by the outer
+        # loop) handles the generic wait; this is a targeted
+        # selector wait for the palette case.
+        if (
+            spec.expected_effect == "command_palette_open"
+            and spec.command_palette_selector
+        ):
+            try:
+                page.wait_for_selector(
+                    spec.command_palette_selector,
+                    state="visible",
+                    timeout=3000,
+                )
+            except Exception as e:
+                shot = self._screenshot(
+                    f"step_{step.index}_palette_not_open"
+                )
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"shortcut {combo}",
+                        error=(
+                            f"command palette {spec.command_palette_selector!r} "
+                            f"did not appear: {e}"
+                        ),
+                        error_kind="shortcut_expected_effect_unmet",
+                        screenshot_path=shot,
+                    ),
+                    1,
+                )
+        shot = self._screenshot(f"step_{step.index}_shortcut")
+        return (
+            ToolResult(
+                success=True,
+                action_taken=f"shortcut {combo}",
+                screenshot_path=shot,
+            ),
+            1,
         )
 
     def _do_drag_drop(self, step: SkillStep) -> tuple[ToolResult, int]:

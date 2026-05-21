@@ -2625,16 +2625,74 @@
     });
   })();
 
-  // Enter / Escape on focused input. WI-02: a key is a USER ACTION,
-  // opens a fresh interaction window so consequences (form submit,
-  // navigation, fetch) attribute back.
+  // Enter / Escape on focused input + WI-41 global shortcuts. WI-02:
+  // a key is a USER ACTION, opens a fresh interaction window so
+  // consequences (form submit, navigation, fetch) attribute back.
   document.addEventListener(
     "keydown",
     function (e) {
-      if (e.key !== "Enter" && e.key !== "Escape") return;
       var t = e.target;
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
+
+      // WI-41: detect a global keyboard shortcut. A shortcut is a
+      // modifier+key chord (Ctrl+S, Cmd+K, Ctrl+Enter etc.) OR a
+      // bare special key that's meaningful outside text fields
+      // (Escape, Tab when used to advance focus is captured by the
+      // page itself; we only emit Escape here when no dialog is open
+      // -- the WI-34 path below covers dialog-close Escape).
+      //
+      // Important: we still record Enter / Escape inside text inputs
+      // as ``key`` events (legacy path -- needed for fill_submit's
+      // Enter trigger detection in WI-15). The shortcut path is for
+      // CHORDS or bare keys OUTSIDE text-input focus.
+      var hasModifier = !!(e.ctrlKey || e.metaKey || e.altKey);
+      var isModifierKey = (
+        e.key === "Control" || e.key === "Meta"
+        || e.key === "Shift" || e.key === "Alt"
+      );
+      var insideTextField = (tag === "input" || tag === "textarea")
+        && !e.ctrlKey && !e.metaKey;
+      var inEditor = !!_closestContenteditableRoot(t)
+        && !e.ctrlKey && !e.metaKey;
+      // Treat as shortcut when:
+      //   (a) modifier(s) + non-modifier key, OR
+      //   (b) the key is in a small allow-list of standalone
+      //       shortcuts: F-keys (F1..F12), '/' outside text, '?'
+      //       outside text. Escape is handled below by the
+      //       legacy Enter/Escape path so dialogs still close.
+      var isShortcutCandidate = (
+        (hasModifier && !isModifierKey)
+        || (/^F([1-9]|1[0-2])$/.test(e.key) && !insideTextField && !inEditor)
+        || (e.key === "/" && !insideTextField && !inEditor)
+        || (e.key === "?" && !insideTextField && !inEditor)
+      );
+      if (isShortcutCandidate) {
+        var mods = [];
+        if (e.ctrlKey) mods.push("Control");
+        if (e.metaKey) mods.push("Meta");
+        if (e.altKey) mods.push("Alt");
+        if (e.shiftKey) mods.push("Shift");
+        var keyTarget = (document.activeElement && document.activeElement !== document.body)
+          ? document.activeElement : t;
+        var stateBefore3 = _pageState();
+        var attr3 = _rootAttribution("user_shortcut");
+        _setActiveInteraction("key", attr3.event_id);
+        _emitWithStateSnapshot(_merge({
+          kind: "key",
+          fingerprint: fingerprint(keyTarget),
+          value: e.key,
+          page_url: location.href,
+          raw_event_kind: "shortcut",
+          shortcut_modifiers: mods,
+        }, attr3), stateBefore3);
+        // Do not return here for Escape/Enter -- they may also be
+        // meaningful as legacy key events. But Ctrl+S etc. ARE the
+        // shortcut; return to avoid a duplicate key event.
+        if (hasModifier) return;
+      }
+
+      if (e.key !== "Enter" && e.key !== "Escape") return;
       // WI-34: global Escape -- when Escape is pressed and ANY dialog
       // is currently open (visible), we still emit a key event even
       // if focus isn't on a textbox. The annotator pairs the global
@@ -2662,14 +2720,14 @@
         // the focused element (or document.body if none) so the
         // annotator has SOMETHING to bind to; the key value carries
         // the semantic intent.
-        var keyTarget = (document.activeElement && document.activeElement !== document.body)
+        var keyTarget2 = (document.activeElement && document.activeElement !== document.body)
           ? document.activeElement : t;
         var stateBefore2 = _pageState();
         var attr2 = _rootAttribution("user_keydown");
         _setActiveInteraction("key", attr2.event_id);
         _emitWithStateSnapshot(_merge({
           kind: "key",
-          fingerprint: fingerprint(keyTarget),
+          fingerprint: fingerprint(keyTarget2),
           value: e.key,
           page_url: location.href,
           raw_event_kind: "keydown",

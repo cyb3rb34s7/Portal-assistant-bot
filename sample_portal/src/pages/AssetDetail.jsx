@@ -55,6 +55,30 @@ export default function AssetDetail() {
   // blind click count.
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
+  // WI-41: global Ctrl+S / Cmd+S save shortcut. Listens at document
+  // level when the asset detail page is mounted; releases on
+  // unmount. Mirrors the Save button click so the grabber's
+  // shortcut detector records ONE shortcut step that replays via
+  // page.keyboard.press("Control+S") without typing 'S' into the
+  // focused field.
+  useEffect(() => {
+    function onKeyDown(e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        // Use a ref-style closure: schedule save on the next tick so
+        // any pending input commits first.
+        setTimeout(() => {
+          const saveBtn = document.querySelector(
+            '[data-testid="btn-save"]'
+          );
+          if (saveBtn && !saveBtn.disabled) saveBtn.click();
+        }, 0);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // WI-30: ordered-list drag-and-drop for the asset's "related items"
   // ranking. The operator drags items between two columns ("included"
   // vs "excluded") and the grabber captures the dragstart/dragover/

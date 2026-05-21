@@ -48,6 +48,7 @@ from .skill_models import (
     PopupEffect,
     RichTextSpec,
     ScrollUntilSpec,
+    ShortcutSpec,
     SelectOptionSpec,
     SemanticCluster,
     SetSelectionSpec,
@@ -2296,6 +2297,72 @@ def _detect_slider_set_clusters(
     return clusters
 
 
+def _detect_shortcut_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-41: detect global keyboard shortcuts.
+
+    The grabber emits ``kind='key'`` with raw_event_kind='shortcut'
+    when a modifier+key chord or a standalone F-key / '/' / '?'
+    is pressed. Each such event is its own cluster -- the operator's
+    intent is one chord -> one shortcut step.
+
+    Excludes plain Enter/Escape inside text inputs (those still
+    feed the fill_submit + modal-close detectors via the legacy
+    raw_event_kind='keydown' path).
+    """
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "key" or ev.event_id not in user_actions:
+            continue
+        if ev.raw_event_kind != "shortcut":
+            continue
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="shortcut",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+    return clusters
+
+
+def _build_shortcut_spec(ev: TraceEvent) -> Optional[ShortcutSpec]:
+    """WI-41: derive a ShortcutSpec from a key event whose
+    raw_event_kind='shortcut'.
+
+    The grabber stamps shortcut_modifiers as the chord's modifiers in
+    Playwright key-name form; the value carries the non-modifier key.
+    Scope defaults to ``global`` -- the annotator can't reliably
+    distinguish focused_element shortcuts from global ones from a
+    single key event, so it leaves the operator to override when
+    necessary via portal config.
+    """
+    if ev.kind != "key" or not ev.value:
+        return None
+    mods_raw = list(ev.shortcut_modifiers or [])
+    # Normalize: dedupe + filter to valid modifiers.
+    valid_mods: set[str] = {"Control", "Meta", "Shift", "Alt"}
+    mods = [m for m in mods_raw if m in valid_mods]
+    # No expected_effect can be inferred from one keystroke; the
+    # operator declares it post-annotate (or it stays None and the
+    # runner just presses + returns).
+    return ShortcutSpec(
+        modifiers=mods,  # type: ignore[arg-type]
+        key=ev.value,
+        scope="global",
+        expected_effect=None,
+    )
+
+
 def _detect_rich_text_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -2785,6 +2852,14 @@ def detect_semantic_clusters(
     clusters.extend(
         _detect_rich_text_clusters(events, causality, folded_ids)
     )
+    # WI-41: shortcuts before fill_submit so a raw_event_kind='shortcut'
+    # key event (Ctrl+S, Ctrl+Enter) is reserved before fill_submit's
+    # trigger detection scans it. The detector filters strictly on
+    # raw_event_kind so plain-key events (Enter to submit a search)
+    # remain available to fill_submit.
+    clusters.extend(
+        _detect_shortcut_clusters(events, causality, folded_ids)
+    )
     clusters.extend(
         _detect_fill_submit_clusters(events, causality, folded_ids)
     )
@@ -3191,6 +3266,8 @@ def build_skill(
                 action = "slider_set"
             elif cluster_here.cluster_kind == "rich_text_set":
                 action = "rich_text_set"
+            elif cluster_here.cluster_kind == "shortcut":
+                action = "shortcut"
             elif cluster_here.cluster_kind == "drag_drop":
                 action = "drag_drop"
             elif cluster_here.cluster_kind == "toggle_state":
@@ -3400,6 +3477,17 @@ def build_skill(
             slider_set_spec = _build_slider_set_spec(
                 cluster_here, events, causality, ev, sl_pname
             )
+
+        # WI-41: build the ShortcutSpec for shortcut cluster steps. The
+        # grabber stamped modifiers + key on the event; the spec is a
+        # near-pure projection. No param is declared -- shortcuts are
+        # symbolic, not data-bound.
+        shortcut_spec: Optional[ShortcutSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "shortcut"
+        ):
+            shortcut_spec = _build_shortcut_spec(ev)
 
         # WI-39: build the RichTextSpec for rich_text_set cluster steps.
         # The grabber's WI-39 burst already collapsed the operator's
@@ -3688,6 +3776,7 @@ def build_skill(
             date_select=date_select_spec,
             slider_set=slider_set_spec,
             rich_text=rich_text_spec,
+            shortcut=shortcut_spec,
             file_spec=file_spec_value,
             drag_drop=drag_drop_spec,
             toggle_state=toggle_state_spec,
