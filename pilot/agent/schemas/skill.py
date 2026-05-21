@@ -66,6 +66,83 @@ class DestructiveActionSpec(BaseModel):
     confirm_prompt: str | None = None
 
 
+class StructuralOverlay(BaseModel):
+    """WI-31: per-step LLM-enriched structural metadata.
+
+    The deterministic annotator (annotate.py) produces the structural
+    truth (depends_on, expected_signals, set_selection clusters,
+    etc.). The LLM enrichment pass runs SECOND and can only ADD
+    advisory metadata that the runner / planner can use, never
+    contradict the deterministic decisions.
+
+    Each overlay is validated against the raw trace evidence at apply
+    time: a depends_on claim must have a supporting causal event in
+    the trace; an expected_signal must reference a captured URL
+    pattern. Hallucinated overlays are dropped with a
+    ``llm_overlay_rejected`` audit entry rather than being silently
+    persisted.
+
+    Fields are independent and optional -- the LLM populates the ones
+    it can support with evidence from the trace; unsupported claims
+    are omitted rather than fabricated.
+    """
+
+    step_index: int = Field(
+        description="Index of the step this overlay applies to."
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Other step indices (as strings) whose effect this step "
+            "needs before running. Each entry must have a corresponding "
+            "causal trace event; unbacked entries are rejected at "
+            "validation."
+        ),
+    )
+    expected_signals: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Network or DOM signals the step is expected to produce. "
+            "Each entry is {kind: 'network'|'dom', url_pattern?: str, "
+            "selector?: str}. Each claim must be backed by a recorded "
+            "network_request / dom_mutation event."
+        ),
+    )
+    assert_after: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Post-action assertions (text_visible, url_matches, ...). "
+            "LLM-suggested; runner gates persistence on observed "
+            "verification."
+        ),
+    )
+    widget_type: str | None = Field(
+        default=None,
+        description=(
+            "LLM's best-guess widget label (e.g. 'cascading_select', "
+            "'autocomplete', 'multiselect_with_search'). Advisory; the "
+            "deterministic cluster_kind already drives the runner."
+        ),
+    )
+    risk_notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Plain-English notes about replay risks the LLM noticed "
+            "(e.g. 'this select cascades; recorded value may not "
+            "exist for a different parent'). Audit/UI only."
+        ),
+    )
+    param_alias_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-step param alias map (semantic_name -> v1 binding "
+            "name). Extends the top-level param_alias_map for cases "
+            "where the same v1 binding is renamed differently per "
+            "step context (rare; usually empty)."
+        ),
+    )
+
+
 class SkillStepRef(BaseModel):
     """Lightweight reference to a step in the recorded trace.
 
@@ -106,6 +183,20 @@ class SkillFile(BaseModel):
     # the planner's params before handing them to SkillRunner. Stored on
     # the skill so it travels with the model — no module-level globals.
     param_alias_map: dict[str, str] = Field(default_factory=dict)
+
+    # WI-31: per-step structural overlays from the LLM enrichment pass.
+    # Each entry must reference a step_index that exists in steps. The
+    # runner / planner reads these AFTER the deterministic annotator's
+    # decisions; overlays can only ADD advisory metadata, never
+    # contradict structural truth.
+    structural_overlays: list[StructuralOverlay] = Field(
+        default_factory=list,
+        description=(
+            "Per-step LLM-enriched structural metadata. Validated "
+            "against raw trace evidence at apply time; unsupported "
+            "claims are dropped."
+        ),
+    )
 
     # Recorded steps (untyped here; the runner uses the existing
     # skill_models.py types). We keep them as a raw list so legacy v1
