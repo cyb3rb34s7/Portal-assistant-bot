@@ -55,3 +55,53 @@ def test_xhr_respects_existing_custom_idempotency_header() -> None:
 
     assert len(captured_headers) == 1
     assert captured_headers[0]["x-cp-idempotency"] == "app-owned-key"
+
+
+def test_fetch_request_input_headers_are_augmented() -> None:
+    """fetch(Request) keeps Request.headers and receives runner key."""
+    captured_headers: list[dict[str, str]] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        def handler(route):
+            if route.request.url.endswith("/api/custom"):
+                captured_headers.append(route.request.headers)
+                route.fulfill(status=200, content_type="application/json", body="{}")
+                return
+            route.fulfill(status=200, content_type="text/html", body="<html></html>")
+
+        page.route("**/*", handler)
+        page.goto("http://fixture.test/")
+        page.evaluate(SkillRunner._IDEMPOTENCY_INSTALL_JS)
+        page.evaluate(
+            "(cfg) => { window.__cp_idem_config = cfg; }",
+            {
+                "enabled": True,
+                "header_name": "Idempotency-Key",
+                "endpoint_patterns": ["/api/custom"],
+                "method_patterns": ["POST"],
+                "key_components": ["session", "step_index", "method", "url_path"],
+                "body_hash_fields": [],
+                "allow_existing_header": False,
+                "session_id": "f04",
+                "step_index": 4,
+            },
+        )
+
+        page.evaluate(
+            """() => {
+                const req = new Request('/api/custom', {
+                    method: 'POST',
+                    headers: { 'X-App-Header': 'kept' },
+                });
+                return fetch(req);
+            }"""
+        )
+
+        browser.close()
+
+    assert len(captured_headers) == 1
+    assert captured_headers[0]["x-app-header"] == "kept"
+    assert captured_headers[0]["idempotency-key"].startswith("f04|4|POST|")

@@ -1611,7 +1611,11 @@ class SkillRunner:
             const method = (init && init.method) || (input && input.method) || 'GET';
             const body = init && init.body;
             const init2 = init ? Object.assign({}, init) : {};
-            init2.headers = _augment(init.headers || {}, method, url, body);
+            const inputHeaders = (
+              typeof Request !== 'undefined' && input instanceof Request
+            ) ? input.headers : {};
+            const seedHeaders = (init && init.headers) || inputHeaders || {};
+            init2.headers = _augment(seedHeaders, method, url, body);
             return _f.call(this, input, init2);
           } catch (e) {
             return _f.apply(this, arguments);
