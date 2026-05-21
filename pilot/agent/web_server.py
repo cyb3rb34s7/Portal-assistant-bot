@@ -859,6 +859,14 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 wait_policy=(
                     portal_ctx.wait_policy if portal_ctx else None
                 ),
+                # WI-36: per-step auth_missing precondition check.
+                # Runner skips the check when auth_signal is None.
+                auth_signal=(
+                    portal_ctx.auth_signal if portal_ctx else None
+                ),
+                login_url=(
+                    portal_ctx.session.login_url if portal_ctx else None
+                ),
             )
         )
 

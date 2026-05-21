@@ -27,6 +27,7 @@ from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
     AmbiguityPolicy,
+    AuthPrecondition,
     AutocompleteSpec,
     DatePickerSpec,
     DependencyChain,
@@ -2759,6 +2760,29 @@ def build_skill(
         events, causality,
     )
 
+    # WI-36: index of user-action event_ids whose folded network
+    # children include a destructive write (PATCH/POST/PUT/DELETE).
+    # The runner gets an AuthPrecondition on these steps so it checks
+    # the portal's auth_signal BEFORE the step touches the page. Read-
+    # only steps (GETs / no network) stay AuthPrecondition-free.
+    destructive_methods = {"PATCH", "POST", "PUT", "DELETE"}
+    destructive_user_events: set[str] = set()
+    children_of_user: dict[str, list[str]] = (
+        causality.get("children_of") or {}
+    )
+    by_id_evt: dict[str, TraceEvent] = causality.get("by_id") or {}
+    for user_id, child_ids in children_of_user.items():
+        for cid in child_ids:
+            ce = by_id_evt.get(cid)
+            if ce is None:
+                continue
+            if ce.kind != "network_request":
+                continue
+            mthd = (ce.method or "GET").upper()
+            if mthd in destructive_methods:
+                destructive_user_events.add(user_id)
+                break
+
     # WI-35: popup events indexed by causing event id. Each entry
     # becomes effects.popup on the causing step.
     popup_effects_by_cause: dict[str, PopupEffect] = {}
@@ -3237,6 +3261,19 @@ def build_skill(
             _build_file_spec(ev) if ev.kind == "file_selected" else None
         )
 
+        # WI-36: stamp an AuthPrecondition on destructive steps so the
+        # runner verifies the portal's auth_signal before the step
+        # touches the page. Conservative default refresh_strategy is
+        # "navigate" -- the operator opens the login URL manually.
+        # Annotator emits this UNCONDITIONALLY on destructive steps;
+        # the runner skips the check when the portal context has no
+        # auth_signal configured.
+        auth_precondition_value: Optional[AuthPrecondition] = None
+        if ev.event_id and ev.event_id in destructive_user_events:
+            auth_precondition_value = AuthPrecondition(
+                refresh_strategy="navigate",
+            )
+
         # WI-34: when this user event happened while a dialog was open,
         # scope locator lookups inside the dialog so the runner doesn't
         # accidentally bind to a same-named control on the backing
@@ -3290,6 +3327,7 @@ def build_skill(
             toggle_state=toggle_state_spec,
             dependency_chain=dependency_chain_spec,
             ambiguity_policy=dialog_ambiguity_policy,
+            auth_precondition=auth_precondition_value,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;

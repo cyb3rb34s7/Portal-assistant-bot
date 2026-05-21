@@ -133,6 +133,18 @@ class SkillRunner:
         # wait predicate.
         self.portal_network_ignore: list[str] = []
         self.network_quiet_ms: int = 250
+        # WI-36: portal auth signal -- set by the executor from
+        # PortalContext.auth_signal at construction. None means the
+        # portal hasn't declared an auth_signal, in which case the
+        # runner's AuthPrecondition check is a no-op (the step proceeds
+        # regardless). Read-only since the runner only probes the
+        # signal during the pre-step check.
+        self.portal_auth_signal: Optional[Any] = None
+        self.portal_login_url: Optional[str] = None
+        """WI-36: PortalContext.session.login_url surfaced to the
+        operator when auth_missing fires. None when the portal context
+        doesn't declare one; the operator falls back to navigating to
+        the portal's base_url and logging in there."""
         # WI-04: portal idempotency capability. None disables injection
         # entirely. The RealExecutor sets this from PortalContext.idempotency
         # at construction; legacy callers leave it None.
@@ -178,6 +190,66 @@ class SkillRunner:
         started_after_event baseline scope to this timestamp -- a
         request that FINISHED before the step started cannot satisfy
         the wait. Closes the BLOCKER-4 stale-request hole."""
+
+    # ---- WI-36: auth signal probe -------------------------------------
+
+    def _check_auth_signal(self) -> tuple[str, str]:
+        """WI-36: probe the portal's auth_signal during a step's
+        pre-check. Returns (status, diagnostic):
+          - ``ok``: a positive signal was visible.
+          - ``missing``: a negative signal was visible OR neither
+            matched. Conservative -- false-positive ``missing`` only
+            costs a Resume click; false-positive ``ok`` runs against
+            an unauthenticated portal and fails halfway through.
+          - ``unknown``: signal has no selectors / probe errored.
+
+        Mirrors the executor's preflight probe semantics so behavior
+        is consistent across pre-flight (whole-skill) and per-step
+        (this) checks. Independent from preflight because preflight
+        runs ONCE at skill start; auth can expire mid-skill on
+        long-running workflows and we want to catch it before the
+        destructive step rather than after.
+        """
+        sig = self.portal_auth_signal
+        if sig is None:
+            return "unknown", "no auth_signal configured"
+        logged_in = list(getattr(sig, "logged_in_when_visible", []) or [])
+        logged_out = list(getattr(sig, "logged_out_when_visible", []) or [])
+        # Short timeout: we're inside a step, the page is already
+        # loaded. 1500ms is plenty for an is_visible() check; a longer
+        # wait would blur the line between "auth check" and "page
+        # loading."
+        timeout_ms = int(getattr(sig, "probe_timeout_ms", 1500) or 1500)
+        timeout_ms = min(timeout_ms, 2000)
+        if not logged_in and not logged_out:
+            return "unknown", "auth_signal has no selectors"
+        page = self.session.page
+        try:
+            for sel in logged_in:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout_ms):
+                        return "ok", f"positive signal {sel!r} visible"
+                except Exception:
+                    continue
+            for sel in logged_out:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout_ms):
+                        return (
+                            "missing",
+                            f"negative signal {sel!r} visible",
+                        )
+                except Exception:
+                    continue
+        except Exception as e:  # noqa: BLE001
+            return (
+                "unknown",
+                f"auth probe errored: {type(e).__name__}: {e}",
+            )
+        # Neither matched -- treat as missing (conservative).
+        return (
+            "missing",
+            "auth signals configured but none matched",
+        )
 
     # ---- WI-06: diagnostics --------------------------------------------
 
@@ -383,6 +455,43 @@ class SkillRunner:
             "used_operator_override": False,
             "error_kind": None,
         }
+
+        # WI-36: auth precondition. When the step declares one AND the
+        # portal context has an auth_signal configured, probe the
+        # signal before touching the page. On ``missing`` we emit a
+        # paused step with error_kind="auth_missing" so the operator
+        # logs in and resumes via the orchestrator's pause flow. NO
+        # auto-relogin -- per the plan this is out of v1 scope.
+        if (
+            step.auth_precondition is not None
+            and self.portal_auth_signal is not None
+        ):
+            auth_status, auth_diag = self._check_auth_signal()
+            if auth_status == "missing":
+                shot = self._screenshot(
+                    f"step_{step.index}_auth_missing"
+                )
+                strat = step.auth_precondition.refresh_strategy or "navigate"
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="auth precondition check",
+                        error=(
+                            "auth required for this step but the "
+                            "portal's auth signal indicates the "
+                            "operator is not logged in"
+                        ),
+                        error_kind="auth_missing",
+                        error_details={
+                            "diagnostic": auth_diag,
+                            "refresh_strategy": strat,
+                            "login_url": self.portal_login_url,
+                            "step_index": step.index,
+                        },
+                        screenshot_path=shot,
+                    ),
+                    0,
+                )
 
         try:
             value = self._resolved_value(step)

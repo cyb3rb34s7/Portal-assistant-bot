@@ -769,6 +769,53 @@ class ReplayPolicy(BaseModel):
         return self
 
 
+class AuthPrecondition(BaseModel):
+    """WI-36: declarative auth requirement on a step.
+
+    Steps that hit protected endpoints (state-changing requests against
+    an authenticated API) require auth at replay time. The runner
+    verifies the portal's auth signal BEFORE the step runs; on
+    ``missing`` it pauses with a structured ``auth_missing`` failure
+    (operator logs in and resumes) instead of looping or silently
+    failing halfway through a save.
+
+    Auto-relogin is OUT of scope for v1 (per the plan) -- this is a
+    pure precondition check that surfaces the gap rather than trying
+    to recover from it.
+
+    The annotator emits this on steps detected as destructive (their
+    folded network events include a PATCH/POST/PUT/DELETE) when the
+    portal context declared an auth_signal. Steps without observed
+    write traffic stay AuthPrecondition-free so read-only nav doesn't
+    pause.
+    """
+
+    role_required: Optional[str] = None
+    """Operator-declared role required to perform this step (e.g.
+    'editor', 'admin'). Audit-only today -- the runner doesn't check
+    a role claim; the auth_signal probe is binary (logged in or not).
+    Reserved so a future WI can implement role-based gates."""
+
+    session_namespace: Optional[str] = None
+    """Identifier for which session must be active. Used by multi-tenant
+    portals where the operator's tab may be authenticated to one tenant
+    while the recording was captured under another. Audit-only today;
+    the runner compares against PortalContext.session.notes when set."""
+
+    refresh_strategy: Literal[
+        "navigate", "reload", "sso_flow",
+    ] = "navigate"
+    """How the operator should recover when auth is missing.
+      - ``navigate``: surface the login URL (PortalContext.session.login_url)
+        as the resume hint. Operator opens it manually.
+      - ``reload``: tell the operator to refresh the current tab (covers
+        portals where session refresh is automatic on reload).
+      - ``sso_flow``: SSO redirect chain expected; the operator's IdP
+        will reauthenticate them and bounce back. Same UI as navigate;
+        the label differs so the operator knows what to expect.
+    Audit-only today. Auto-relogin is explicitly OUT of v1 scope."""
+
+
 # ---------------------------------------------------------------------------
 # WI-01: Provenance
 #
@@ -1859,6 +1906,15 @@ class SkillStep(BaseModel):
     collapse). Carries the desired target_state, the state attribute
     to read, and the controlled panel selector. None for clicks that
     weren't classified as toggles."""
+
+    auth_precondition: Optional["AuthPrecondition"] = None
+    """WI-36: declarative auth gate the runner verifies BEFORE running
+    the step. Populated by the annotator on steps whose folded network
+    events show PATCH/POST/PUT/DELETE (destructive writes). The runner
+    pauses with error_kind=``auth_missing`` when the portal's
+    auth_signal probe returns ``missing`` -- the operator logs in and
+    resumes. None for non-destructive steps and for portals without an
+    auth_signal declared on context."""
 
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy

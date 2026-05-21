@@ -39,7 +39,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from pilot.audit import AuditLogger  # noqa: F401  (imported for type clarity)
 from pilot.browser import (
@@ -114,6 +114,20 @@ class RealExecutorConfig:
     request-log ring buffer (the legacy hardcoded 50 is the last-
     resort fallback). None means "use schema-level defaults"
     (WaitPolicy() factory)."""
+
+    auth_signal: Any = None
+    """WI-36: PortalContext.auth_signal passthrough. The runner uses
+    this for per-step auth precondition checks: when a step declares
+    auth_precondition AND this signal is configured, the runner probes
+    before the step touches the page and pauses with
+    error_kind=``auth_missing`` on negative match. None means the
+    runner skips the check (legacy behavior preserved)."""
+
+    login_url: Optional[str] = None
+    """WI-36: PortalContext.session.login_url passthrough. Surfaced in
+    the auth_missing error_details so the operator can navigate
+    directly to the login page from the orchestrator's pause UI.
+    None falls back to base_url."""
 
 
 class RealExecutor(StepExecutor):
@@ -505,6 +519,10 @@ class RealExecutor(StepExecutor):
             # WI-09: per-portal wait policy. Used by _ensure_watchers
             # to push the request_log_cap to the page-side ring buffer.
             runner.wait_policy = self.config.wait_policy
+            # WI-36: per-portal auth signal + login URL for per-step
+            # auth_missing pre-checks. None disables the check entirely.
+            runner.portal_auth_signal = self.config.auth_signal
+            runner.portal_login_url = self.config.login_url
             results = runner.run()
             # WI-06: forward runner diagnostics (watcher_install,
             # set_selection swallows, ambiguity_scan, screenshot
