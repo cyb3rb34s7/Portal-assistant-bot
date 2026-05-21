@@ -201,9 +201,38 @@ class SkillRunner:
                     f"step {step.index} failed",
                     data={"error": result.error, "label": step.semantic_label},
                 )
-                # On failure, still continue — the runner logs and keeps going
-                # unless the caller wants hard stop. Hard stop is configurable
-                # via subclass / future flag.
+                # WI-07: respect the step's replay_policy.on_failure
+                # instead of always continuing. Default policy on
+                # SkillStep is on_failure="abort", which means the
+                # runner stops the skill here -- orchestrator pause /
+                # retry / skip is the recovery surface.
+                #
+                # Policies:
+                #   "abort"    -- stop the skill (default for new schema)
+                #   "continue" -- log + proceed; for non-critical steps
+                #   "optional" -- like continue but error doesn't propagate;
+                #                 the step's failure isn't a skill failure
+                #   "recover"  -- reserved for future WI-26 (runner-level
+                #                 recovery hooks); behaves as abort today
+                #
+                # The ``optional`` flag is a convenience equivalent to
+                # on_failure="optional".
+                policy = step.replay_policy
+                effective = (
+                    "optional" if policy.optional else policy.on_failure
+                )
+                if effective in ("abort", "recover"):
+                    self.audit.log(
+                        "info",
+                        (
+                            f"replay aborted at step {step.index} "
+                            f"(policy={effective}); orchestrator pause "
+                            "flow takes over"
+                        ),
+                        data={"step_index": step.index},
+                    )
+                    break
+                # continue / optional: fall through
 
         self._summary()
         self.audit.log("info", "replay finished")
