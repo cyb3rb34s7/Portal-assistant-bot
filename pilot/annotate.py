@@ -26,11 +26,20 @@ from rich.table import Table
 from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
+    AutocompleteSpec,
+    DatePickerSpec,
+    DependencyChain,
     DomExpectation,
+    ElementFingerprint,
     ExpectedSignals,
+    FillSubmitSpec,
     NavigationEffect,
+    NetworkExpectation,
+    OptionSnapshot,
     ParamBinding,
+    SelectOptionSpec,
     SemanticCluster,
+    SetSelectionSpec,
     Skill,
     SkillParam,
     SkillStep,
@@ -674,6 +683,309 @@ _OBSERVED_EVENT_KINDS: frozenset[str] = frozenset({
 })
 
 
+def _fp_target_id(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Return a stable identity for a fingerprint -- the strongest
+    attribute available (test_id > element_id > name > xpath). Used by
+    the WI-15+ detectors to compare event targets without tripping on
+    the fingerprint's bbox / nth_of_role differences between adjacent
+    captures of the same field."""
+    if fp is None:
+        return None
+    return fp.test_id or fp.element_id or fp.name or fp.xpath or fp.accessible_name
+
+
+def _detect_fill_submit_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-15: detect a typing burst + submit on the same field.
+
+    Walks the event list looking for contiguous input_change events on
+    a single field, immediately followed by ONE of:
+      - a key event with value=='Enter' on the same field, or
+      - a submit event whose target's ancestor form contains the field, or
+      - a click on a submit/search button (recognized by:
+          * submit-button text (Search / Submit / Apply / Go / Find), or
+          * the click's target being inside a form that contains the
+            same input).
+
+    Emits ONE ``fill_submit`` cluster carrying ALL input_change events
+    + the trigger event. The primary_target_event_id points at the
+    last input_change (which holds the final value) so the
+    step-construction pass can lift the binding from it.
+
+    Consumed event ids are added to ``consumed`` so the caller can skip
+    them in its single_event fallback loop.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    i = 0
+    n = len(events)
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.kind != "input_change"
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+
+        # Collect contiguous input_change events on the same target.
+        burst_target = _fp_target_id(ev.fingerprint)
+        if burst_target is None:
+            i += 1
+            continue
+        burst_events: list[TraceEvent] = [ev]
+        j = i + 1
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                # Observed events between inputs (the page fired requests
+                # during typing) don't break the burst -- they're folded
+                # into the cluster's audit trail later.
+                j += 1
+                continue
+            if (
+                ne.kind == "input_change"
+                and _fp_target_id(ne.fingerprint) == burst_target
+            ):
+                burst_events.append(ne)
+                j += 1
+                continue
+            break
+
+        # Look at the FIRST non-observed event after the burst for a
+        # trigger. We don't scan further -- a click on something else
+        # ends the burst's submit eligibility (the operator moved on).
+        trigger: Optional[TraceEvent] = None
+        trigger_kind: Optional[Literal["enter", "button", "form_submit"]] = None
+        k = j
+        while k < n and events[k].kind in _OBSERVED_EVENT_KINDS:
+            k += 1
+        if k < n:
+            nxt = events[k]
+            if (
+                nxt.kind == "key"
+                and (nxt.value or "").lower() in ("enter", "return")
+                and _fp_target_id(nxt.fingerprint) == burst_target
+            ):
+                trigger = nxt
+                trigger_kind = "enter"
+            elif nxt.kind == "submit":
+                trigger = nxt
+                trigger_kind = "form_submit"
+            elif nxt.kind == "click":
+                # Heuristic submit detection from the recorded button:
+                # accept buttons whose accessible name / text matches a
+                # short list of submit-y verbs, OR buttons with
+                # type='submit' / role='button' inside the form ancestor.
+                # The conservative bar is intentional -- click events
+                # ARE the most ambiguous trigger; we'd rather under-
+                # cluster (leave the click as a separate step) than
+                # wrong-cluster (fold a NEXT step into a fill_submit).
+                if _looks_like_submit_button(nxt.fingerprint, burst_events[0]):
+                    trigger = nxt
+                    trigger_kind = "button"
+
+        # A burst with no trigger is just typing -- don't collapse.
+        if trigger is None or trigger_kind is None:
+            i = j
+            continue
+
+        # Build the cluster. raw_event_ids: every input_change + the
+        # trigger, in causal order. Fold any observed children of the
+        # trigger (the search request) into the audit trail.
+        raw_ids: list[str] = [e.event_id for e in burst_events if e.event_id]
+        if trigger.event_id:
+            raw_ids.append(trigger.event_id)
+        # Walk causality.children_of for the trigger to capture network
+        # responses caused by the submit (e.g. /api/search?q=...).
+        children_of: dict[str, list[str]] = causality.get("children_of") or {}
+        if trigger.event_id:
+            for cid in children_of.get(trigger.event_id, []):
+                ce = by_id.get(cid)
+                if ce is not None and ce.kind in _OBSERVED_EVENT_KINDS:
+                    if cid not in raw_ids:
+                        raw_ids.append(cid)
+                    consumed.add(cid)
+
+        # Mark events consumed.
+        for e in burst_events:
+            if e.event_id:
+                consumed.add(e.event_id)
+        if trigger.event_id:
+            consumed.add(trigger.event_id)
+
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="fill_submit",
+                primary_target_event_id=burst_events[-1].event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+        # Continue scanning past the trigger.
+        i = k + 1
+    return clusters
+
+
+# Submit-button heuristic: short list of verbs the operator commonly
+# uses on the button that commits a form. Kept conservative; the
+# alternative was to capture the form's submit handler from the
+# grabber, which would be a stronger signal but requires WI-09 / WI-15
+# grabber-side hooks we don't ship in this WI. Detector accuracy: the
+# regex matches whole words to avoid 'send' inside 'sender' etc.
+_SUBMIT_BUTTON_TEXT_RE = re.compile(
+    r"\b(search|submit|apply|go|find|filter|lookup|query)\b", re.I
+)
+
+
+def _looks_like_submit_button(
+    btn_fp: Optional[ElementFingerprint],
+    input_ev: TraceEvent,
+) -> bool:
+    """Return True iff the clicked element looks like the submit button
+    for the burst's form. Two signals:
+      (a) the button's accessible_name / text / aria_label matches a
+          short submit-verb regex (Search / Submit / Apply / Go / Find),
+      (b) the button's input_type is 'submit' (an <input type='submit'>
+          or <button type='submit'>; the grabber's WI-03 control_kind
+          captures this).
+    Either signal is sufficient. Designed to keep WI-15 conservative:
+    a recorded click on a random button right after typing is NOT
+    folded into the fill_submit cluster -- it stays as its own step.
+    """
+    _ = input_ev  # reserved for future same-form ancestor walk
+    if btn_fp is None:
+        return False
+    # Signal (b): explicit submit semantics.
+    if (btn_fp.input_type or "").lower() == "submit":
+        return True
+    if btn_fp.control_kind == "button" and (
+        btn_fp.role == "button" or btn_fp.tag == "button"
+    ):
+        # Continue to signal (a) check below.
+        pass
+    # Signal (a): submit-verb text.
+    haystack = " ".join(
+        s for s in (
+            btn_fp.accessible_name, btn_fp.text, btn_fp.aria_label,
+            btn_fp.placeholder,
+        ) if s
+    )
+    if haystack and _SUBMIT_BUTTON_TEXT_RE.search(haystack):
+        return True
+    return False
+
+
+def _build_fill_submit_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    binding: Optional[ParamBinding],
+) -> FillSubmitSpec:
+    """WI-15: derive a FillSubmitSpec from a fill_submit cluster.
+
+    Walks the cluster's raw_event_ids to find the trigger (Enter / submit
+    button click / form submit) and any expected result signal (URL of
+    a network_response caused by the trigger). Used at step-construction
+    time when the per-event loop's primary_target_event_id maps to a
+    fill_submit cluster.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    trigger_ev: Optional[TraceEvent] = None
+    trigger_kind: Literal["enter", "button", "form_submit"] = "enter"
+    submit_button_fp: Optional[ElementFingerprint] = None
+    expected_signal: Optional[str] = None
+
+    for eid in cluster.raw_event_ids:
+        e = by_id.get(eid)
+        if e is None:
+            continue
+        if e.kind == "key" and (e.value or "").lower() in ("enter", "return"):
+            trigger_ev = e
+            trigger_kind = "enter"
+        elif e.kind == "submit":
+            trigger_ev = e
+            trigger_kind = "form_submit"
+        elif e.kind == "click":
+            trigger_ev = e
+            trigger_kind = "button"
+            submit_button_fp = e.fingerprint
+        elif e.kind == "network_response" and expected_signal is None:
+            # First network_response caused by the trigger is a strong
+            # candidate for the expected result signal. Use the URL's
+            # path portion as a substring matcher; the runner's
+            # NetworkExpectation does case-insensitive substring match.
+            url = e.url or ""
+            if url:
+                try:
+                    expected_signal = url.split("?", 1)[0].split("#", 1)[0]
+                except Exception:
+                    expected_signal = url
+        elif e.kind == "network_request" and expected_signal is None:
+            url = e.url or ""
+            if url:
+                try:
+                    expected_signal = url.split("?", 1)[0].split("#", 1)[0]
+                except Exception:
+                    expected_signal = url
+
+    _ = events  # reserved for future same-form ancestor lookup
+    _ = trigger_ev
+    return FillSubmitSpec(
+        submit_trigger=trigger_kind,
+        value_param=binding.name if binding else None,
+        submit_button_fp=submit_button_fp,
+        expected_result_signal=expected_signal,
+    )
+
+
+def _detect_select_autocomplete_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-16 detector stub. Implementation in the WI-16 commit."""
+    return []
+
+
+def _detect_select_option_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-17 detector stub. Implementation in the WI-17 commit."""
+    return []
+
+
+def _detect_set_selection_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-19 detector stub. Implementation in the WI-19 commit."""
+    return []
+
+
+def _detect_date_select_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-21 detector stub. Implementation in the WI-21 commit."""
+    return []
+
+
 def detect_semantic_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -721,7 +1033,29 @@ def detect_semantic_clusters(
     # its click must not produce its own single_event cluster).
     folded_ids: set[str] = set()
 
+    # WI-15+: specialized detectors run BEFORE the click_with_navigation
+    # + single_event fallback. Each detector consumes the events that
+    # belong to its cluster (added to folded_ids) so the fallback loop
+    # below doesn't double-emit them. Detectors are ordered most-
+    # specific first (fill_submit binds to a contiguous input burst;
+    # the per-event fallback would emit one change step per input).
     clusters: list[SemanticCluster] = []
+    clusters.extend(
+        _detect_fill_submit_clusters(events, causality, folded_ids)
+    )
+    clusters.extend(
+        _detect_select_autocomplete_clusters(events, causality, folded_ids)
+    )
+    clusters.extend(
+        _detect_select_option_clusters(events, causality, folded_ids)
+    )
+    clusters.extend(
+        _detect_set_selection_clusters(events, causality, folded_ids)
+    )
+    clusters.extend(
+        _detect_date_select_clusters(events, causality, folded_ids)
+    )
+
     for ev in events:
         if not ev.event_id or ev.event_id in folded_ids:
             continue
@@ -826,6 +1160,27 @@ def build_skill(
         if c.primary_target_event_id
     }
 
+    # WI-15+: when a specialized cluster (fill_submit, select_autocomplete,
+    # select_option, set_selection, date_select) folded multiple events,
+    # the per-event loop must SKIP the non-primary members so we don't
+    # emit duplicate per-event steps. Build a set of event ids that the
+    # primary step will absorb. The primary target itself is NOT in this
+    # set (its loop iteration produces the collapsed step).
+    cluster_folded_event_ids: set[str] = set()
+    for c in clusters:
+        if c.cluster_kind in (
+            "fill_submit", "select_autocomplete", "select_option",
+            "set_selection", "date_select", "cascading_select",
+        ):
+            for raw_id in c.raw_event_ids:
+                if (
+                    raw_id
+                    and raw_id != c.primary_target_event_id
+                    and (by_id_evt := causality.get("by_id", {}).get(raw_id))
+                    and by_id_evt.kind not in _OBSERVED_EVENT_KINDS
+                ):
+                    cluster_folded_event_ids.add(raw_id)
+
     # WI-08: index navigate events by the user action that caused them.
     # A click whose event_id matches a caused-navigate's caused_by gets
     # the navigate folded into its ``effects.navigation`` instead of
@@ -884,10 +1239,36 @@ def build_skill(
         if ev.kind in _OBSERVED_KINDS:
             continue
 
+        # WI-15+: skip events that a specialized cluster folded into a
+        # primary step. Without this we'd emit (e.g.) 4 change steps
+        # AND one fill_submit step for a 4-keystroke search burst.
+        if ev.event_id and ev.event_id in cluster_folded_event_ids:
+            continue
+
         label = auto_label(ev)
         action = action_for_kind(ev.kind)
         binding = infer_param_binding(ev, label)
         gate = infer_gate(label, ev)
+
+        # WI-15+: if this event is the primary target of a specialized
+        # cluster, override the action type so the per-action payload
+        # below stamps the right spec onto the step.
+        cluster_here: Optional[SemanticCluster] = (
+            clusters_by_target.get(ev.event_id) if ev.event_id else None
+        )
+        if cluster_here is not None:
+            if cluster_here.cluster_kind == "fill_submit":
+                action = "fill_submit"
+            elif cluster_here.cluster_kind == "select_autocomplete":
+                action = "select_autocomplete"
+            elif cluster_here.cluster_kind == "select_option":
+                action = "select_option"
+            elif cluster_here.cluster_kind == "date_select":
+                action = "date_select"
+            elif cluster_here.cluster_kind == "set_selection":
+                action = "set_selection"
+            # ``cascading_select`` keeps action='change' but gets a
+            # dependency_chain populated below (WI-18).
 
         keep = True
         if not auto:
@@ -981,6 +1362,20 @@ def build_skill(
                 effect_signature = sig
             _prior_clicks.append(ev)
 
+        # WI-15: build the FillSubmitSpec for fill_submit-cluster steps.
+        # The primary_target is the LAST input_change (where the final
+        # value lives). The trigger is identified by walking the
+        # cluster's raw_event_ids and finding the event that's not an
+        # input_change and not an observed event.
+        fill_submit_spec: Optional[FillSubmitSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "fill_submit"
+        ):
+            fill_submit_spec = _build_fill_submit_spec(
+                cluster_here, events, causality, binding
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -998,6 +1393,7 @@ def build_skill(
             value_transition=v_transition,
             click_gesture=click_gesture,  # type: ignore[arg-type]
             effect_signature=effect_signature,
+            fill_submit=fill_submit_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;

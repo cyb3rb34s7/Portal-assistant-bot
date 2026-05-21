@@ -69,10 +69,9 @@ LEVEL_LABELS = {
 # As each WI lands, the action type moves from this set to its real
 # handler in _execute_step.
 _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
-    "fill_submit",          # WI-15
-    "select_option",        # WI-17
-    "select_autocomplete",  # WI-16
-    "date_select",          # WI-21
+    # Implemented in subsequent WIs and removed from this set:
+    #   fill_submit (WI-15), select_autocomplete (WI-16),
+    #   select_option (WI-17), date_select (WI-21).
     "slider_set",           # WI-28
     "drag_drop",             # WI-30
     "toggle_state",         # WI-33
@@ -446,6 +445,14 @@ class SkillRunner:
                 result, level = self._do_wait(step)
             elif step.action == "set_selection":
                 result, level = self._do_set_selection(step)
+            elif step.action == "fill_submit":
+                result, level = self._do_fill_submit(step, value)
+            elif step.action == "select_autocomplete":
+                result, level = self._do_select_autocomplete(step)
+            elif step.action == "select_option":
+                result, level = self._do_select_option(step, value)
+            elif step.action == "date_select":
+                result, level = self._do_date_select(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -1195,6 +1202,190 @@ class SkillRunner:
                 ),
             ),
             1,
+        )
+
+    def _do_fill_submit(
+        self, step: SkillStep, value: Optional[str]
+    ) -> tuple[ToolResult, int]:
+        """WI-15: fill a text input ONCE with the final value, then
+        trigger the declared submit mechanism exactly ONCE.
+
+        Replaces the legacy multi-step replay (fill, fill, fill, key
+        Enter, click submit) that re-fired requests and races against
+        autocomplete results from intermediate values. The recording's
+        FinalValueSpec carries:
+          - submit_trigger: "enter" | "button" | "form_submit"
+          - value_param: name of the resolved value param
+          - submit_button_fp: optional, for "button" trigger
+          - expected_result_signal: optional URL substring to wait on
+        """
+        spec = step.fill_submit
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="fill_submit",
+                    error="fill_submit step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        # Resolve the target value. _resolved_value already ran in
+        # _execute_step; ``value`` is the codec'd output. Fall back to
+        # step.value for legacy traces.
+        final_value = value if value is not None else (step.value or "")
+
+        locator, level, heal = self._resolve_locator(step)
+        if locator is None:
+            ambig = self._consume_ambiguity()
+            if ambig is not None:
+                return self._build_ambiguous_result(step, ambig, "fill_submit")
+            return self._fallback_human(
+                step, "could not locate fill_submit field"
+            )
+
+        page = self.session.page
+
+        # Step 1: fill the resolved value ONCE.
+        try:
+            locator.fill(final_value, timeout=5000)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_fill_submit_fill")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"fill_submit: fill failed: {e}",
+                    error=str(e),
+                    error_kind="fill_submit_fill_failed",
+                    screenshot_path=shot,
+                    healed=heal,
+                ),
+                level,
+            )
+
+        # Step 2: trigger the declared submit mechanism ONCE.
+        try:
+            if spec.submit_trigger == "enter":
+                locator.press("Enter", timeout=4000)
+            elif spec.submit_trigger == "form_submit":
+                # Playwright's form.submit() isn't directly accessible
+                # via Locator. Press Enter on the field -- the form's
+                # onsubmit handler still fires. For inputs not inside
+                # a form, this is a no-op (which is consistent with
+                # how a recorded form_submit event without a wrapping
+                # form would behave at replay).
+                locator.press("Enter", timeout=4000)
+            elif spec.submit_trigger == "button":
+                if spec.submit_button_fp is None:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken="fill_submit: button trigger",
+                            error="submit_trigger=button but no submit_button_fp",
+                            error_kind="bad_step",
+                        ),
+                        0,
+                    )
+                btn = self._locate_via_template(spec.submit_button_fp, {})
+                if btn is None:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken="fill_submit: button trigger",
+                            error="submit button not found",
+                            error_kind="fill_submit_button_not_found",
+                        ),
+                        0,
+                    )
+                btn.click(timeout=4000)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_fill_submit_trigger")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"fill_submit: trigger failed: {e}",
+                    error=str(e),
+                    error_kind="fill_submit_trigger_failed",
+                    screenshot_path=shot,
+                    healed=heal,
+                ),
+                level,
+            )
+
+        # Step 3: wait for the declared result signal if present.
+        # When expected_result_signal is set we scope through
+        # _wait_for_page_settle's network expectation; otherwise rely
+        # on the post-step generic settle that the executor runs.
+        if spec.expected_result_signal:
+            from .skill_models import (
+                ExpectedSignals as _ES, NetworkExpectation as _NE,
+            )
+            self._wait_for_page_settle(
+                expected=_ES(
+                    network=[_NE(
+                        url_pattern=spec.expected_result_signal,
+                        method="GET",  # search endpoints are typically GET
+                        optional=False,
+                    )]
+                )
+            )
+
+        shot = self._screenshot(f"step_{step.index}_fill_submit")
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=(
+                f"fill_submit ({spec.submit_trigger}, "
+                f"{step.semantic_label}={final_value!r}) "
+                f"[{LEVEL_LABELS[level]}]"
+            ),
+            screenshot_path=shot,
+            unverified_error="fill_submit: post action verify failed",
+        )
+
+    def _do_select_autocomplete(
+        self, step: SkillStep
+    ) -> tuple[ToolResult, int]:
+        """WI-16: fill query, wait for result container, click the
+        result identified by the operator's selected_item_param.
+        Implementation in WI-16."""
+        return (
+            ToolResult(
+                success=False,
+                action_taken="select_autocomplete",
+                error="WI-16 not yet implemented",
+                error_kind="action_not_implemented",
+            ),
+            0,
+        )
+
+    def _do_select_option(
+        self, step: SkillStep, value: Optional[str]
+    ) -> tuple[ToolResult, int]:
+        """WI-17: native single-select with declared aliases. NO fuzzy
+        fallback. Implementation in WI-17."""
+        return (
+            ToolResult(
+                success=False,
+                action_taken="select_option",
+                error="WI-17 not yet implemented",
+                error_kind="action_not_implemented",
+            ),
+            0,
+        )
+
+    def _do_date_select(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-21: native or custom date picker. Implementation in WI-21."""
+        return (
+            ToolResult(
+                success=False,
+                action_taken="date_select",
+                error="WI-21 not yet implemented",
+                error_kind="action_not_implemented",
+            ),
+            0,
         )
 
     def _locate_via_template(

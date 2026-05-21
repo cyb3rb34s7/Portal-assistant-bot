@@ -776,6 +776,282 @@ class DisambiguationHint(BaseModel):
     same shape as the ambiguous_target candidates payload."""
 
 
+class FillSubmitSpec(BaseModel):
+    """WI-15: spec for a text-input burst + submit, collapsed to ONE step.
+
+    The recording captured the operator typing into a single input
+    (potentially many input_change events as the value evolved) followed
+    by a commit signal (Enter key, click on a submit button, or form
+    submit). The annotator collapses this whole burst into one
+    ``fill_submit`` step parameterized by the final value, with this
+    spec describing HOW to commit.
+
+    At replay the runner:
+      1. Resolves the field locator from the step.fingerprint.
+      2. Fills the resolved value ONCE.
+      3. Triggers the declared submit_trigger exactly ONCE.
+      4. If expected_result_signal is declared, waits for it.
+
+    Why this exists (acceptance check, from the plan):
+      Catalog search 'A-9003' should emit ONE fill_submit step with the
+      final value, not 4 fills + Enter + a separate submit. Replaying
+      4 fills causes intermediate-value race conditions (autocomplete
+      results from 'A-9' that never get rendered against the final
+      query 'A-9003'); replaying Enter + submit click can double-fire
+      the form when the click already implies submit.
+    """
+
+    submit_trigger: Literal["enter", "button", "form_submit"]
+    """How the operator committed the typing burst.
+      - ``enter``: a key=Enter event on the same field; runner presses
+        Enter on the field after filling.
+      - ``button``: the operator clicked a submit button; spec carries
+        ``submit_button_fp`` and the runner clicks it after filling.
+      - ``form_submit``: a form's submit fired (without an explicit
+        click). The runner falls back to pressing Enter on the field
+        because Playwright doesn't expose ``form.submit()`` cleanly;
+        the form's onsubmit handler still runs."""
+
+    value_param: Optional[str] = None
+    """Name of the skill param holding the final value. None means the
+    annotator couldn't bind a param (operator typed a literal that
+    doesn't appear in skill.params) -- the runner falls back to
+    ``step.value`` in that case."""
+
+    submit_button_fp: Optional[ElementFingerprint] = None
+    """When submit_trigger == ``button``: the submit button's
+    fingerprint. None for ``enter`` and ``form_submit``."""
+
+    expected_result_signal: Optional[str] = None
+    """Optional URL substring of the network request the submit is
+    expected to trigger (search result endpoint, etc.). When set, the
+    runner waits for a matching response after submit. None falls back
+    to the generic page-settle heuristic."""
+
+
+class AutocompleteSpec(BaseModel):
+    """WI-16: spec for a search query + result selection, collapsed to
+    ONE step.
+
+    The recording captured the operator typing a query into an
+    autocomplete input, the page firing a backend search, results
+    appearing in a container, and the operator clicking one of the
+    results. The annotator collapses this whole interaction into a
+    single ``select_autocomplete`` step.
+
+    The recording separates two params -- ``query`` (the typed search
+    text) and ``selected_item`` (the result the operator clicked) --
+    because an operator may want a DIFFERENT result at replay than the
+    one they originally clicked, while keeping the query identical.
+    E.g. recorded ``search 'A-90' -> pick A-9003`` should be replayable
+    as ``search 'A-90' -> pick A-9002`` without re-recording.
+
+    Acceptance check (from the plan):
+      Search 'A-90' + pick A-9003 at recording; replay can pick A-9002
+      with a different selected_item without re-recording.
+    """
+
+    query_param: str
+    """Name of the param holding the search query text. Resolved to a
+    string at replay and filled into the query input."""
+
+    selected_item_param: str
+    """Name of the param holding the result identity to pick. Distinct
+    from query_param so the operator can vary the pick independently."""
+
+    query_input_fp: Optional[ElementFingerprint] = None
+    """Fingerprint of the search input. When None the runner uses the
+    step.fingerprint (which the annotator sets to the input)."""
+
+    result_container_fp: Optional[ElementFingerprint] = None
+    """Fingerprint of the result container element (listbox, dropdown,
+    panel) that appears AFTER the query fires. The runner waits for
+    this container to become visible before looking for the chosen
+    option. None falls back to the generic page-settle wait."""
+
+    option_identity_template: Optional[ElementFingerprint] = None
+    """Fingerprint TEMPLATE for the option to click; carries a ``{item}``
+    placeholder in test_id / element_id / etc. The runner materializes
+    the template with the resolved ``selected_item_param`` value, then
+    clicks. Provenance-derived (WI-11), so 'btn-open-A-9003' templates
+    to 'btn-open-{selected_item}' from the row_key source, never from
+    substring luck."""
+
+    network_expectation: Optional["NetworkExpectation"] = None
+    """The backend search request the typed query triggers. When set,
+    the runner waits for this request to complete BEFORE clicking the
+    result -- otherwise it would race against stale options."""
+
+
+class SelectOptionSpec(BaseModel):
+    """WI-17: spec for native <select> single-select with declared
+    aliases and structural fail-fast.
+
+    Replaces the legacy ``_select_option_with_fuzzy_fallback`` which
+    auto-fuzzy-matched the recorded value against current options when
+    the exact value was missing. The fuzzy threshold (0.7 cosine) could
+    confuse ``US`` with ``UAE`` or ``UK`` -- a wrong locale / status
+    selection that the operator never authorized.
+
+    Match priority (NO fuzzy unless aliases declared):
+      1. Exact ``value`` match against the option's value.
+      2. Exact ``label`` match against the option's visible text.
+      3. Declared ``aliases``: a recorded value of ``US`` can be told
+         to match labels ``USA`` / ``United States``.
+      4. ``current_options`` mode: ignore the recorded value, pick
+         from current options by index/criteria (for state-dependent
+         dropdowns like asset status transitions).
+      5. Fail structurally with ``option_not_available`` listing what
+         IS available.
+
+    Acceptance check (from the plan):
+      Recorded ``US`` never auto-selects ``UAE``; runner fails
+      structurally without an alias.
+    """
+
+    recorded_value: str
+    """The option's value attribute at record time."""
+
+    recorded_label: Optional[str] = None
+    """The option's visible text at record time. Used by ``label`` and
+    ``alias`` match modes."""
+
+    options_snapshot: Optional[list["OptionSnapshot"]] = None
+    """Full option list (value + label + selected + disabled) captured
+    at record time. Used by the runner to suggest available options
+    in the structural failure message and to detect when the option
+    set has stabilized after a cascading parent change."""
+
+    match_mode: Literal["value", "label", "alias", "current_options"] = "value"
+    """How to match the recorded value against the current options.
+      - ``value`` (default): exact option.value match.
+      - ``label``: exact option text match.
+      - ``alias``: try value, then label, then aliases.
+      - ``current_options``: ignore recorded, select from current
+        options by recorded_index (for dynamic option sets)."""
+
+    aliases: dict[str, list[str]] = Field(default_factory=dict)
+    """Operator-declared aliases. Key is the recorded value or label;
+    value is a list of acceptable alternatives. E.g.
+    ``{"US": ["USA", "United States"]}``. Aliases are tried only when
+    match_mode == ``alias``. Empty dict means no aliases declared."""
+
+    recorded_index: Optional[int] = None
+    """For ``current_options`` mode: which index in the current option
+    list to pick. Useful when the option order is stable but values
+    change (e.g. status transitions where you always want the SECOND
+    transition)."""
+
+
+class DependencyChain(BaseModel):
+    """WI-18: declares a chain of parent->child select dependencies.
+
+    Captures: 'changing the region select causes the markets select to
+    refresh its options via a request to /api/markets?region=X'. The
+    annotator attaches this chain to the PARENT select's step so the
+    runner can wait for the child options to refresh after the parent
+    change before the child's own select_option step runs.
+
+    Without this, a cascading-select replay races: it changes the
+    parent, then immediately tries to pick the recorded child value,
+    but the child's option list hasn't refreshed yet -- so the runner
+    either picks a stale option (correct value, wrong meaning) or fails
+    because the recorded option no longer exists.
+
+    Acceptance check (from the plan):
+      Change region=APAC, replay picks Market from APAC list; recorded
+      California (USA) under India fails cleanly with available Indian
+      markets -- NO fuzzy fallback on cascading deps.
+    """
+
+    parent_param: str
+    """Name of the parent param (the one whose change drives the
+    dependent). E.g. ``region``."""
+
+    child_param: str
+    """Name of the dependent param. E.g. ``market``."""
+
+    option_source_request: Optional["NetworkExpectation"] = None
+    """The backend request the parent change is expected to trigger to
+    refresh the child's options. Runner waits for this to complete
+    before the child step runs."""
+
+    child_options_signature_after: Optional[str] = None
+    """Optional CSS selector pointing at the child select. Runner reads
+    the option count / values from this selector after the parent
+    change and the request completes, verifying that the option set
+    actually mutated (and not just 'request completed but options
+    didn't change' which would also be a structural error)."""
+
+
+class DatePickerSpec(BaseModel):
+    """WI-21: spec for native or custom date pickers.
+
+    Two kinds:
+      - ``native``: ``<input type="date">`` (or ``datetime-local``,
+        ``time``, ``month``, ``week``). Runner sets the ISO-formatted
+        value directly and dispatches ``input`` + ``change`` events.
+      - ``custom``: a calendar grid widget (React DatePicker,
+        Material-UI, etc.) where the operator clicked a specific day
+        cell. The annotator detected the cluster from the calendar
+        role + cell clicks. At replay the runner DOES NOT replay the
+        recorded click path (the calendar may be on a different month
+        / year for a different target date); instead it navigates by
+        SEMANTIC date target (next/prev month buttons until the target
+        month is showing, then click the cell matching the target day).
+
+    Both kinds use ``value_param`` to bind a date param. The codec on
+    the SkillParam (``iso_date`` from WI-05) normalizes the operator's
+    input (any locale) to ISO ``YYYY-MM-DD`` before the runner consumes
+    it.
+
+    Acceptance check (from the plan):
+      Recorded date 2026-05-20 replays a different date without
+      needing the same calendar nav clicks.
+    """
+
+    kind: Literal["native", "custom"]
+    """``native`` for HTML date inputs (instant value set); ``custom``
+    for calendar-widget pickers (semantic navigation)."""
+
+    value_param: str
+    """Name of the date param (typed ``date`` with ``iso_date`` codec).
+    Runner reads the resolved ISO date from ``self.params[value_param]``."""
+
+    display_format: Optional[str] = None
+    """For ``custom`` pickers that show dates in a specific format
+    (e.g. ``MM/DD/YYYY``). The runner uses this to read the currently-
+    shown month/year from the widget's header. None falls back to
+    standard ISO parsing."""
+
+    timezone: Optional[str] = None
+    """IANA timezone the operator's portal renders dates in. None means
+    use the recorded portal's timezone_hint (or UTC if absent)."""
+
+    calendar_grid_fp: Optional[ElementFingerprint] = None
+    """For ``custom``: fingerprint of the calendar grid container
+    (role=grid). Runner scopes its cell-click search inside this."""
+
+    prev_month_fp: Optional[ElementFingerprint] = None
+    next_month_fp: Optional[ElementFingerprint] = None
+    """For ``custom``: navigation buttons to move the visible month
+    backward / forward by one month."""
+
+    month_year_label_fp: Optional[ElementFingerprint] = None
+    """For ``custom``: the label that shows the currently-displayed
+    month + year (e.g. 'May 2026'). Runner reads this to know whether
+    to advance or retreat before clicking a day cell."""
+
+    day_cell_template_fp: Optional[ElementFingerprint] = None
+    """For ``custom``: cell click target template with a ``{day}``
+    placeholder. Materialized with the target day-of-month (1-31)."""
+
+    selected_day_identity: Optional[dict[str, Any]] = None
+    """Optional record-time snapshot of which day cell was clicked
+    (month/year/day). Audit-only; the runner picks by target_date, not
+    by recorded click."""
+
+
 class SetSelectionSpec(BaseModel):
     """Specification for a multi-select reconciliation step.
 
@@ -829,6 +1105,57 @@ class SetSelectionSpec(BaseModel):
     the raw item id. E.g. for testid='multiselect-categories-chip-sports',
     prefix='multiselect-categories-chip-' yields 'sports'."""
 
+    final_equality_assertion: bool = True
+    """WI-19: after the reconciliation, the runner reads the chip set
+    again and verifies it equals the target set EXACTLY. ``True`` is
+    safe-by-default for the WI-19 acceptance check ('recorded
+    categories [sports, drama] replayed with [kids] ends with exactly
+    [kids] chips'). When the operator declares ``False`` -- e.g. for
+    ``mode='add'`` where they want to preserve other selections -- the
+    runner skips the equality check and only verifies the diff applied.
+
+    Set to ``False`` to opt out for legacy skills where the chip
+    container selector is unreliable; ``True`` is the new safe default
+    introduced by WI-19 that catches the silent set_selection_remove_
+    failed / set_selection_commit_failed bugs WI-06 surfaced as warnings
+    but did not fail-stop on."""
+
+    depends_on: Optional[str] = None
+    """WI-20: name of a parent picker param whose value drives this
+    multiselect's option set. E.g. ``parent_category`` for a nested
+    subcategory picker. When set, the runner ensures the parent picker
+    has been set to the dependency's value (via a prior step or by
+    reading the current state) BEFORE reconciling the child set.
+
+    Used together with ``parent_picker_fp`` + ``option_source`` to
+    describe a 'category -> subcategory' chain where changing the
+    parent refreshes the child's option list."""
+
+    parent_picker_fp: Optional[ElementFingerprint] = None
+    """WI-20: fingerprint of the parent picker (select / autocomplete /
+    multiselect) whose value drives this picker's options. Resolved
+    against ``depends_on`` to fetch the parent value. None when no
+    cascading parent (flat picker; this is the WI-19 case)."""
+
+    option_source: Optional["NetworkExpectation"] = None
+    """WI-20: the backend request the parent change is expected to fire
+    to refresh THIS picker's options. Runner waits for this request to
+    complete (action-baseline scoped per WI-09) before reconciling the
+    child set so it never picks from stale options."""
+
+    search_result_signal: Optional[str] = None
+    """WI-20: URL substring of the search/filter request the picker
+    fires while the operator types in the search field. Distinct from
+    ``option_source`` (initial refresh) -- this is per-keystroke
+    filtering. Runner waits for this signal after typing into the
+    search field, before clicking the per-item checkbox."""
+
+    hierarchy_path: list[str] = Field(default_factory=list)
+    """WI-20: for hierarchical pickers (e.g. category > subcategory >
+    leaf), the path from root to this picker. Audit-only -- describes
+    the structural relationship for operator review UI. Empty for flat
+    pickers."""
+
 
 class SkillStep(BaseModel):
     """One step of an operator demonstration."""
@@ -874,6 +1201,37 @@ class SkillStep(BaseModel):
     """Spec for action='set_selection' steps. Carries the picker
     open/close fingerprints, the search/checkbox templates, and the
     reconciliation mode."""
+
+    fill_submit: Optional[FillSubmitSpec] = None
+    """WI-15: spec for action='fill_submit' steps. Carries the submit
+    trigger ('enter' / 'button' / 'form_submit'), the value param
+    binding, the optional submit button fingerprint, and the optional
+    expected-result network signal. None for non-fill_submit actions."""
+
+    select_autocomplete: Optional[AutocompleteSpec] = None
+    """WI-16: spec for action='select_autocomplete' steps. Carries the
+    separated query / selected_item params, the result container, the
+    option identity template, and the network expectation that gates
+    selection on the search response. None for non-autocomplete
+    actions."""
+
+    select_option: Optional[SelectOptionSpec] = None
+    """WI-17: spec for action='select_option' steps. Carries the
+    recorded value/label, the options snapshot, the match mode, and
+    declared aliases. Replaces fuzzy-fallback with declared-or-fail
+    semantics. None for non-select_option actions."""
+
+    dependency_chain: Optional[DependencyChain] = None
+    """WI-18: parent->child cascading-select declaration. Attached to
+    the PARENT select step so the runner can wait for the child's
+    options to refresh before the child step runs. None for
+    non-cascading steps."""
+
+    date_select: Optional[DatePickerSpec] = None
+    """WI-21: spec for action='date_select' steps. Carries the
+    native/custom kind, the value param, locale/timezone hints, and
+    (for custom) calendar widget navigation fingerprints. None for
+    non-date_select actions."""
 
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy
