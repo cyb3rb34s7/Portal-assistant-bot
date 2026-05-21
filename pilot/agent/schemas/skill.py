@@ -35,7 +35,13 @@ class SkillParameter(BaseModel):
         "(e.g. 'PPT slide table column Asset ID' or 'user-provided').",
     )
     default_hint: str | None = None
-    type: Literal["string", "number", "boolean", "date", "file_path"] = "string"
+    # WI-05: typed param expansion. The v2 sidecar shape mirrors the v1
+    # SkillParam.type Literal so a planner/LLM speaking the v2 schema
+    # can produce values that survive runner-side codec resolution.
+    type: Literal[
+        "string", "number", "boolean", "date", "datetime",
+        "file_path", "enum", "number_range", "string_list", "object",
+    ] = "string"
 
 
 class SuccessAssertion(BaseModel):
@@ -115,10 +121,19 @@ class SkillFile(BaseModel):
 
 
 _V1_TYPE_MAP = {"string": "string", "number": "number", "boolean": "boolean",
-                "date": "date", "int": "number", "integer": "number",
+                "date": "date", "datetime": "datetime",
+                "int": "number", "integer": "number",
                 "float": "number", "bool": "boolean",
                 "file_path": "file_path", "filepath": "file_path",
-                "path": "file_path"}
+                "path": "file_path",
+                # WI-05: typed param expansion. v1 SkillParam type
+                # Literal now includes enum/number_range/string_list/
+                # object, and the v2 sidecar accepts them so a v1->v2
+                # migration of a typed skill keeps the type intact.
+                "enum": "enum",
+                "number_range": "number_range",
+                "string_list": "string_list",
+                "object": "object"}
 
 
 def _migrate_v1_params(legacy_params: list[dict[str, Any]]) -> list[dict[str, Any]]:

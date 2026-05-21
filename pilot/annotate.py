@@ -23,6 +23,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
     ParamBinding,
@@ -345,12 +346,45 @@ def build_skill(
 
         if binding and binding.name not in declared_params:
             example = ev.value or ev.file_name or ""
+            # WI-05: deterministic typed-param inference from the
+            # grabber's WI-03 control metadata. We don't override the
+            # binding's legacy ``type`` (file_path stays file_path) when
+            # it's already specific; we DO upgrade ``string`` bindings
+            # to the more accurate type (boolean, enum, date, etc.) and
+            # populate the matching codec + enum option snapshot when
+            # the recording carried one. Legacy traces with no control
+            # metadata still produce (string, raw) -- safe.
+            fp = ev.fingerprint
+            inferred_type, inferred_codec = infer_param_type_and_codec(
+                control_kind=getattr(fp, "control_kind", None) if fp else None,
+                value_kind=getattr(fp, "value_kind", None) if fp else None,
+                recorded_value=example,
+                has_options_snapshot=bool(
+                    fp and fp.options_snapshot
+                ) if fp else False,
+            )
+            # Honor an explicit file_path binding even if the grabber
+            # missed control_kind (older traces). Otherwise let the
+            # grabber metadata win -- it's structural truth from the
+            # moment of recording.
+            if binding.type == "file_path":
+                final_type = "file_path"
+                final_codec = "file_ref"
+            else:
+                final_type = inferred_type
+                final_codec = inferred_codec
             declared_params[binding.name] = SkillParam(
                 name=binding.name,
-                type=binding.type,
+                type=final_type,  # type: ignore[arg-type]
+                codec=final_codec,  # type: ignore[arg-type]
                 description=f"Value for step {step.index}: {label}",
                 example=example or None,
                 required=True,
+                enum_options=(
+                    list(fp.options_snapshot)
+                    if fp and fp.options_snapshot
+                    else None
+                ),
             )
 
     if skipped and not auto:

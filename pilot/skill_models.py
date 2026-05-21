@@ -706,17 +706,97 @@ class SkillStep(BaseModel):
     auto_post_observed: Optional[dict[str, Any]] = None   # auto-observed DOM diff
 
 
+class ParamConstraints(BaseModel):
+    """WI-05: typed constraints checked by the runner BEFORE the step
+    touches the page. Failing constraints emit
+    ``error_kind="param_validation_failed"`` so the operator sees what
+    was rejected and why rather than a downstream page error.
+
+    Each field is optional; constraint checks short-circuit on the
+    first hit. ``allowed_values`` is matched case-sensitively; aliasing
+    belongs on the SelectOptionSpec, not here."""
+
+    allowed_values: Optional[list[str]] = None
+    """Whitelist of acceptable values. Used by ``enum`` params plus any
+    other type where the operator wants strict membership. Compared
+    after codec resolution: an ``enum_label`` codec converts a recorded
+    label to its value before this check."""
+    min: Optional[float] = None
+    max: Optional[float] = None
+    """Numeric bounds. Applied to ``number`` / ``number_range`` /
+    ``date`` / ``datetime`` after codec resolution (dates compare as
+    iso strings -- ``min='2025-01-01'`` accepts any later iso date)."""
+    mime_types: Optional[list[str]] = None
+    """Whitelist of MIME prefixes (e.g. ``image/``, ``application/pdf``)
+    for ``file_path`` params. The runner reads the file's extension and
+    Python's ``mimetypes`` module; the page-side ``accept`` attribute is
+    already enforced by the browser at upload, this check fails fast."""
+    extensions: Optional[list[str]] = None
+    """Lowercased file extensions (with leading dot, e.g. ``.png``).
+    Applied to ``file_path`` after ``mime_types``."""
+    required_shape: Optional[str] = None
+    """Regex (Python ``re``) the resolved value must fully match. Cheap
+    safety net for portals that demand specific id/sku formats. Compiled
+    once per validation; failures emit the offending regex in
+    ``error_details``."""
+    list_min_len: Optional[int] = None
+    list_max_len: Optional[int] = None
+    """Bounds on ``string_list`` length. ``list_max_len=1`` enforces
+    'single item passed as a list' for portals whose set_selection
+    happens to accept only one item per call."""
+
+
+# WI-05: typed param expansion.
+#
+# Legacy v1 skills only declared ``string`` / ``number`` / ``date`` /
+# ``file_path`` / ``string_list``. They worked because the runner stored
+# everything as a string and the page accepted whatever showed up. That
+# pushed semantic decisions (date format, boolean coercion, enum
+# membership) into per-action shim code in skill_runner.py -- the same
+# kind of hidden default the audit flagged.
+#
+# These types are paired with a ``codec`` that converts the operator-
+# provided value to the canonical string the page expects (ISO date,
+# localized number, enum value, file path resolved against the session).
+# The runner runs codec -> constraints in that order, then hands the
+# resolved value to the action handler. Bad values fail BEFORE the page
+# mutates, with structured error_kind="param_validation_failed".
+SkillParamType = Literal[
+    # Legacy v1 types preserved for backward compatibility.
+    "string",
+    "number",
+    "date",
+    "file_path",
+    "string_list",
+    # WI-05 typed expansion.
+    "boolean",           # checkboxes / toggle switches
+    "enum",              # native single-select with a fixed option set
+    "number_range",     # range slider / numeric with declared min/max
+    "datetime",          # iso datetime with optional timezone
+    "file_path",         # legacy; codec carries the resolution policy
+    "object",            # nested JSON payload (rich text, structured form)
+]
+
+
+SkillParamCodec = Literal[
+    "raw",              # pass-through. Default for ``string`` params.
+    "iso_date",         # parse + canonicalize to ``YYYY-MM-DD``
+    "iso_datetime",     # parse + canonicalize to RFC 3339
+    "localized_number",  # parse with locale_hint, emit canonical decimal
+    "enum_value",       # operator passed the option ``value`` directly
+    "enum_label",       # operator passed the option ``label``; codec
+                        # converts to value via the captured options_snapshot
+    "file_ref",         # ``file_path`` resolved against session artifact
+                        # dir (and validated for existence)
+    "boolean",          # accept true/false/1/0/on/off; normalize to "true"/"false"
+]
+
+
 class SkillParam(BaseModel):
     """Declared parameter of a skill."""
 
     name: str
-    type: Literal[
-        "string",
-        "number",
-        "date",
-        "file_path",
-        "string_list",  # multi-value (categories, tags)
-    ] = "string"
+    type: SkillParamType = "string"
     description: str = ""
     example: Optional[str] = None
     required: bool = True
@@ -740,6 +820,33 @@ class SkillParam(BaseModel):
     # WI-01: provenance for the param value. None for legacy auto-named
     # params; populated by future deterministic annotation pass (WI-11).
     provenance: Optional[ParamProvenance] = None
+
+    # WI-05: typed codec + constraints.
+    codec: SkillParamCodec = "raw"
+    """How the operator-provided value is converted to the canonical
+    string the page expects. Default ``raw`` is pass-through so legacy
+    string params behave identically. Specific codecs:
+      - ``iso_date``: input may be ``M/D/YYYY``, ``YYYY-MM-DD``, etc.;
+        codec emits ``YYYY-MM-DD``.
+      - ``localized_number``: parses with locale (read off param
+        provenance / PortalContext locale_hint); emits canonical decimal.
+      - ``enum_value`` / ``enum_label``: bind to a SelectOptionSpec on
+        the same step's fingerprint.options_snapshot.
+      - ``file_ref``: resolves against the session artifact dir,
+        validates existence."""
+
+    constraints: Optional[ParamConstraints] = None
+    """Optional typed constraints. The runner validates after codec
+    resolution -- failing values raise error_kind=
+    ``param_validation_failed`` before the page is touched. ``None``
+    means no constraints declared (legacy + raw string params)."""
+
+    enum_options: Optional[list[OptionSnapshot]] = None
+    """For ``enum`` params: the option set captured at record time,
+    used by the ``enum_label`` codec to map labels back to values and by
+    the runner to fail with a useful list when an operator-passed value
+    isn't in the set. Populated by the annotator from the recording's
+    ElementFingerprint.options_snapshot."""
 
 
 class Skill(BaseModel):

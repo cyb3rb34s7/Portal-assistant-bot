@@ -43,6 +43,7 @@ from rich.table import Table
 from .audit import AuditLogger
 from .browser import BrowserSession, connect_to_chrome
 from .models import ToolResult
+from .param_codecs import ParamValidationError, resolve_param
 from .skill_models import (
     ElementFingerprint,
     ExpectedSignals,
@@ -308,7 +309,29 @@ class SkillRunner:
             "error_kind": None,
         }
 
-        value = self._resolved_value(step)
+        try:
+            value = self._resolved_value(step)
+        except ParamValidationError as pve:
+            # WI-05: typed codec / constraint failure. Surface as a
+            # structured error BEFORE the page is touched. The
+            # orchestrator's pause flow shows the operator the
+            # diagnostic and lets them retry/skip/abort.
+            shot = self._screenshot(f"step_{step.index}_param_validation")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"param validation: {pve.message}",
+                    error=str(pve),
+                    error_kind="param_validation_failed",
+                    error_details={
+                        "param": pve.param_name,
+                        "step_index": step.index,
+                        **pve.details,
+                    },
+                    screenshot_path=shot,
+                ),
+                0,
+            )
 
         # Allow framework state + effects to settle between steps, and
         # flush any pending async work. When step.expected_signals is
@@ -868,7 +891,45 @@ class SkillRunner:
             )
         if binding.mode == "template" and binding.template:
             return binding.template.format(**self.params)
+
+        # WI-05: typed codec + constraints. The runner looks up the
+        # declared SkillParam (the binding only carries name + mode) and
+        # passes the operator-provided value through its codec, then
+        # validates constraints. A failure raises ParamValidationError
+        # which the caller converts to ToolResult.error_kind=
+        # "param_validation_failed" so the page is never touched.
+        sk_param = self._lookup_skill_param(binding.name)
+        if sk_param is not None and (sk_param.codec != "raw"
+                                     or sk_param.constraints is not None):
+            try:
+                resolved = resolve_param(sk_param, provided)
+            except ParamValidationError:
+                # Bubble up; ``_execute_step`` catches and converts.
+                raise
+            # The runner's other action handlers expect a single string;
+            # string_list params are consumed via params dict directly
+            # by _do_set_selection (which reads self.params[spec.param]).
+            if isinstance(resolved, list):
+                # Stash back so set_selection sees a real list, not the
+                # raw operator input (e.g. comma string).
+                self.params[binding.name] = resolved
+                return None
+            return resolved
         return str(provided)
+
+    def _lookup_skill_param(self, name: str):
+        """WI-05: find the SkillParam declaration for a binding name.
+
+        ``Skill.params`` is a small list (skills with hundreds of params
+        do not exist in practice), so linear scan is fine. Returns None
+        when the binding name is not declared as a skill param --
+        legacy skills with auto-named bindings fall through to
+        pass-through str() coercion.
+        """
+        for p in self.skill.params:
+            if p.name == name:
+                return p
+        return None
 
     # ---- Locator resolution with 4-level fallback --------------------------
 
