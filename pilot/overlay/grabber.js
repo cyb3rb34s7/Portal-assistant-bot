@@ -547,12 +547,26 @@
           ) {
             _emitReadiness("disabled_until_enabled", t, "enabled");
           }
+          // WI-44: aria-invalid='true' means the field just got
+          // flagged as invalid by the page's validator (either client
+          // or server-side, surfaced via the field's attribute).
+          // Emit a validation_invalid signal so the annotator can
+          // emit a validation_field assertion AND the runner's
+          // post-action _check_validation_errors auto-detection has
+          // the trace evidence to surface a server_validation
+          // failure.
+          if (
+            name === "aria-invalid"
+            && t.getAttribute("aria-invalid") === "true"
+          ) {
+            _emitReadiness("validation_invalid", t, "true");
+          }
         }
       });
       mo.observe(root, {
         attributes: true,
         subtree: true,
-        attributeFilter: ["aria-busy", "disabled"],
+        attributeFilter: ["aria-busy", "disabled", "aria-invalid"],
       });
     } catch (e) {
       if (DEBUG) console.warn("[cp] readiness watcher failed", e);

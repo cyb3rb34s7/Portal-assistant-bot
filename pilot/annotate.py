@@ -655,6 +655,60 @@ def _click_inside_dialog(ev: TraceEvent, dialog_selector: str) -> bool:
     return False
 
 
+def _index_validation_errors(
+    events: list[TraceEvent],
+) -> dict[str, list["StepAssertion"]]:
+    """WI-44: build a {causing_event_id -> [StepAssertion(validation_field), ...]}
+    map from the grabber's WI-44 validation_invalid readiness events.
+
+    The grabber emits dom_mutation events with
+    ``mutation_summary.readiness = {kind='validation_invalid', selector, value}``
+    when an element's aria-invalid flipped to 'true' during a user
+    interaction window. We translate each into a StepAssertion(kind=
+    validation_field) the runner can re-probe at replay to surface
+    the same validation failure structurally.
+
+    The annotator stamps these as ASSERTIONS (not expected_signals)
+    so they fail the step with error_kind=server_validation when the
+    same validation fires again at replay. Operators who EXPECT a
+    field to fail validation (negative-path testing) keep the
+    assertion; operators who want the field to succeed remove it.
+    """
+    from .skill_models import StepAssertion as _StepAss
+    out: dict[str, list[_StepAss]] = {}
+    for ev in events:
+        if ev.kind != "dom_mutation":
+            continue
+        if not ev.caused_by:
+            continue
+        readiness = (ev.mutation_summary or {}).get("readiness")
+        if not isinstance(readiness, dict):
+            continue
+        rk = readiness.get("kind")
+        sel = readiness.get("selector")
+        if rk != "validation_invalid" or not sel:
+            continue
+        # Derive a validation_field_id from the selector by stripping
+        # the common selector prefixes (the runner can still resolve
+        # via the full selector).
+        field_id = sel
+        if sel.startswith('[data-testid="') and sel.endswith('"]'):
+            field_id = sel[len('[data-testid="'):-len('"]')]
+        elif sel.startswith("#"):
+            field_id = sel[1:]
+        ass = _StepAss(
+            kind="validation_field",
+            selector=sel,
+            validation_field_id=field_id,
+            validation_level="error",
+            # message_pattern stays None so any non-empty validation
+            # message satisfies the assertion. Operators can tighten
+            # the pattern post-annotate when they want exact match.
+        )
+        out.setdefault(ev.caused_by, []).append(ass)
+    return out
+
+
 def _index_readiness_signals(
     events: list[TraceEvent],
 ) -> dict[str, list[DomExpectation]]:
@@ -3068,6 +3122,11 @@ def build_skill(
     # into the step's expected_signals.dom so replay waits for the
     # declared readiness instead of the legacy spinner-by-convention.
     readiness_by_cause = _index_readiness_signals(events)
+    # WI-44: server validation errors observed during the action's
+    # effect window. The annotator stamps StepAssertion(kind=
+    # validation_field) entries onto the causing step's assert_after
+    # so replay catches the same validation failure structurally.
+    validation_assertions_by_cause = _index_validation_errors(events)
 
     # WI-34: dialog mount/unmount observations indexed by causing
     # event id. Each entry becomes effects.modal on the causing step;
@@ -3863,10 +3922,19 @@ def build_skill(
                 ambiguity_policy="fail_if_multiple",
             )
 
+        # WI-44: lift any validation_field assertions captured during
+        # this event's effect window onto the step's assert_after.
+        step_assertions: list[Any] = []
+        if ev.event_id and ev.event_id in validation_assertions_by_cause:
+            step_assertions.extend(
+                validation_assertions_by_cause[ev.event_id]
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
             fingerprint=ev.fingerprint,
+            assert_after=step_assertions,
             url=ev.url if ev.kind == "navigate" else None,
             value=(ev.value if ev.kind in ("input_change", "key") else None),
             file_path=(ev.file_name if ev.kind == "file_selected" else None),

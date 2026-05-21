@@ -583,6 +583,43 @@ class SkillRunner:
                     0,
                 )
 
+            # WI-44: auto-detect UNEXPECTED server validation errors.
+            # When a step succeeded structurally (the click landed, the
+            # request fired) but the page surfaced an aria-invalid +
+            # validation message AFTER the action, fail the step with
+            # error_kind='server_validation'. The operator's recording
+            # didn't expect this -- the replay-time data violated a
+            # server rule (Title is required, slug must be unique).
+            # Skipped when the step already has a validation_field
+            # assertion (the operator EXPECTED validation, the
+            # _verify_assertions path below handles it).
+            if result.success:
+                already_has_validation = any(
+                    a.kind == "validation_field" for a in step.assert_after
+                )
+                if not already_has_validation:
+                    auto_fail, auto_details = self._check_validation_errors()
+                    if auto_fail:
+                        shot = self._screenshot(
+                            f"step_{step.index}_server_validation"
+                        )
+                        return (
+                            ToolResult(
+                                success=False,
+                                action_taken=result.action_taken,
+                                error=(
+                                    f"server validation rejected the step: "
+                                    f"{auto_details.get('message')!r} "
+                                    f"on field {auto_details.get('field_id')!r}"
+                                ),
+                                error_kind="server_validation",
+                                error_details=auto_details,
+                                screenshot_path=shot,
+                                healed=result.healed,
+                            ),
+                            level,
+                        )
+
             # WI-42: toast verification BEFORE generic assert_after.
             # When the step declared an effects.toast, the runner waits
             # for the matching toast and fails on level=error (the
@@ -852,6 +889,80 @@ class SkillRunner:
                 except Exception:
                     pass
         return True, None
+
+    def _check_validation_errors(self) -> tuple[bool, dict[str, Any]]:
+        """WI-44: auto-detect server validation errors after the action.
+
+        Scans the page for any element carrying aria-invalid='true'
+        AND a non-empty validation message. Returns (True, details)
+        when a validation error is found; (False, {}) otherwise.
+
+        details shape: {field_id, selector, message}.
+
+        Uses a single page.evaluate so the scan is one round-trip,
+        capped at the first match (validation errors typically come
+        in batches; the first message is usually the most actionable
+        and surfacing all of them would clutter error_details).
+        """
+        page = self.session.page
+        try:
+            result = page.evaluate(
+                "() => {"
+                "  const invalids = document.querySelectorAll("
+                "    '[aria-invalid=\"true\"]'"
+                "  );"
+                "  for (let i = 0; i < invalids.length; i++) {"
+                "    const fld = invalids[i];"
+                "    let msg = null;"
+                "    const dby = fld.getAttribute('aria-describedby');"
+                "    if (dby) {"
+                "      const refs = dby.split(/\\s+/);"
+                "      for (let j = 0; j < refs.length; j++) {"
+                "        const r = document.getElementById(refs[j]);"
+                "        if (r && r.textContent && r.textContent.trim()) {"
+                "          msg = r.textContent.trim();"
+                "          break;"
+                "        }"
+                "      }"
+                "    }"
+                "    if (!msg && fld.parentElement) {"
+                "      const a = fld.parentElement.querySelector(\"[role='alert']\");"
+                "      if (a && a.textContent && a.textContent.trim()) {"
+                "        msg = a.textContent.trim();"
+                "      }"
+                "    }"
+                "    if (!msg && fld.parentElement) {"
+                "      const e = fld.parentElement.querySelector("
+                "        '.error, .field-error, .validation-error, .invalid-feedback'"
+                "      );"
+                "      if (e && e.textContent && e.textContent.trim()) {"
+                "        msg = e.textContent.trim();"
+                "      }"
+                "    }"
+                "    if (msg) {"
+                "      const tid = fld.getAttribute('data-testid');"
+                "      const id = fld.id;"
+                "      const name = fld.getAttribute('name');"
+                "      const fid = tid || id || name || '';"
+                "      const sel = tid ? \"[data-testid='\" + tid + \"']\""
+                "        : id ? '#' + id"
+                "        : name ? \"[name='\" + name + \"']\""
+                "        : null;"
+                "      return { field_id: fid, selector: sel, message: msg };"
+                "    }"
+                "  }"
+                "  return null;"
+                "}"
+            )
+        except Exception:
+            return False, {}
+        if result and isinstance(result, dict) and result.get("message"):
+            return True, {
+                "field_id": result.get("field_id"),
+                "selector": result.get("selector"),
+                "message": result.get("message")[:512],
+            }
+        return False, {}
 
     def _has_field_enabled_signal(self, step: SkillStep) -> bool:
         """WI-43: True when the step declared a DomExpectation that
@@ -5808,7 +5919,79 @@ class SkillRunner:
             # contract is documented; the implementation lands with
             # WI-45.
             return True
+        if a.kind == "validation_field" and a.selector:
+            # WI-44: the assertion fires when the field carries
+            # aria-invalid='true' (for level=error) AND a nearby
+            # validation message contains message_pattern (when
+            # declared). Used for NEGATIVE-path testing: the operator
+            # EXPECTS validation to surface.
+            try:
+                loc = page.locator(a.selector).first
+                loc.wait_for(state="attached", timeout=a.timeout_ms)
+                aria_invalid = loc.get_attribute(
+                    "aria-invalid", timeout=a.timeout_ms
+                ) or ""
+                if a.validation_level == "error" and aria_invalid.lower() != "true":
+                    return False
+                # Read nearby validation message: aria-describedby
+                # target OR sibling [role='alert'] in the same form
+                # row.
+                if a.message_pattern:
+                    msg = self._read_validation_message(page, a.selector)
+                    if not msg:
+                        return False
+                    return a.message_pattern.lower() in msg.lower()
+                return True
+            except Exception:
+                return False
         return False
+
+    def _read_validation_message(
+        self, page: Page, field_selector: str
+    ) -> Optional[str]:
+        """WI-44: read the validation message bound to a form field.
+
+        Try, in order:
+          1. aria-describedby target's textContent.
+          2. nearest [role='alert'] sibling in the field's parent.
+          3. nearest .error / .field-error / .validation-error
+             descendant of the field's parent.
+        Returns the first non-empty match, trimmed.
+        """
+        try:
+            return page.evaluate(
+                "(sel) => {"
+                "  const fld = document.querySelector(sel);"
+                "  if (!fld) return null;"
+                "  const dby = fld.getAttribute('aria-describedby');"
+                "  if (dby) {"
+                "    const refs = dby.split(/\\s+/);"
+                "    for (let i = 0; i < refs.length; i++) {"
+                "      const r = document.getElementById(refs[i]);"
+                "      if (r && r.textContent && r.textContent.trim()) {"
+                "        return r.textContent.trim();"
+                "      }"
+                "    }"
+                "  }"
+                "  const parent = fld.parentElement;"
+                "  if (parent) {"
+                "    const a = parent.querySelector(\"[role='alert']\");"
+                "    if (a && a.textContent && a.textContent.trim()) {"
+                "      return a.textContent.trim();"
+                "    }"
+                "    const e = parent.querySelector("
+                "      '.error, .field-error, .validation-error, .invalid-feedback'"
+                "    );"
+                "    if (e && e.textContent && e.textContent.trim()) {"
+                "      return e.textContent.trim();"
+                "    }"
+                "  }"
+                "  return null;"
+                "}",
+                field_selector,
+            )
+        except Exception:
+            return None
 
     def _describe_assertion(self, a: "StepAssertion") -> str:
         parts = [a.kind]

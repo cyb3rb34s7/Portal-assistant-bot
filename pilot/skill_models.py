@@ -383,6 +383,15 @@ class StepAssertion(BaseModel):
         "toast_visible",          # save / conflict / undo toast appeared
         "request_completed",      # specific network call settled with status
         "download_started",       # browser download trigger fired
+        # WI-44: server validation error bound to a specific form
+        # field. The runner reads the field's [aria-invalid] / nearby
+        # role=alert text and surfaces the validation message in
+        # error_details. ``validation_field`` is the assertion kind
+        # used when the operator EXPECTS validation to fire (negative
+        # path testing). When validation fires UNEXPECTEDLY, the
+        # runner uses the auto-detect path below in
+        # _check_validation_errors -- no assertion required.
+        "validation_field",
     ]
     selector: Optional[str] = None
     """CSS selector. Required for visible / hidden / count_* /
@@ -413,6 +422,23 @@ class StepAssertion(BaseModel):
     filename_pattern: Optional[str] = None
     """WI-27: for kind=download_started, optional filename substring
     or template fragment the download must match."""
+
+    # WI-44: validation_field assertion fields.
+    validation_field_id: Optional[str] = None
+    """WI-44: for kind=validation_field: the form-field's identifier
+    (test_id / id / name). The runner resolves the field via this id
+    and reads its [aria-invalid] attribute + nearby [role='alert'] /
+    error-text element to extract the validation message."""
+    validation_level: Optional[Literal["error", "warning"]] = None
+    """WI-44: severity the assertion expects. ``error`` means the
+    field MUST carry aria-invalid='true' AND a non-empty validation
+    message; ``warning`` accepts the validation message without
+    aria-invalid being set (warning-level annotations often live as
+    a sibling [role='status'] without flagging the field itself)."""
+    message_pattern: Optional[str] = None
+    """WI-44: for kind=validation_field: substring the validation
+    message must contain (case-insensitive). When None, any non-empty
+    message satisfies the assertion."""
 
 
 class NetworkExpectation(BaseModel):

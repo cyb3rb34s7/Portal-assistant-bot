@@ -335,6 +335,21 @@ async function dispatch(req, res, url) {
     if (!sub && method === "PATCH") {
       if (maybeReplayIdempotent(req, res)) return;
       const body = await readBody(req);
+      // WI-44: server validation. Title is required (non-empty,
+      // trimmed). Return 422 with a field-keyed error so the
+      // client can mark the title input aria-invalid and the
+      // runner's _check_validation_errors auto-detect surfaces
+      // 'Title is required' as the failure reason.
+      if ("title" in body && (!body.title || !String(body.title).trim())) {
+        const errBody = {
+          error: "validation_failed",
+          fields: {
+            title: "Title is required",
+          },
+        };
+        cacheIdempotent(req, 422, errBody);
+        return send(res, 422, errBody, 500);
+      }
       // Whitelist of editable fields -- never trust client to set
       // status / workflow_history directly.
       const editable = [
@@ -346,6 +361,8 @@ async function dispatch(req, res, url) {
         "language",
         "publish_at",
         "comment",
+        "description",
+        "priority",
       ];
       for (const k of editable) {
         if (k in body) asset[k] = body[k];

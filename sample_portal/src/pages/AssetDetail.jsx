@@ -33,6 +33,9 @@ export default function AssetDetail() {
   // WI-42: transient toast notification (Saved / Failed / Undo).
   // Auto-clears after 4s unless dismissed or undone.
   const [toast, setToast] = useState(null);
+  // WI-44: per-field validation messages keyed by field id.
+  // Populated by the server when PATCH returns 422.
+  const [fieldErrors, setFieldErrors] = useState({});
 
   // Editable form state (mirrors the asset, plus local-only fields).
   const [form, setForm] = useState({
@@ -159,6 +162,7 @@ export default function AssetDetail() {
   async function onSave() {
     setSaving(true);
     setError(null);
+    setFieldErrors({});
     try {
       const updated = await api.patch(
         `/api/assets/${encodeURIComponent(id)}`,
@@ -170,14 +174,32 @@ export default function AssetDetail() {
       setToast({ level: "success", text: "Saved" });
       setTimeout(() => setToast((t) => (t && t.text === "Saved" ? null : t)), 4000);
     } catch (e) {
-      setError(String(e.message || e));
-      // WI-42: error toast surfaces the failure message. The
-      // runner's _verify_toast_effect picks up level=error and
-      // fails the step with toast_error.
-      setToast({
-        level: "error",
-        text: `Save failed: ${String(e.message || e)}`,
-      });
+      // WI-44: parse server-side validation errors. The api layer
+      // throws an Error whose message is the JSON-stringified body
+      // when status >= 400. Look for { fields: {...} } shape.
+      let parsed = null;
+      try {
+        parsed = JSON.parse(e.message);
+      } catch (pe) {}
+      if (parsed && parsed.fields) {
+        setFieldErrors(parsed.fields);
+        setError("Save failed: validation");
+        setToast({
+          level: "error",
+          text: `Save failed: ${
+            Object.values(parsed.fields).join("; ")
+          }`,
+        });
+      } else {
+        setError(String(e.message || e));
+        // WI-42: error toast surfaces the failure message. The
+        // runner's _verify_toast_effect picks up level=error and
+        // fails the step with toast_error.
+        setToast({
+          level: "error",
+          text: `Save failed: ${String(e.message || e)}`,
+        });
+      }
     } finally {
       setSaving(false);
     }
@@ -252,7 +274,20 @@ export default function AssetDetail() {
           value={form.title}
           onChange={(e) => setForm({ ...form, title: e.target.value })}
           disabled={!isDraft}
+          aria-invalid={fieldErrors.title ? "true" : undefined}
+          aria-describedby={fieldErrors.title ? "asset-title-error" : undefined}
         />
+        {fieldErrors.title && (
+          <div
+            id="asset-title-error"
+            className="field-error"
+            role="alert"
+            data-testid="error-asset-title"
+            style={{ color: "#dc2626", fontSize: 13, marginTop: 4 }}
+          >
+            {fieldErrors.title}
+          </div>
+        )}
 
         <MultiSelect
           label="Categories"
