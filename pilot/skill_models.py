@@ -192,6 +192,71 @@ class ElementFingerprint(BaseModel):
     # content_id="B-12345" yields testid="row-B-12345".
     templates: dict[str, str] = Field(default_factory=dict)
 
+    # WI-11: per-template-field provenance source. Keys mirror ``templates``;
+    # values describe HOW the template was derived. Sources:
+    #   ``row_key``         -- the templated value came from an ancestor's
+    #                          data-row-key / data-testid="...row-{X}" / id="...-{X}"
+    #                          attribute (the row the click target lived in).
+    #                          Unambiguous and the strongest provenance.
+    #   ``route_param``     -- value matches a URL path segment captured at
+    #                          interaction time (used by NavigationEffect).
+    #   ``request_param``   -- value appeared in a captured request's query
+    #                          string or body field.
+    #   ``selected_option`` -- value matches a recorded options_snapshot
+    #                          entry's value/label.
+    #   ``operator_input``  -- value matches what the operator typed into
+    #                          this very step's input field (binding value).
+    #                          Safe ONLY when the param is bound to the
+    #                          element with the templated field.
+    #   ``legacy_substring`` -- value substring-matched the recorded literal
+    #                          but no stronger provenance was found. Kept
+    #                          for back-compat; new annotations should
+    #                          prefer the stronger sources.
+    # When the field isn't in this map, treat as ``legacy_substring`` for
+    # back-compat with skills written before WI-11.
+    template_sources: dict[str, Literal[
+        "row_key",
+        "route_param",
+        "request_param",
+        "selected_option",
+        "operator_input",
+        "legacy_substring",
+    ]] = Field(default_factory=dict)
+
+    # WI-11: structured template segments parallel to ``templates``. Keys
+    # are field names (same set as ``templates``); values are ordered
+    # lists of TemplatePart describing the literal + placeholder anatomy.
+    # Populated by _derive_provenance_templates; readable by future
+    # analyzers without re-parsing the raw string form. Empty for legacy
+    # skills (the raw ``templates`` field remains the source of truth for
+    # the runner's _materialize_fingerprint call).
+    template_parts: dict[str, list["TemplatePart"]] = Field(default_factory=dict)
+
+
+class TemplatePart(BaseModel):
+    """WI-11: structured template segment.
+
+    A template like ``catalog-row-{asset_id}`` decomposes into two parts:
+    ``[{kind="literal", text="catalog-row-"}, {kind="placeholder",
+    param="asset_id"}]``. Carrying the structured form alongside the
+    raw template string lets the runner (and future analyzers) reason
+    about template anatomy without re-parsing strings -- e.g. a
+    locator scorer can weight placeholder boundaries higher than
+    literal chars.
+
+    The legacy raw-string ``templates`` field on ElementFingerprint
+    remains for back-compat; ``template_parts`` is the additive
+    structured representation populated by the WI-11 annotator. Both
+    are written together so old consumers keep working unchanged.
+    """
+
+    kind: Literal["literal", "placeholder"]
+    text: Optional[str] = None
+    """For kind=literal: the verbatim text segment. None for placeholders."""
+    param: Optional[str] = None
+    """For kind=placeholder: the param name (without braces). None for
+    literals."""
+
 
 class ParamBinding(BaseModel):
     """Binds a step's value (or a substring of it) to a named parameter."""
@@ -368,6 +433,19 @@ class NavigationEffect(BaseModel):
     provenance at annotate time. For verification only when used on a
     click effect -- runner asserts URL matches this template, never
     calls ``page.goto`` for caused navigation."""
+    url_template_source: Optional[Literal[
+        "route_param",
+        "row_key",
+        "operator_input",
+        "legacy_substring",
+    ]] = None
+    """WI-11: how url_template was derived. ``route_param`` means the
+    templated segment IS the URL path segment (the strongest provenance
+    -- the navigation URL itself carries the value). ``row_key`` means a
+    bound row key from a prior click. ``operator_input`` covers values
+    from this skill's typed inputs. ``legacy_substring`` for pre-WI-11
+    skills upgraded at load time; runner can choose to be more
+    conservative (e.g. skip assertion) when the source is weak."""
     source: Optional[str] = None
     """How the navigation fired: ``history.pushState`` /
     ``history.replaceState`` / ``popstate`` / ``hashchange`` /
@@ -1002,6 +1080,13 @@ def _upgrade_legacy_click_nav_pairs(steps: list[dict[str, Any]]) -> list[dict[st
                 "kind": "spa_route",
                 "url": nav_url,
                 "url_template": url_template,
+                # WI-11: legacy upgrader can't reach the recording's
+                # ancestor chain, so the strongest source it can claim
+                # is ``legacy_substring`` (best-effort exact-segment
+                # match performed by _derive_legacy_url_template).
+                "url_template_source": (
+                    "legacy_substring" if url_template else None
+                ),
                 "source": "legacy_upgrade",
                 "reload_allowed": False,
                 "assert_url": url_template or nav_url,

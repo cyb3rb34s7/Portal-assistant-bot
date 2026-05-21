@@ -376,31 +376,92 @@ def _index_readiness_signals(
 def _derive_url_template(
     nav_url: Optional[str],
     params_seen: list[tuple[str, str]],
-) -> Optional[str]:
+    *,
+    click_fp: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[str]]:
     """Derive a ``url_template`` for a click's navigation effect.
 
-    Conservative rule: only template when a recorded param value is
-    the WHOLE final URL path segment. This rejects the substring-luck
-    pattern that the audit flagged (search query 'A-90' becoming part
-    of '/asset/A-9001' as '/asset/{q}01'). True provenance-based
-    templating ships in WI-11; until then a literal URL is safer than
-    a wrong template.
+    WI-11 returns ``(url_template, url_template_source)`` so callers
+    can stamp the source onto the NavigationEffect for downstream
+    audit. Sources are ranked strongest-first:
 
-    Returns the templated string, or None if no substitution applied
-    (we keep the literal URL in that case)."""
+      1. ``route_param`` -- a recorded param value equals the URL's
+         final path segment exactly. The path segment IS the param
+         value (e.g. ``/asset/A-9001`` with content_id=A-9001 ->
+         ``/asset/{content_id}``).
+      2. ``row_key`` -- the click target's ancestor chain confirms the
+         value as a row key AND it appears as a clean path segment.
+         Provided here for completeness; the route_param check above
+         already accepts segment-exact matches, so this only fires when
+         path slicing matters (e.g. ``/foo/A-9001/bar`` where the
+         segment is mid-URL, not last).
+      3. None -- no provenance-grade match. Returns the literal URL
+         unchanged so replay verifies against the recorded URL only.
+
+    Boundary rule: segments must be separated by ``/`` or ``?`` or end
+    of string. This rejects the substring-luck pattern flagged by the
+    audit (``A-90`` inside ``A-9001`` does NOT match a route_param)."""
     if not nav_url:
-        return None
+        return (None, None)
     try:
-        path = nav_url.split("?", 1)[0].split("#", 1)[0]
-        last_seg = path.rstrip("/").rsplit("/", 1)[-1]
+        # Strip query + hash to look at the path only.
+        path_only = nav_url.split("?", 1)[0].split("#", 1)[0]
+        # Split into segments preserving leading slash. Each segment is
+        # a candidate for an exact param-value match.
+        segments = path_only.rstrip("/").split("/")
     except Exception:
-        return None
-    if not last_seg or len(last_seg) < 3:
-        return None
-    for name, value in params_seen:
-        if value == last_seg:
-            return nav_url.replace(last_seg, "{" + name + "}", 1)
-    return None
+        return (None, None)
+
+    # Build the ancestor-chain row-key set from the click's fingerprint
+    # so we can distinguish row_key vs operator_input provenance for
+    # mid-path segments. Empty when fingerprint is missing or the chain
+    # carries no row identity.
+    row_key_param_names: set[str] = set()
+    if click_fp is not None:
+        chain = getattr(click_fp, "ancestor_chain", None) or []
+        for name, value in params_seen:
+            if _ancestor_value_for_param(chain, value):
+                row_key_param_names.add(name)
+
+    # Walk segments looking for an EXACT match against any recorded
+    # param value. Multiple matches on different segments are fine
+    # (each gets its own placeholder); a single segment matching
+    # multiple params is ambiguous and we bail.
+    new_segments = list(segments)
+    matched_param_name: Optional[str] = None
+    substituted = False
+    for i, seg in enumerate(new_segments):
+        if not seg or len(seg) < 3:
+            continue
+        seg_hits: list[tuple[str, str]] = [
+            (n, v) for n, v in params_seen if v == seg
+        ]
+        if len(seg_hits) == 1:
+            n, _ = seg_hits[0]
+            new_segments[i] = "{" + n + "}"
+            substituted = True
+            matched_param_name = n  # last winner; used for source ranking
+        elif len(seg_hits) > 1:
+            # Ambiguous segment -- bail, keep literal URL.
+            return (nav_url, None)
+
+    if not substituted:
+        return (nav_url, None)
+
+    templated = "/".join(new_segments)
+    # Reattach query / hash if the original had them.
+    rest = nav_url[len(path_only):]
+    if rest:
+        templated = templated + rest
+
+    # Source: row_key beats route_param when the click's ancestor chain
+    # vouches for the bound param value; otherwise the URL path
+    # supplied the provenance directly (route_param).
+    source = (
+        "row_key" if matched_param_name in row_key_param_names
+        else "route_param"
+    )
+    return (templated, source)
 
 
 # ---- Build Skill ----------------------------------------------------------
@@ -505,14 +566,27 @@ def build_skill(
             folded_nav = caused_navs[ev.event_id]
             nav_url = folded_nav.url
             nav_kind = _nav_kind_from_source(folded_nav.source)
-            url_template = _derive_url_template(nav_url, params_seen)
-            # Derive a route-only assert from the URL template / url.
-            assert_url = url_template if url_template else None
+            # WI-11: provenance-aware URL templating. Returns (template,
+            # source). source=None means no template (literal URL kept).
+            url_template, url_template_source = _derive_url_template(
+                nav_url, params_seen, click_fp=ev.fingerprint
+            )
+            # Only emit a real templated URL when a placeholder was
+            # substituted; otherwise leave ``url_template`` None so the
+            # second-pass (which sees the FULL param set) can attempt
+            # templating with later-bound params.
+            has_placeholder = bool(url_template and "{" in url_template)
+            emitted_template = url_template if has_placeholder else None
+            emitted_source = (
+                url_template_source if has_placeholder else None
+            )
+            assert_url = emitted_template
             effects = StepEffect(
                 navigation=NavigationEffect(
                     kind=nav_kind,  # type: ignore[arg-type]
                     url=nav_url,
-                    url_template=url_template,
+                    url_template=emitted_template,
+                    url_template_source=emitted_source,  # type: ignore[arg-type]
                     source=folded_nav.source or folded_nav.raw_event_kind,
                     reload_allowed=False,
                     assert_url=assert_url,
@@ -627,8 +701,305 @@ def build_skill(
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
+    # WI-11: strong-provenance templates first (row_key / operator_input);
+    # legacy substring pass fills only the fields the strong pass left
+    # alone, tagging itself as ``legacy_substring``. Order matters: a
+    # field templated by row_key must NOT be overwritten by a coincidental
+    # substring match later.
+    _derive_provenance_templates(skill)
     _derive_fingerprint_templates(skill)
+
+    # WI-11 second-pass URL templating: the per-step loop above only
+    # sees params_seen accumulated up to that point, so a click step
+    # that occurred BEFORE its bound input event wouldn't template its
+    # navigation URL. After the loop, we have the full param set;
+    # re-derive URL templates on click-with-navigation steps whose
+    # url_template is still None.
+    final_params_seen: list[tuple[str, str]] = []
+    for s in skill.steps:
+        if s.param_binding and (s.value or s.file_path):
+            v = str(s.value or s.file_path or "")
+            if v and len(v) >= 3 and not any(
+                name == s.param_binding.name for name, _ in final_params_seen
+            ):
+                final_params_seen.append((s.param_binding.name, v))
+    for s in skill.steps:
+        if s.action != "click":
+            continue
+        if not s.effects or not s.effects.navigation:
+            continue
+        nav = s.effects.navigation
+        if nav.url_template:
+            continue  # already templated in the first pass
+        new_tmpl, new_src = _derive_url_template(
+            nav.url, final_params_seen, click_fp=s.fingerprint
+        )
+        # _derive_url_template returns the literal URL with source=None
+        # when no provenance match is found; only update when we got a
+        # placeholder template.
+        if new_tmpl and "{" in new_tmpl and new_src is not None:
+            nav.url_template = new_tmpl
+            nav.url_template_source = new_src  # type: ignore[assignment]
+            if not nav.assert_url:
+                nav.assert_url = new_tmpl
+
     return skill
+
+
+_PROVENANCE_FIELDS: tuple[str, ...] = (
+    "test_id",
+    "element_id",
+    "css_path",
+    "xpath",
+    "accessible_name",
+    "text",
+)
+"""Fingerprint fields the annotator templates. Kept in sync with the
+runner's ``_materialize_fingerprint`` field list -- adding a new field
+here without the runner reading it produces an orphan template that
+silently has no replay effect."""
+
+
+def _segment_boundary_at(literal: str, start: int, end: int) -> bool:
+    """Return True iff the slice ``literal[start:end]`` sits on a token
+    boundary -- i.e. the chars just before/after are not alphanumeric.
+    Examples (for value ``A-9001``):
+        ``btn-open-A-9001``   -> True (slash, end-of-string)
+        ``btn-open-A-90015``  -> False (trailing digit attaches)
+        ``A-9001-row``        -> True
+        ``btn-A-9001-action`` -> True
+
+    WI-11: this guards the substring-luck pattern flagged by the audit
+    where ``A-90`` inside ``A-9001`` would template incorrectly. By
+    requiring non-alphanumeric (or string boundary) on both sides we
+    refuse partial-token matches.
+    """
+    n = len(literal)
+    left_ok = start == 0 or not literal[start - 1].isalnum()
+    right_ok = end >= n or not literal[end].isalnum()
+    return left_ok and right_ok
+
+
+def _find_unambiguous_match(
+    literal: str,
+    candidates: list[tuple[str, str]],
+) -> Optional[tuple[str, str, int, int]]:
+    """Return the unique (param_name, value, start, end) that matches
+    ``literal`` on a token boundary, or None if zero or multiple
+    candidates match.
+
+    WI-11 ambiguity rule: when two different param values both occur in
+    the literal AND both sit on a token boundary, the substitution is
+    ambiguous (we can't tell which one is the templating intent). The
+    safer behavior is to refuse templating for that field -- the literal
+    locator still resolves at L1; the runner's heal layer can recover
+    if the literal stops matching.
+    """
+    hits: list[tuple[str, str, int, int]] = []
+    for name, value in candidates:
+        # Search for ALL token-boundary occurrences; if any one value
+        # appears more than once on a boundary, that's also ambiguous
+        # (we can't pick which occurrence to template).
+        per_value_hits: list[tuple[int, int]] = []
+        idx = 0
+        while True:
+            pos = literal.find(value, idx)
+            if pos < 0:
+                break
+            if _segment_boundary_at(literal, pos, pos + len(value)):
+                per_value_hits.append((pos, pos + len(value)))
+            idx = pos + 1
+        if len(per_value_hits) == 1:
+            hits.append((name, value, *per_value_hits[0]))
+        elif len(per_value_hits) > 1:
+            # Same value boundary-matches in multiple places -- ambiguous
+            # placement; bail out for this literal.
+            return None
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _ancestor_value_for_param(
+    ancestor_chain: list[dict[str, Any]],
+    param_value: str,
+) -> Optional[str]:
+    """Look up the param value in a fingerprint's ancestor_chain. Each
+    ancestor entry has ``testId``/``id`` set by the grabber; an entry
+    whose attribute ends with the param value (on a token boundary)
+    counts as a row-key provenance signal.
+
+    WI-11: a click on ``btn-open-A-9001`` whose enclosing ``<tr>`` has
+    ``data-testid="catalog-row-A-9001"`` -- the ancestor's testId is
+    where the row identity LIVES. Templating the click against the
+    ancestor's row key is unambiguous because the click target is a
+    descendant of that row.
+
+    Returns the ancestor attribute string that matched (for logging),
+    or None when no ancestor carries the param value on a boundary."""
+    for anc in ancestor_chain or []:
+        for attr in ("testId", "id"):
+            v = anc.get(attr) if isinstance(anc, dict) else None
+            if not v or not isinstance(v, str):
+                continue
+            pos = v.rfind(param_value)
+            if pos < 0:
+                continue
+            if _segment_boundary_at(v, pos, pos + len(param_value)):
+                return v
+    return None
+
+
+def _derive_provenance_templates(skill: Skill) -> tuple[int, int]:
+    """WI-11: provenance-based template derivation.
+
+    For each step's fingerprint, attempts to template each scannable
+    field using the strongest available provenance:
+
+      1. ``row_key``         -- param value appears on a token boundary
+                                in an ancestor's testId/id AND in the
+                                same place in this fingerprint's field.
+      2. ``operator_input``  -- the recording's bound value for the param
+                                came from THIS step's input; the value
+                                appears unambiguously on a token boundary
+                                in the field.
+      3. (fallback below)    -- legacy substring matching handled by
+                                _derive_fingerprint_templates with
+                                template_source=legacy_substring.
+
+    Returns ``(provenance_count, ambiguous_skipped_count)``.
+
+    ``provenance_count`` is the number of (field) templates emitted with
+    a strong source. ``ambiguous_skipped_count`` is how many fields had
+    multiple candidate values and were therefore LEFT UNTEMPLATED. The
+    legacy substring pass runs AFTER this and only fills fields that
+    weren't already templated with a strong source -- it cannot overwrite
+    a stronger provenance.
+
+    The structured ``template_parts`` is populated alongside the raw
+    ``templates`` string so future analyzers can read the literal /
+    placeholder anatomy without re-parsing.
+    """
+    # Collect (param_name, recorded_value) pairs.
+    pairs: list[tuple[str, str]] = []
+    for s in skill.steps:
+        if not s.param_binding:
+            continue
+        if s.value is None and s.file_path is None:
+            continue
+        recorded = s.value if s.value is not None else s.file_path
+        if not recorded:
+            continue
+        val = str(recorded)
+        if len(val) < 3:  # too short -- skip to avoid accidental matches
+            continue
+        pairs.append((s.param_binding.name, val))
+
+    # Dedup, prefer longest value first (more specific matches win).
+    seen: set[tuple[str, str]] = set()
+    unique: list[tuple[str, str]] = []
+    for name, val in pairs:
+        if (name, val) in seen:
+            continue
+        seen.add((name, val))
+        unique.append((name, val))
+    unique.sort(key=lambda nv: -len(nv[1]))
+
+    if not unique:
+        return (0, 0)
+
+    provenance_count = 0
+    ambiguous_skipped = 0
+
+    for s in skill.steps:
+        fp = s.fingerprint
+        if fp is None:
+            continue
+        for field in _PROVENANCE_FIELDS:
+            # Skip fields already templated by an upstream pass -- this
+            # function may run more than once (annotator + tests).
+            if field in fp.template_sources:
+                continue
+            literal = getattr(fp, field, None)
+            if not literal or not isinstance(literal, str):
+                continue
+            # 1. row_key provenance: any param value whose ancestor chain
+            #    confirms row provenance AND that value occurs on a token
+            #    boundary in this field.
+            row_key_winner: Optional[tuple[str, str, int, int]] = None
+            for name, value in unique:
+                if not _ancestor_value_for_param(fp.ancestor_chain, value):
+                    continue
+                # Find the unique boundary-match in this field for this
+                # value. If multiple, that's ambiguous WITHIN this value
+                # -- bail.
+                hits: list[tuple[int, int]] = []
+                idx = 0
+                while True:
+                    pos = literal.find(value, idx)
+                    if pos < 0:
+                        break
+                    if _segment_boundary_at(literal, pos, pos + len(value)):
+                        hits.append((pos, pos + len(value)))
+                    idx = pos + 1
+                if len(hits) == 1:
+                    if row_key_winner is not None:
+                        # Two different params both have row-key provenance
+                        # AND both match this field. Ambiguous -- skip.
+                        row_key_winner = None
+                        ambiguous_skipped += 1
+                        break
+                    row_key_winner = (name, value, *hits[0])
+            if row_key_winner is not None:
+                name, value, start, end = row_key_winner
+                _apply_template(fp, field, literal, name, start, end, "row_key")
+                provenance_count += 1
+                continue
+
+            # 2. operator_input provenance: the value came from THIS
+            #    step's binding (rare on the same step's fingerprint but
+            #    possible on subsequent clicks that referenced an earlier
+            #    input). Only emit when unambiguous across all candidate
+            #    params.
+            match = _find_unambiguous_match(literal, unique)
+            if match is not None:
+                name, value, start, end = match
+                _apply_template(
+                    fp, field, literal, name, start, end, "operator_input"
+                )
+                provenance_count += 1
+
+    return (provenance_count, ambiguous_skipped)
+
+
+def _apply_template(
+    fp,
+    field: str,
+    literal: str,
+    param_name: str,
+    start: int,
+    end: int,
+    source: str,
+) -> None:
+    """Write template + template_parts + template_sources for ``field``.
+
+    Caller has already validated that ``literal[start:end]`` is the
+    param value on a token boundary; this just records the result in
+    the three parallel maps."""
+    placeholder = "{" + param_name + "}"
+    template = literal[:start] + placeholder + literal[end:]
+    fp.templates[field] = template
+    fp.template_sources[field] = source  # type: ignore[assignment]
+    # Build structured parts: pre-literal (if any), placeholder, post-literal
+    # (if any).
+    from .skill_models import TemplatePart
+    parts: list = []
+    if start > 0:
+        parts.append(TemplatePart(kind="literal", text=literal[:start]))
+    parts.append(TemplatePart(kind="placeholder", param=param_name))
+    if end < len(literal):
+        parts.append(TemplatePart(kind="literal", text=literal[end:]))
+    fp.template_parts[field] = parts
 
 
 def _derive_fingerprint_templates(skill: Skill) -> int:
@@ -644,6 +1015,18 @@ def _derive_fingerprint_templates(skill: Skill) -> int:
     templating, the fingerprint stores ``templates={"test_id":
     "row-{content_id}"}`` and the runner substitutes the current value
     at replay time.
+
+    WI-11: this is the LEGACY substring pathway. It runs AFTER
+    ``_derive_provenance_templates``; any field already templated with a
+    strong provenance source is skipped here. Its remaining matches are
+    tagged ``template_source="legacy_substring"`` so consumers (audit
+    log, future provenance-aware analyzers) can distinguish strong
+    templates from substring guesses.
+
+    Substring matches now also enforce token-boundary placement (the
+    same ``_segment_boundary_at`` rule used by the provenance pass) to
+    reject the audit-flagged ``btn-open-{q}01`` bug where ``A-90`` inside
+    ``A-9001`` would falsely template through.
 
     Returns the count of templated fingerprint fields detected.
     """
@@ -677,35 +1060,27 @@ def _derive_fingerprint_templates(skill: Skill) -> int:
         unique.append((name, val))
     unique.sort(key=lambda nv: -len(nv[1]))
 
-    # Fields we'll scan for substring matches. Keep this list in sync
-    # with skill_runner._materialize_fingerprint.
-    scan_fields = (
-        "test_id",
-        "element_id",
-        "css_path",
-        "xpath",
-        "accessible_name",
-        "text",
-    )
-
     templated_count = 0
     for s in skill.steps:
         fp = s.fingerprint
         if fp is None:
             continue
-        for field in scan_fields:
+        for field in _PROVENANCE_FIELDS:
+            # Provenance pass already claimed this field -- don't overwrite.
+            if field in fp.template_sources:
+                continue
             literal = getattr(fp, field, None)
             if not literal or not isinstance(literal, str):
                 continue
-            template = literal
-            for param_name, value in unique:
-                if value in template:
-                    template = template.replace(
-                        value, "{" + param_name + "}"
-                    )
-            if template != literal:
-                fp.templates[field] = template
-                templated_count += 1
+            # WI-11 ambiguity guard: require an unambiguous, boundary-
+            # respecting match. Reject otherwise to avoid the
+            # ``A-90``-inside-``A-9001`` substring-luck bug.
+            match = _find_unambiguous_match(literal, unique)
+            if match is None:
+                continue
+            name, value, start, end = match
+            _apply_template(fp, field, literal, name, start, end, "legacy_substring")
+            templated_count += 1
     return templated_count
 
 
