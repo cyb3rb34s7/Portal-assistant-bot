@@ -1131,6 +1131,34 @@
   // reset value (e.g. after a form submit resets state).
   var pendingInputEl = null;
   var pendingInputTimer = null;
+  // WI-13: before-value capture. ``valueBeforeFor`` maps element ->
+  // its value AT THE MOMENT the operator started editing it (focus
+  // or first input keystroke). The input_change emit attaches this as
+  // ``value_before`` so the annotator can detect a CLEAR (was
+  // non-empty, became empty) and route the runner to fill('') +
+  // assert empty post-action. Stored as a WeakMap when available so
+  // detached DOM nodes get GC'd; falls back to a plain Map on older
+  // engines (the recording session is short, so leakage is bounded).
+  var valueBeforeFor = (typeof WeakMap === "function") ? new WeakMap() : new Map();
+
+  function _captureBeforeValue(el) {
+    // Only record once per editing pass. If we already captured a
+    // before-value for this element and haven't flushed it yet, the
+    // operator is still editing -- keep the original before-value.
+    if (!el) return;
+    if (valueBeforeFor.has(el)) return;
+    try {
+      var v = el.value != null ? String(el.value) : "";
+      valueBeforeFor.set(el, v);
+    } catch (e) {}
+  }
+
+  function _consumeBeforeValue(el) {
+    if (!el || !valueBeforeFor.has(el)) return null;
+    var v = valueBeforeFor.get(el);
+    try { valueBeforeFor.delete(el); } catch (e) {}
+    return v;
+  }
 
   function fireInput(el) {
     if (!el) return;
@@ -1140,10 +1168,12 @@
     // interaction window. The actual "commit" is usually a subsequent
     // submit/click/blur.
     var stateBefore = _pageState();
+    var beforeValue = _consumeBeforeValue(el);
     var payload = _merge({
       kind: "input_change",
       fingerprint: fingerprint(el),
       value: el.value != null ? String(el.value) : "",
+      value_before: beforeValue,
       page_url: location.href,
       raw_event_kind: "input",
     }, _attribution("user_input"));
@@ -1191,6 +1221,27 @@
     tel: 1,
   };
 
+  // WI-13: capture before-value as early as possible -- on focus, so
+  // the operator's first keystroke doesn't overwrite the recorded
+  // "starting" value. focusin bubbles and fires for editable controls.
+  document.addEventListener(
+    "focusin",
+    function (e) {
+      var t = e.target;
+      if (!t || !t.tagName) return;
+      var tag = t.tagName.toLowerCase();
+      if (tag === "textarea") {
+        _captureBeforeValue(t);
+        return;
+      }
+      if (tag !== "input") return;
+      var itype = (t.getAttribute && t.getAttribute("type") || "text").toLowerCase();
+      if (!TEXTISH_TYPES[itype]) return;
+      _captureBeforeValue(t);
+    },
+    true
+  );
+
   document.addEventListener(
     "input",
     function (e) {
@@ -1198,12 +1249,15 @@
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
       if (tag === "textarea") {
+        // Fallback: programmatic focus without a focusin event (rare).
+        _captureBeforeValue(t);
         schedulePending(t);
         return;
       }
       if (tag !== "input") return;
       var itype = (t.getAttribute && t.getAttribute("type") || "text").toLowerCase();
       if (!TEXTISH_TYPES[itype]) return;
+      _captureBeforeValue(t);
       schedulePending(t);
     },
     true

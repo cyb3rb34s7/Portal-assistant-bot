@@ -656,6 +656,33 @@ class StepProvenance(BaseModel):
     detection_method: Optional[Literal["deterministic", "llm", "operator"]] = None
 
 
+class ValueTransition(BaseModel):
+    """WI-13: a field's value transition captured during teach.
+
+    ``from_recorded`` is what the field held BEFORE the operator
+    edited it (captured at focus / first input). ``to_recorded`` is
+    the committed value. ``clear_intent`` is True when ``to_recorded``
+    is empty AND ``from_recorded`` was non-empty AND the clear was
+    followed by a commit signal (blur / submit / save click / field
+    validation) -- meaning the operator deliberately erased the value.
+
+    Today the legacy annotator filter dropped empty input changes,
+    which silently lost workflows like "clear title and save." WI-13
+    keeps the clear as a real semantic step, the runner fills an
+    empty string and verifies the field reads empty after the action.
+    """
+
+    from_recorded: Optional[str] = None
+    """Value before the operator started editing. None for legacy
+    traces where the grabber didn't capture before-state."""
+    to_recorded: str
+    """Final committed value. Empty string is a valid clear-to-empty."""
+    clear_intent: bool = False
+    """True iff this transition is a deliberate clear (was non-empty,
+    became empty, then committed). The runner uses this to decide
+    whether to assert the field is empty after the action."""
+
+
 class SemanticCluster(BaseModel):
     """WI-12: intermediate representation produced by the annotator's
     semantic clustering pipeline.
@@ -863,6 +890,13 @@ class SkillStep(BaseModel):
     provenance: Optional[StepProvenance] = None
     """How the annotator built this step from the raw trace. Empty
     for legacy traces; populated for new skills from WI-02 onward."""
+
+    value_transition: Optional[ValueTransition] = None
+    """WI-13: before/after value capture for change steps. When
+    ``clear_intent=True`` the runner intentionally fills empty string
+    and asserts the field reads empty post-action. Without this field
+    the legacy annotator dropped empty inputs and lost
+    "clear field and save" workflows."""
 
     # Debug / context
     captured_at: Optional[datetime] = None
@@ -1356,6 +1390,13 @@ class TraceEvent(BaseModel):
     page_url: str = ""
     screenshot_path: Optional[str] = None
     dom_diff: Optional[dict[str, Any]] = None
+    value_before: Optional[str] = None
+    """WI-13: the input/textarea/contenteditable value AT THE MOMENT the
+    operator started editing this field (typically on focus / first
+    keystroke). Pairs with ``value`` (the after-value) so the annotator
+    can detect a CLEAR (value_before='Old', value='') and route
+    runner replay to ``locator.fill('')`` + post-assert empty. None for
+    legacy traces and for non-text events (clicks, key, navigate)."""
 
     # WI-02: identity + causality + ordering. Populated by the grabber
     # for new recordings; missing for legacy traces (Pydantic defaults

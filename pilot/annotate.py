@@ -37,6 +37,7 @@ from .skill_models import (
     StepEffect,
     StepProvenance,
     TraceEvent,
+    ValueTransition,
 )
 
 
@@ -171,11 +172,13 @@ def filter_events(
             # we start from a given page). Extra navigations inside the
             # flow stay, but same-URL duplicates are dropped above.
 
-        # Drop input_change with empty value immediately after an empty state
-        if ev.kind == "input_change" and (ev.value is None or ev.value == ""):
-            if prev and prev.kind == "input_change" and prev.fingerprint and ev.fingerprint:
-                if _same_target(prev.fingerprint, ev.fingerprint):
-                    continue
+        # WI-13: stop dropping empty input_change events.
+        # The legacy heuristic ("drop input_change with empty value
+        # immediately after an empty same-target state") silently lost
+        # operator clear-and-save workflows. Empty value with a
+        # non-empty value_before is a deliberate CLEAR; the annotator
+        # downstream marks it clear_intent=True and the runner fills
+        # empty string + asserts empty post-action.
 
         # Drop click that is immediately followed by the same click (<200ms)
         if (
@@ -463,6 +466,106 @@ def _derive_url_template(
         else "route_param"
     )
     return (templated, source)
+
+
+# ---- WI-13: value transition + clear detection -----------------------------
+
+
+_COMMIT_EVENT_KINDS: frozenset[str] = frozenset({
+    "submit", "key", "navigate",
+    # A click after the empty input is treated as a commit signal -- it
+    # could be a save button (the legacy semantics here can't tell save
+    # from any other click without the WI-12 cluster detector). The
+    # narrower checks (save/publish text match) live in WI-15/19.
+    "click",
+})
+
+
+def _has_commit_signal_after(
+    events: list[TraceEvent], idx: int, target_fp
+) -> bool:
+    """WI-13: scan forward from ``events[idx]`` for a 'commit' signal
+    that ratifies the empty-value as deliberate clear-intent.
+
+    A commit signal is one of:
+      - a submit event,
+      - a key=Enter,
+      - a navigate (operator left the page),
+      - a click anywhere (most commit buttons are clicks; we cannot
+        narrow without WI-15's save-button detector).
+
+    Blur isn't a separate event kind; the grabber flushes pending input
+    on blur which translates the operator's tab-out into an
+    input_change. So a blur is captured implicitly by the empty-value
+    event already existing -- if the field would have stayed focused,
+    the value wouldn't have flushed.
+
+    Returns True when at least one commit signal is found AFTER the
+    empty input on the SAME target's form ancestor or later in the
+    trace. Conservative on the same-form check: we only look at later
+    events, not just same-form, because the trace is small.
+    """
+    _ = target_fp  # reserved -- future use for same-form matching
+    for j in range(idx + 1, len(events)):
+        ev = events[j]
+        if ev.kind in _OBSERVED_EVENT_KINDS:
+            continue
+        if ev.kind in _COMMIT_EVENT_KINDS:
+            return True
+        # Another input on a DIFFERENT field also counts as commit:
+        # the operator left the cleared field's focus, which is the
+        # blur that ratifies the clear.
+        if ev.kind == "input_change":
+            if (
+                ev.fingerprint is None
+                or target_fp is None
+                or not _same_target(target_fp, ev.fingerprint)
+            ):
+                return True
+    return False
+
+
+def derive_value_transition(
+    ev: TraceEvent,
+    events: list[TraceEvent],
+    idx: int,
+) -> Optional[ValueTransition]:
+    """Build a ValueTransition for a change step from a TraceEvent and
+    its position in the (filtered) event list.
+
+    The transition includes:
+      - from_recorded: ev.value_before (None for legacy traces)
+      - to_recorded: ev.value or "" (empty is valid)
+      - clear_intent: True iff before was non-empty, after is empty,
+                      AND a commit signal follows (per WI-13).
+
+    Returns None for non-text events (we don't track transitions on
+    clicks / keys / file uploads -- WI-13 scope is text + textarea +
+    contenteditable + native inputs that emit input_change).
+    """
+    if ev.kind != "input_change":
+        return None
+    before = ev.value_before
+    after = ev.value if ev.value is not None else ""
+    clear_intent = False
+    if before is not None and before != "" and after == "":
+        if _has_commit_signal_after(events, idx, ev.fingerprint):
+            clear_intent = True
+    # Even when not a clear, persist the transition so audit / replay
+    # can verify the operator's recorded before-state matches what
+    # they'll see at replay. If there's NO before-value (legacy trace)
+    # and after is non-empty, the transition isn't informative -- skip.
+    if before is None and not clear_intent:
+        # Still emit when after is empty -- the runner needs to know
+        # to fill('') vs not fill at all.
+        if after == "":
+            return ValueTransition(
+                from_recorded=None, to_recorded="", clear_intent=False
+            )
+        return None
+    return ValueTransition(
+        from_recorded=before, to_recorded=after, clear_intent=clear_intent,
+    )
 
 
 # ---- WI-12: semantic clustering pipeline -----------------------------------
@@ -766,6 +869,12 @@ def build_skill(
                 if folded_nav is not None
                 else "single_event"
             )
+        # WI-13: detect deliberate-clear transitions on text inputs.
+        # The grabber's WI-13 patch captures value_before at focus;
+        # derive_value_transition pairs (before, after) with a
+        # commit-signal scan to mark clear_intent.
+        v_transition = derive_value_transition(ev, events, idx)
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -780,6 +889,7 @@ def build_skill(
             screenshot_path=ev.screenshot_path,
             effects=effects,
             expected_signals=expected_signals,
+            value_transition=v_transition,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;

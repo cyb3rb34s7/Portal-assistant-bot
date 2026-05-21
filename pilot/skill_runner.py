@@ -719,6 +719,18 @@ class SkillRunner:
         tag = (fp.tag if fp else "") or ""
         input_type = (fp.input_type if fp else None) or ""
         page = self.session.page
+        # WI-13: when the annotator marked this step as clear_intent,
+        # the operator deliberately erased the field. Use an empty
+        # string as the resolved value regardless of what the param
+        # resolution returned -- this is a structural intent, not a
+        # value substitution. Without this, a runtime param defaulting
+        # to None / "" would still call fill() with whatever the codec
+        # produced, and a missing-param error would mask the clear.
+        is_clear_intent = bool(
+            step.value_transition and step.value_transition.clear_intent
+        )
+        if is_clear_intent:
+            value = ""
         if tag == "select":
             verified = self._execute_with_heal_check(
                 page,
@@ -743,15 +755,55 @@ class SkillRunner:
             verified = self._execute_with_heal_check(
                 page, level, heal, lambda: locator.fill(value or "")
             )
+        # WI-13: verify the field is actually empty after a clear. The
+        # Playwright fill('') call clears the input value, but a
+        # framework like React may re-populate from state on the next
+        # render. Reading input_value() after the fill confirms the
+        # clear stuck; we fail with a specific error_kind so the
+        # operator sees "clear didn't stick" instead of generic
+        # post_condition_failed.
+        clear_verified = True
+        clear_error: Optional[str] = None
+        if (
+            verified
+            and is_clear_intent
+            and tag != "select"
+            and input_type not in ("checkbox", "radio")
+        ):
+            try:
+                actual = locator.input_value(timeout=2000)
+                if actual != "":
+                    clear_verified = False
+                    clear_error = (
+                        f"clear_intent step: field still holds {actual!r}"
+                    )
+            except Exception as e:
+                clear_verified = False
+                clear_error = f"clear_intent verify: {type(e).__name__}: {e}"
         shot = self._screenshot(f"step_{step.index}_change")
-        return self._build_action_result(
-            success=verified,
+        result, ret_level = self._build_action_result(
+            success=verified and clear_verified,
             level=level,
             heal=heal,
-            action_taken=f"set {step.semantic_label} = {value!r} [{LEVEL_LABELS[level]}]",
+            action_taken=(
+                f"cleared {step.semantic_label} [{LEVEL_LABELS[level]}]"
+                if is_clear_intent
+                else f"set {step.semantic_label} = {value!r} [{LEVEL_LABELS[level]}]"
+            ),
             screenshot_path=shot,
             unverified_error="L3 heal: page state did not change after fill",
         )
+        if verified and not clear_verified:
+            result = ToolResult(
+                success=False,
+                action_taken=result.action_taken,
+                error=clear_error or "clear did not stick",
+                error_kind="clear_intent_unmet",
+                error_details={"step_index": step.index},
+                screenshot_path=result.screenshot_path,
+                healed=result.healed,
+            )
+        return result, ret_level
 
     def _do_upload(
         self, step: SkillStep, value: Optional[str]
