@@ -1593,23 +1593,30 @@ class SkillRunner:
     def _do_select_option(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
-        """WI-17: native single-select with declared-or-fail semantics.
+        """WI-17 / WI-25: native single-select with declared-or-fail
+        semantics.
 
-        Match priority:
-          1. exact ``value`` match against rendered option.value,
-          2. exact ``label`` match against rendered option.text,
-          3. declared aliases (operator-set) -- look up the resolved
-             value as a key in spec.aliases and try each alternative
-             label/value,
-          4. current_options mode: pick by recorded_index from the
-             currently-rendered options,
-          5. fail with error_kind=option_not_available listing what
-             IS available.
+        WI-25 added an explicit ``option_match_policy`` on
+        SelectOptionSpec that controls whether auto-fuzzy is permitted.
+        Default for new skills is ``exact_only`` -- the audit-flagged
+        "US auto-matches UAE" failure mode is now structurally
+        impossible unless the skill OPTS INTO ``legacy_fuzzy`` (only
+        skills without options_snapshot back-compat).
+
+        Match priority by policy:
+          - exact_only: value or label exact; otherwise fail.
+          - alias: value/label exact, then SkillParam.enum_aliases,
+                   then SelectOptionSpec.aliases.
+          - current_options: ignore recorded; pick by recorded_index.
+          - legacy_fuzzy: delegate to
+                          _select_option_with_fuzzy_fallback (pre-WI-25
+                          behavior; difflib similarity >= 0.7 against
+                          label/value).
 
         Replaces the legacy ``_select_option_with_fuzzy_fallback`` for
-        select_option-clustered steps. The legacy code path is kept
-        intact for back-compat with non-clustered ``change`` events on
-        <select> elements (legacy skills).
+        select_option-clustered steps in non-legacy_fuzzy modes. The
+        legacy method is still called for ``change`` actions on
+        ``<select>`` elements without a select_option spec.
         """
         spec = step.select_option
         if spec is None:
@@ -1674,6 +1681,44 @@ class SkillRunner:
         }
         target_value: Optional[str] = None
 
+        # WI-25: route through legacy_fuzzy path when explicitly opted
+        # in. Preserved for back-compat with pre-WI-25 skills that
+        # lacked options_snapshot and rely on similarity matching.
+        if spec.option_match_policy == "legacy_fuzzy":
+            try:
+                self._select_option_with_fuzzy_fallback(
+                    locator, resolved or ""
+                )
+                return (
+                    ToolResult(
+                        success=True,
+                        action_taken=(
+                            f"select_option(legacy_fuzzy) = {resolved!r}"
+                        ),
+                        healed=heal,
+                    ),
+                    level,
+                )
+            except RuntimeError as e:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option(legacy_fuzzy)",
+                        error=str(e),
+                        error_kind="option_not_available",
+                        error_details={
+                            "requested": resolved,
+                            "match_mode": "legacy_fuzzy",
+                            "available": [
+                                {"value": o.get("value"), "text": o.get("text")}
+                                for o in current_options
+                            ],
+                        },
+                        healed=heal,
+                    ),
+                    level,
+                )
+
         # current_options mode: pick by index.
         if spec.match_mode == "current_options":
             idx = spec.recorded_index
@@ -1704,13 +1749,37 @@ class SkillRunner:
                     if (o.get("text") or "").strip() == resolved:
                         target_value = o.get("value")
                         break
-            # 3. declared aliases
-            if (
-                target_value is None
-                and spec.match_mode == "alias"
-                and spec.aliases
-            ):
-                alts = spec.aliases.get(resolved, [])
+            # 3. declared aliases. WI-25: consult BOTH
+            # SelectOptionSpec.aliases (step-scoped) and the bound
+            # SkillParam.enum_aliases (param-scoped). The two are
+            # additive; either source can introduce an alias map. The
+            # alias mode is active under match_mode=="alias" OR when
+            # option_match_policy=="alias" -- both routes converge here
+            # so the operator can declare the policy once and the
+            # step-level match_mode follows.
+            in_alias_mode = (
+                spec.match_mode == "alias"
+                or spec.option_match_policy == "alias"
+            )
+            if target_value is None and in_alias_mode:
+                merged_aliases: dict[str, list[str]] = {}
+                # Param-level aliases first (broad portal-level).
+                if step.param_binding is not None:
+                    sk_param = self._lookup_skill_param(
+                        step.param_binding.name
+                    )
+                    if sk_param is not None and sk_param.enum_aliases:
+                        for k, v in sk_param.enum_aliases.items():
+                            merged_aliases[k] = list(v)
+                # Step-level aliases override / extend.
+                for k, v in spec.aliases.items():
+                    existing = merged_aliases.get(k, [])
+                    # Preserve order, dedupe.
+                    for item in v:
+                        if item not in existing:
+                            existing.append(item)
+                    merged_aliases[k] = existing
+                alts = merged_aliases.get(resolved, [])
                 for alt in alts:
                     if alt in current_values:
                         target_value = alt

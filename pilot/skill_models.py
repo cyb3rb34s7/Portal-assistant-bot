@@ -1004,6 +1004,34 @@ class SelectOptionSpec(BaseModel):
     change (e.g. status transitions where you always want the SECOND
     transition)."""
 
+    option_match_policy: Literal[
+        "exact_only",
+        "alias",
+        "current_options",
+        "legacy_fuzzy",
+    ] = "exact_only"
+    """WI-25: the structural policy controlling auto-fuzzy fallback.
+
+    - ``exact_only`` (default for new skills): value/label exact match;
+      no aliases consulted; no fuzzy. If the recorded option isn't in
+      the current set, the runner fails with ``option_not_available``
+      listing the available options.
+    - ``alias``: same as exact_only PLUS the aliases declared via
+      ``aliases`` (and the SkillParam's ``enum_aliases``) are tried.
+      No fuzzy. Operator-curated only.
+    - ``current_options``: ignore recorded value; use ``recorded_index``
+      to pick from current options. For state-dependent dropdowns where
+      the value set drifts but the order is stable.
+    - ``legacy_fuzzy``: route through
+      ``_select_option_with_fuzzy_fallback``. Preserved ONLY for
+      back-compat with skills recorded before WI-25 that lacked
+      options_snapshot; new annotations MUST NOT emit this.
+
+    The audit's specific failure mode -- recorded ``US`` auto-matches
+    ``UAE`` because difflib similarity 0.71 cleared the 0.7 threshold
+    -- is structurally impossible under exact_only / alias /
+    current_options. Only legacy_fuzzy retains the dangerous path."""
+
 
 class DependencyChain(BaseModel):
     """WI-18: declares a chain of parent->child select dependencies.
@@ -1500,6 +1528,24 @@ class SkillParam(BaseModel):
     the runner to fail with a useful list when an operator-passed value
     isn't in the set. Populated by the annotator from the recording's
     ElementFingerprint.options_snapshot."""
+
+    enum_aliases: dict[str, list[str]] = Field(default_factory=dict)
+    """WI-25: operator-declared aliases for enum params.
+
+    Key is the recorded / canonical value. Value is the list of
+    acceptable alternative values OR labels the runner will accept as
+    matching the canonical. E.g. ``{"US": ["USA", "United States"]}``.
+
+    Aliases NEVER come from text similarity / annotator fuzzy
+    inference; they're either typed in by the operator OR mirrored
+    from a PortalContext declaration. The runner refuses to auto-fuzzy
+    when match_mode is anything other than ``legacy_fuzzy`` -- the
+    audit-flagged "US auto-matches UAE" failure mode is structurally
+    impossible under match_mode=exact_only / alias / current_options.
+
+    Same shape as SelectOptionSpec.aliases; declaring on the
+    SkillParam lets the alias map apply to every select_option step
+    that binds this param without copy-paste."""
 
 
 # ---------------------------------------------------------------------------
