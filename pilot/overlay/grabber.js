@@ -123,6 +123,84 @@
     };
   }
 
+  // ---- F-06: page state snapshots ---------------------------------------
+  //
+  // Producer for TraceEvent.page_state_before / page_state_after. Captured
+  // synchronously around each user-action event so the annotator can
+  // detect "this click did/didn't change the page" without re-querying
+  // the DOM at replay time.
+  //
+  // key_dom_signature is a cheap FNV-1a hash of:
+  //   - body innerText length
+  //   - active element testid (or '')
+  //   - first 3 visible H1/H2 text snippets
+  // Different signatures imply the page state changed materially;
+  // identical signatures imply the action was a no-op (or its effect
+  // hasn't landed yet). Cheap enough to call inline on every event.
+  function _fnv1a(s) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = (h * 0x01000193) >>> 0;
+    }
+    return ("00000000" + h.toString(16)).slice(-8);
+  }
+
+  function _keyDomSignature() {
+    var parts = [];
+    try {
+      var bodyLen = (document.body && document.body.innerText
+        ? document.body.innerText.length
+        : 0);
+      parts.push("l" + bodyLen);
+    } catch (e) { parts.push("l?"); }
+    try {
+      var ae = document.activeElement;
+      var aeTid = (ae && ae.getAttribute && ae.getAttribute("data-testid")) || "";
+      parts.push("a" + aeTid);
+    } catch (e) { parts.push("a?"); }
+    try {
+      var headings = document.querySelectorAll("h1, h2");
+      var hsnips = [];
+      for (var i = 0; i < headings.length && hsnips.length < 3; i++) {
+        var rect = headings[i].getBoundingClientRect();
+        if (!rect || rect.width === 0 || rect.height === 0) continue;
+        var text = (headings[i].innerText || headings[i].textContent || "").trim();
+        hsnips.push(text.slice(0, 40));
+      }
+      parts.push("h" + hsnips.join("|"));
+    } catch (e) { parts.push("h?"); }
+    return _fnv1a(parts.join("\n"));
+  }
+
+  function _pageState() {
+    return {
+      url: location.href,
+      title: document.title || "",
+      key_dom_signature: _keyDomSignature(),
+    };
+  }
+
+  function _emitWithStateSnapshot(payload, stateBefore) {
+    // Stamp before-state synchronously, defer the post to the next
+    // microtask so the page's own synchronous handlers run first and
+    // their DOM effects are visible in page_state_after. This keeps
+    // event count the same (one event per user action) while letting
+    // the annotator detect "this click changed the page."
+    payload.page_state_before = stateBefore;
+    var schedule = (typeof queueMicrotask === "function")
+      ? queueMicrotask
+      : function (fn) { Promise.resolve().then(fn); };
+    schedule(function () {
+      try {
+        payload.page_state_after = _pageState();
+      } catch (e) {
+        payload.page_state_after = null;
+      }
+      post(payload);
+    });
+  }
+
   function _rootAttribution(source) {
     // User-initiated events that START an interaction. They are roots
     // in the causality graph: caused_by=null, fresh interaction_id
@@ -721,18 +799,25 @@
       ) {
         return;
       }
+      // F-06: capture page state immediately before the click runs
+      // and again on the next microtask so the handler's synchronous
+      // side-effects (pushState fired in the same tick) are visible
+      // as "after." Async effects (XHR responses, deferred renders)
+      // arrive as their own events.
+      var stateBefore = _pageState();
       // WI-02: click is a USER-INITIATED EVENT -- it opens a fresh
       // interaction window. Subsequent consequence events (history
       // pushState, fetch starts, mutations) attribute to this click
       // until the window closes.
       var attr = _rootAttribution("user_click");
       _setActiveInteraction("click", attr.event_id);
-      post(_merge({
+      var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
         page_url: location.href,
         raw_event_kind: "click",
-      }, attr));
+      }, attr);
+      _emitWithStateSnapshot(payload, stateBefore);
     },
     true
   );
@@ -752,13 +837,15 @@
     // interaction (typically a focus/click) but does NOT open a new
     // interaction window. The actual "commit" is usually a subsequent
     // submit/click/blur.
-    post(_merge({
+    var stateBefore = _pageState();
+    var payload = _merge({
       kind: "input_change",
       fingerprint: fingerprint(el),
       value: el.value != null ? String(el.value) : "",
       page_url: location.href,
       raw_event_kind: "input",
-    }, _attribution("user_input")));
+    }, _attribution("user_input"));
+    _emitWithStateSnapshot(payload, stateBefore);
   }
 
   function flushPendingInput() {
@@ -839,48 +926,50 @@
       // Selecting an option in a <select>, picking a file, ticking a
       // checkbox -- each opens a fresh interaction window so that any
       // network call / DOM update fired in response attributes back.
+      // F-06: snapshot before-state once for all branches below.
+      var changeStateBefore = _pageState();
       if (tag === "select") {
         var attr1 = _rootAttribution("user_change");
         _setActiveInteraction("change", attr1.event_id);
-        post(_merge({
+        _emitWithStateSnapshot(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: t.value != null ? String(t.value) : "",
           page_url: location.href,
           raw_event_kind: "change",
-        }, attr1));
+        }, attr1), changeStateBefore);
       } else if (tag === "input" && t.type === "file") {
         var fname = "";
         if (t.files && t.files[0]) fname = t.files[0].name;
         var attr2 = _rootAttribution("user_file_selected");
         _setActiveInteraction("file_selected", attr2.event_id);
-        post(_merge({
+        _emitWithStateSnapshot(_merge({
           kind: "file_selected",
           fingerprint: fingerprint(t),
           file_name: fname,
           page_url: location.href,
           raw_event_kind: "change",
-        }, attr2));
+        }, attr2), changeStateBefore);
       } else if (tag === "input" && (t.type === "checkbox" || t.type === "radio")) {
         var attr3 = _rootAttribution("user_change");
         _setActiveInteraction("change", attr3.event_id);
-        post(_merge({
+        _emitWithStateSnapshot(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: String(!!t.checked),
           page_url: location.href,
           raw_event_kind: "change",
-        }, attr3));
+        }, attr3), changeStateBefore);
       } else if (tag === "input" && t.type === "date") {
         var attr4 = _rootAttribution("user_change");
         _setActiveInteraction("change", attr4.event_id);
-        post(_merge({
+        _emitWithStateSnapshot(_merge({
           kind: "input_change",
           fingerprint: fingerprint(t),
           value: t.value || "",
           page_url: location.href,
           raw_event_kind: "change",
-        }, attr4));
+        }, attr4), changeStateBefore);
       }
     },
     true
@@ -891,17 +980,21 @@
     function (e) {
       // Flush any pending text input first (e.g. the last field of a form)
       flushPendingInput();
+      // F-06: page state before/after the submit. Synchronous form
+      // handlers (preventDefault + custom mutation) land in "after"
+      // via microtask.
+      var stateBefore = _pageState();
       // WI-02: submit is a USER ACTION -- opens an interaction window
       // so the POST it triggers and the navigation it may cause
       // attribute back.
       var attr = _rootAttribution("user_submit");
       _setActiveInteraction("submit", attr.event_id);
-      post(_merge({
+      _emitWithStateSnapshot(_merge({
         kind: "submit",
         fingerprint: fingerprint(e.target),
         page_url: location.href,
         raw_event_kind: "submit",
-      }, attr));
+      }, attr), stateBefore);
     },
     true
   );
@@ -1072,15 +1165,16 @@
       if (!t || !t.tagName) return;
       var tag = t.tagName.toLowerCase();
       if (tag !== "input" && tag !== "textarea") return;
+      var stateBefore = _pageState();
       var attr = _rootAttribution("user_keydown");
       _setActiveInteraction("key", attr.event_id);
-      post(_merge({
+      _emitWithStateSnapshot(_merge({
         kind: "key",
         fingerprint: fingerprint(t),
         value: e.key,
         page_url: location.href,
         raw_event_kind: "keydown",
-      }, attr));
+      }, attr), stateBefore);
     },
     true
   );
