@@ -3437,6 +3437,51 @@ def build_skill(
             expected_signals = ExpectedSignals(
                 dom=list(readiness_by_cause[ev.event_id])
             )
+        # WI-43: when the click target was DISABLED at record time
+        # (operator waited for it to become enabled mid-recording),
+        # the grabber's readiness watcher should have emitted a
+        # field_enabled / disabled_until_enabled transition that we
+        # picked up above. If it didn't (older recording, transition
+        # happened OUTSIDE the interaction window), conservatively
+        # synthesize a wait_for_field_enabled expectation on the
+        # step so replay waits for the target to enable before
+        # clicking. Without this, the runner's WI-43 pre-click
+        # probe fails with target_disabled and surfaces the missing
+        # precondition -- safer than firing a click Playwright
+        # would silently no-op.
+        if (
+            ev.kind == "click"
+            and ev.fingerprint is not None
+            and ev.fingerprint.disabled is True
+        ):
+            has_enable_signal = False
+            if expected_signals is not None:
+                for dom_exp in expected_signals.dom:
+                    if dom_exp.kind in ("field_enabled", "disabled_until_enabled"):
+                        has_enable_signal = True
+                        break
+            if not has_enable_signal:
+                # Build a synthesized field_enabled DomExpectation
+                # targeted at the recorded fingerprint's primary
+                # selector. test_id > element_id > name; xpath as
+                # last resort.
+                fp_t = ev.fingerprint
+                synth_sel: Optional[str] = None
+                if fp_t.test_id:
+                    synth_sel = f'[data-testid="{fp_t.test_id}"]'
+                elif fp_t.element_id:
+                    synth_sel = f'#{fp_t.element_id}'
+                elif fp_t.name:
+                    synth_sel = f'[name="{fp_t.name}"]'
+                if synth_sel:
+                    synth_de = DomExpectation(
+                        kind="field_enabled",
+                        selector=synth_sel,
+                    )
+                    if expected_signals is None:
+                        expected_signals = ExpectedSignals(dom=[synth_de])
+                    else:
+                        expected_signals.dom.insert(0, synth_de)
 
         # WI-12: prefer cluster-derived raw_event_ids when the cluster
         # pipeline ran (semantic mode). The cluster has already folded

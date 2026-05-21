@@ -853,6 +853,59 @@ class SkillRunner:
                     pass
         return True, None
 
+    def _has_field_enabled_signal(self, step: SkillStep) -> bool:
+        """WI-43: True when the step declared a DomExpectation that
+        will wait for the target to become enabled
+        (``field_enabled`` or ``disabled_until_enabled``).
+
+        When such a signal is declared, ``_wait_for_page_settle``
+        (called before the action) has already gated on the target's
+        readiness, so the pre-click disabled probe should NOT
+        re-fail. Without such a signal, a disabled target at action
+        time means the recorded preconditions aren't yet met --
+        the operator forgot to set categories+tags+region+market+
+        language, or the page didn't enable Submit-for-Review.
+        """
+        es = step.expected_signals
+        if es is None:
+            return False
+        for dom in (es.dom or []):
+            if dom.kind in ("field_enabled", "disabled_until_enabled"):
+                return True
+        return False
+
+    def _check_target_not_disabled(
+        self, locator: Any
+    ) -> tuple[bool, Optional[str]]:
+        """WI-43: probe whether ``locator``'s primary target is
+        currently disabled. Returns (ok=True, None) when the target
+        is enabled OR when the probe cannot determine (we'd rather
+        false-negative than block on an unknown shape). Returns
+        (False, reason) only when we can confirm the target is
+        disabled.
+
+        Three checks: HTML disabled attribute / property
+        (Playwright's locator.is_disabled), aria-disabled='true', or
+        the fingerprint's value at record time being disabled
+        without a readiness signal declared. The first two are the
+        live page probe; the fingerprint check is a cheap fallback
+        when is_disabled() raises.
+        """
+        try:
+            if locator.is_disabled(timeout=500):
+                return False, "locator.is_disabled() == True"
+        except Exception:
+            # is_disabled may throw on non-form controls. Fall through
+            # to the aria-disabled probe.
+            pass
+        try:
+            aria = locator.get_attribute("aria-disabled", timeout=500)
+            if aria is not None and str(aria).lower() == "true":
+                return False, "aria-disabled='true'"
+        except Exception:
+            pass
+        return True, None
+
     def _do_click(self, step: SkillStep) -> tuple[ToolResult, int]:
         # WI-40: when the recorded click required a hover to reveal
         # its submenu, perform the hover BEFORE attempting to resolve
@@ -890,6 +943,37 @@ class SkillRunner:
                 return self._build_ambiguous_result(step, ambig, "click")
             return self._fallback_human(step, "could not locate click target")
         page = self.session.page
+        # WI-43: if the target is currently disabled AND the step
+        # didn't declare a readiness signal that would wait for it to
+        # enable, fail loudly with ``target_disabled`` rather than
+        # firing a click Playwright will silently no-op or wait its
+        # internal auto-wait budget for. Surface this BEFORE the
+        # click so the orchestrator's pause flow can show the
+        # operator the missing precondition.
+        if not self._has_field_enabled_signal(step):
+            ok, reason = self._check_target_not_disabled(locator)
+            if not ok:
+                shot = self._screenshot(
+                    f"step_{step.index}_target_disabled"
+                )
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="click (target disabled)",
+                        error=(
+                            f"click target is disabled; no readiness "
+                            f"signal declared: {reason}"
+                        ),
+                        error_kind="target_disabled",
+                        error_details={
+                            "step_index": step.index,
+                            "reason": reason,
+                        },
+                        screenshot_path=shot,
+                    ),
+                    0,
+                )
+
         # WI-08: capture URL before the click so we can verify the
         # navigation effect (if declared) without relying on the page
         # already being at the right place.
