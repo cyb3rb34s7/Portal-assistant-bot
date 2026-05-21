@@ -82,6 +82,51 @@ class AuditEvent(BaseModel):
     data: Optional[dict[str, Any]] = None
 
 
+class LocatorProbeResult(BaseModel):
+    """WI-23: structured outcome of probing a Playwright locator.
+
+    Replaces the legacy ``_first_visible`` boolean helper that caught
+    every exception and degraded to ``count() > 0``. That mask hid hidden
+    / strict-mode / detached / timeout failures behind a "looks fine"
+    signal, so the runner would click on elements that weren't actually
+    interactable.
+
+    The runner branches on ``state`` instead of a truthy bool:
+      - ``visible_unique``: exactly one visible match -- proceed.
+      - ``zero_matches``: locator resolved to nothing -- caller falls
+                          through to the next level.
+      - ``multiple_matches``: more than one match visible -- WI-22
+                              ambiguity detection runs against the
+                              candidate list.
+      - ``hidden``: matches found but none is visible (display:none,
+                    visibility:hidden, opacity:0, offscreen).
+      - ``detached``: target element exists in the count but the
+                      handle is no longer attached -- typically a
+                      re-render race.
+      - ``strict_mode_error``: Playwright strict-mode rejected the
+                               selector (resolved to multiple).
+      - ``timeout``: the probe itself timed out -- the page is still
+                     mid-action; caller should wait + retry, not click.
+    """
+
+    state: Literal[
+        "visible_unique",
+        "zero_matches",
+        "multiple_matches",
+        "hidden",
+        "detached",
+        "strict_mode_error",
+        "timeout",
+    ]
+    count: int = 0
+    """Number of elements the locator resolved to. 0 for zero_matches /
+    timeout; >=1 otherwise."""
+    last_error: Optional[str] = None
+    """Short string describing the underlying Playwright error when
+    ``state`` is hidden / detached / strict_mode_error / timeout. None
+    on success states."""
+
+
 class Diagnostic(BaseModel):
     """WI-06: structured diagnostic emitted when a previously-silent
     failure site (bad payload, screenshot fail, watcher install fail,

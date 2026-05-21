@@ -42,7 +42,7 @@ from rich.table import Table
 
 from .audit import AuditLogger
 from .browser import BrowserSession, connect_to_chrome
-from .models import Diagnostic, ToolResult
+from .models import Diagnostic, LocatorProbeResult, ToolResult
 from .param_codecs import ParamValidationError, resolve_param
 from .skill_models import (
     ElementFingerprint,
@@ -2529,59 +2529,135 @@ class SkillRunner:
         out.templates = {}
         return out
 
+    def _probe_and_branch(
+        self,
+        attr: str,
+        loc: Locator,
+    ) -> Optional[Locator]:
+        """WI-23: shared probe + diagnostic emission. Returns the
+        locator (``.first``) on ``visible_unique`` / ``multiple_matches``
+        and None on every failure state. Hidden / detached / strict-mode
+        / timeout each get a structured diagnostic so the operator sees
+        WHY a locator level skipped instead of "L1 just didn't match."
+
+        ``multiple_matches`` is permitted to return so the WI-22
+        ambiguity scanner can compare candidates. The action handler
+        consults ``_pending_ambiguity`` after a None result; if a level
+        returns a locator but ambiguity also fires, the runner's
+        existing _resolve_locator path takes precedence (it surfaces
+        ambiguous_target instead of clicking)."""
+        probe = _probe_locator(loc)
+        if probe.state in ("visible_unique", "multiple_matches"):
+            return loc.first
+        if probe.state == "zero_matches":
+            return None
+        # WI-23: every non-success non-zero state emits a diagnostic.
+        # Was previously a silent ``return False`` from _first_visible
+        # that converted into "L1 just didn't match" -- masking hidden
+        # elements, strict-mode errors, detached handles, and timeouts.
+        self._diagnostic(
+            "runner.locator_probe_failed",
+            level="warn",
+            recoverable=True,
+            attr=attr,
+            state=probe.state,
+            count=probe.count,
+            last_error=probe.last_error,
+        )
+        return None
+
     def _level1(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
         if fp.test_id:
             loc = page.get_by_test_id(fp.test_id)
-            if _first_visible(loc):
-                return loc.first
+            result = self._probe_and_branch("test_id", loc)
+            if result is not None:
+                return result
         if fp.element_id:
             loc = page.locator(f"#{_css_escape(fp.element_id)}")
-            if _first_visible(loc):
-                return loc.first
+            result = self._probe_and_branch("element_id", loc)
+            if result is not None:
+                return result
         if fp.name:
             loc = page.locator(f"[name='{fp.name}']")
-            if _first_visible(loc):
-                return loc.first
+            result = self._probe_and_branch("name", loc)
+            if result is not None:
+                return result
         if fp.aria_label:
             loc = page.get_by_label(fp.aria_label, exact=False)
-            if _first_visible(loc):
-                return loc.first
+            result = self._probe_and_branch("aria_label", loc)
+            if result is not None:
+                return result
         return None
 
     def _level2(self, page: Page, fp: ElementFingerprint) -> Optional[Locator]:
         if fp.role and fp.accessible_name:
             try:
-                loc = page.get_by_role(fp.role, name=fp.accessible_name, exact=False)
-                if _first_visible(loc):
-                    return loc.first
-            except Exception:
-                pass
+                loc = page.get_by_role(
+                    fp.role, name=fp.accessible_name, exact=False
+                )
+                result = self._probe_and_branch("role_name", loc)
+                if result is not None:
+                    return result
+            except Exception as e:
+                self._diagnostic(
+                    "runner.locator_probe_failed",
+                    level="warn",
+                    recoverable=True,
+                    attr="role_name",
+                    state="build_error",
+                    last_error=str(e)[:200],
+                )
         if fp.placeholder:
             loc = page.get_by_placeholder(fp.placeholder, exact=False)
-            if _first_visible(loc):
-                return loc.first
+            result = self._probe_and_branch("placeholder", loc)
+            if result is not None:
+                return result
         if fp.accessible_name:
             try:
                 loc = page.get_by_text(fp.accessible_name, exact=False)
-                if _first_visible(loc):
-                    return loc.first
-            except Exception:
-                pass
+                result = self._probe_and_branch("accessible_name_text", loc)
+                if result is not None:
+                    return result
+            except Exception as e:
+                self._diagnostic(
+                    "runner.locator_probe_failed",
+                    level="warn",
+                    recoverable=True,
+                    attr="accessible_name_text",
+                    state="build_error",
+                    last_error=str(e)[:200],
+                )
         if fp.text and len(fp.text) >= 3:
             text = fp.text.strip()[:50]
             try:
                 loc = page.get_by_text(text, exact=False)
-                if _first_visible(loc):
-                    return loc.first
-            except Exception:
-                pass
+                result = self._probe_and_branch("text", loc)
+                if result is not None:
+                    return result
+            except Exception as e:
+                self._diagnostic(
+                    "runner.locator_probe_failed",
+                    level="warn",
+                    recoverable=True,
+                    attr="text",
+                    state="build_error",
+                    last_error=str(e)[:200],
+                )
         if fp.css_path:
             try:
                 loc = page.locator(fp.css_path)
-                if _first_visible(loc):
-                    return loc.first
-            except Exception:
-                pass
+                result = self._probe_and_branch("css_path", loc)
+                if result is not None:
+                    return result
+            except Exception as e:
+                self._diagnostic(
+                    "runner.locator_probe_failed",
+                    level="warn",
+                    recoverable=True,
+                    attr="css_path",
+                    state="build_error",
+                    last_error=str(e)[:200],
+                )
         return None
 
     def _level3(
@@ -3766,16 +3842,89 @@ def _css_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
-def _first_visible(loc: Locator) -> bool:
+def _probe_locator(loc: Locator) -> LocatorProbeResult:
+    """WI-23: structured probe of a Playwright locator.
+
+    Replaces the legacy ``_first_visible`` bool helper which caught
+    every exception and degraded to ``count() > 0`` -- masking real
+    failures (hidden / strict-mode / detached / timeout) as "looks
+    fine". The runner now branches on ``state`` so visibility failures
+    never silently convert into "click this element."
+    """
+    # Count first; zero matches is the common fall-through case and
+    # doesn't need a visibility check.
     try:
-        if loc.count() == 0:
-            return False
-        return loc.first.is_visible(timeout=500)
-    except (PWTimeoutError, Exception):
-        try:
-            return loc.count() > 0
-        except Exception:
-            return False
+        count = loc.count()
+    except PWTimeoutError as e:
+        return LocatorProbeResult(
+            state="timeout",
+            count=0,
+            last_error=f"count timeout: {e}",
+        )
+    except Exception as e:
+        msg = str(e)
+        # Playwright strict mode raises a specific class; surface as
+        # strict_mode_error when we can detect the pattern.
+        if "strict mode" in msg.lower() or "resolved to" in msg.lower():
+            return LocatorProbeResult(
+                state="strict_mode_error",
+                count=0,
+                last_error=msg[:240],
+            )
+        return LocatorProbeResult(
+            state="zero_matches",
+            count=0,
+            last_error=msg[:240],
+        )
+    if count == 0:
+        return LocatorProbeResult(state="zero_matches", count=0)
+    # Visibility check. Use a short timeout because the caller has
+    # already waited for page settle; this is a fast probe, not a
+    # wait-until-visible.
+    try:
+        if loc.first.is_visible(timeout=500):
+            if count == 1:
+                return LocatorProbeResult(state="visible_unique", count=1)
+            return LocatorProbeResult(state="multiple_matches", count=count)
+        return LocatorProbeResult(
+            state="hidden",
+            count=count,
+            last_error="first match is not visible",
+        )
+    except PWTimeoutError as e:
+        return LocatorProbeResult(
+            state="timeout",
+            count=count,
+            last_error=f"visibility timeout: {e}",
+        )
+    except Exception as e:
+        msg = str(e)
+        if "detached" in msg.lower() or "element handle" in msg.lower():
+            return LocatorProbeResult(
+                state="detached",
+                count=count,
+                last_error=msg[:240],
+            )
+        if "strict mode" in msg.lower():
+            return LocatorProbeResult(
+                state="strict_mode_error",
+                count=count,
+                last_error=msg[:240],
+            )
+        return LocatorProbeResult(
+            state="hidden",
+            count=count,
+            last_error=msg[:240],
+        )
+
+
+def _first_visible(loc: Locator) -> bool:
+    """Deprecated since WI-23. Wraps ``_probe_locator`` for the few
+    legacy call sites that still need a boolean answer; new code should
+    branch on ``_probe_locator(...).state`` directly so hidden /
+    detached / strict-mode / timeout cannot silently be treated as
+    'looks fine'."""
+    return _probe_locator(loc).state in ("visible_unique", "multiple_matches")
 
 
 def _cli_approve(step: SkillStep) -> bool:
