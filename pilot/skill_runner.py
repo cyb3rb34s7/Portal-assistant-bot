@@ -1624,7 +1624,9 @@ class SkillRunner:
         const _setRH = window.XMLHttpRequest.prototype.setRequestHeader;
         const _send = window.XMLHttpRequest.prototype.send;
         window.XMLHttpRequest.prototype.setRequestHeader = function (k, v) {
-          if (k && k.toLowerCase() === 'idempotency-key') {
+          const cfg = window.__cp_idem_config;
+          const headerName = (cfg && cfg.header_name) || 'Idempotency-Key';
+          if (k && String(k).toLowerCase() === String(headerName).toLowerCase()) {
             this.__cp_idem_already_set = true;
           }
           return _setRH.apply(this, arguments);
