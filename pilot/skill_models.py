@@ -297,20 +297,48 @@ class StepAssertion(BaseModel):
         "text_contains",
         "url_contains",
         "attr_equals",
+        # WI-27: action-specific postcondition kinds. Each one is an
+        # action's structural success signal that the L3 verifier can
+        # check instead of the legacy whole-page-signature
+        # (url + body innerText length + interactable count) which
+        # the audit flagged as the wrong signal -- a spinner text
+        # change passes a wrong click, a silent save fails verification.
+        "url_matches_template",   # nav: post-action URL fits a template
+        "field_value_equals",     # form: input/textarea reads a value
+        "selection_equals",       # select_option: <select>.value matches
+        "toast_visible",          # save / conflict / undo toast appeared
+        "request_completed",      # specific network call settled with status
+        "download_started",       # browser download trigger fired
     ]
     selector: Optional[str] = None
-    """CSS selector. Required for visible / hidden / count_* / attr_equals."""
+    """CSS selector. Required for visible / hidden / count_* /
+    attr_equals / field_value_equals / selection_equals / toast_visible."""
     n: Optional[int] = None
     """For count_* kinds: the expected count."""
     text: Optional[str] = None
     """For text_contains: substring expected somewhere on the page or
     inside ``selector`` if provided. For url_contains: substring expected
-    in the current URL."""
+    in the current URL. For url_matches_template /
+    field_value_equals / selection_equals / toast_visible: the expected
+    value (template / canonical value / message substring)."""
     attr: Optional[str] = None
     """For attr_equals: attribute name."""
     timeout_ms: int = 4000
     """F-08c: 4000 is a legacy fallback. New annotations should set
     this explicitly from PortalContext.wait_policy.assertion_timeout_ms."""
+    url_template: Optional[str] = None
+    """WI-27: for kind=url_matches_template, the expected URL template
+    (e.g. ``/asset/{content_id}``) the post-action URL must match
+    once params are rendered."""
+    request_pattern: Optional[str] = None
+    """WI-27: for kind=request_completed, the URL substring of the
+    request the action's L3 verifier must observe a completion for."""
+    expected_status: Optional[int] = None
+    """WI-27: for kind=request_completed, the response status the
+    matched request must carry. None means "any 2xx" (200-299)."""
+    filename_pattern: Optional[str] = None
+    """WI-27: for kind=download_started, optional filename substring
+    or template fragment the download must match."""
 
 
 class NetworkExpectation(BaseModel):

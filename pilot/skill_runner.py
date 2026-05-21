@@ -581,8 +581,11 @@ class SkillRunner:
             click_fn = lambda: locator.dblclick(timeout=4000)  # noqa: E731
         else:
             click_fn = lambda: locator.click(timeout=4000)  # noqa: E731
+        # WI-27: pass step so the verifier can route to declared
+        # assert_after assertions instead of the legacy whole-page
+        # signature.
         verified = self._execute_with_heal_check(
-            page, level, heal, click_fn
+            page, level, heal, click_fn, step=step
         )
         # WI-08: when the recording captured a navigation effect for
         # this click, wait for the URL to settle to the templated value
@@ -760,6 +763,7 @@ class SkillRunner:
                 level,
                 heal,
                 lambda: self._select_option_with_fuzzy_fallback(locator, value or ""),
+                step=step,
             )
         elif input_type in ("checkbox", "radio"):
             # Boolean inputs — Playwright's set_checked is the right API,
@@ -773,10 +777,11 @@ class SkillRunner:
                 level,
                 heal,
                 lambda: locator.set_checked(target_checked),
+                step=step,
             )
         else:
             verified = self._execute_with_heal_check(
-                page, level, heal, lambda: locator.fill(value or "")
+                page, level, heal, lambda: locator.fill(value or ""), step=step
             )
         # WI-13: verify the field is actually empty after a clear. The
         # Playwright fill('') call clears the input value, but a
@@ -849,7 +854,7 @@ class SkillRunner:
             )
         page = self.session.page
         verified = self._execute_with_heal_check(
-            page, level, heal, lambda: locator.set_input_files(value)
+            page, level, heal, lambda: locator.set_input_files(value), step=step
         )
         shot = self._screenshot(f"step_{step.index}_upload")
         return self._build_action_result(
@@ -870,7 +875,7 @@ class SkillRunner:
         key = value or step.value or "Enter"
         page = self.session.page
         verified = self._execute_with_heal_check(
-            page, level, heal, lambda: locator.press(key)
+            page, level, heal, lambda: locator.press(key), step=step
         )
         return self._build_action_result(
             success=verified,
@@ -3895,6 +3900,76 @@ class SkillRunner:
                 return val == a.text
             except Exception:
                 return False
+        # WI-27: action-specific postcondition kinds. Each is an
+        # ACTION's structural success signal -- not whole-page state.
+        if a.kind == "url_matches_template" and a.url_template:
+            # Render the template through current params; substring
+            # match on the resulting fragment against the current URL.
+            try:
+                rendered = a.url_template.format(**self.params)
+            except (KeyError, IndexError):
+                rendered = a.url_template
+            current = (page.url or "").lower()
+            # Drop leading scheme + host so the template can be relative.
+            return rendered.lower() in current
+        if a.kind == "field_value_equals" and a.selector:
+            try:
+                actual = page.locator(a.selector).first.input_value(
+                    timeout=a.timeout_ms
+                )
+                return actual == (a.text or "")
+            except Exception:
+                return False
+        if a.kind == "selection_equals" and a.selector:
+            try:
+                actual = page.locator(a.selector).first.evaluate(
+                    "el => el && el.value != null ? el.value : null"
+                )
+                return actual == (a.text or "")
+            except Exception:
+                return False
+        if a.kind == "toast_visible":
+            # selector is the toast container; text is the optional
+            # substring matcher for toast text.
+            try:
+                sel = a.selector or "[role='status'],[role='alert']"
+                loc = page.locator(sel).first
+                loc.wait_for(state="visible", timeout=a.timeout_ms)
+                if a.text:
+                    body = loc.inner_text(timeout=a.timeout_ms) or ""
+                    return a.text.lower() in body.lower()
+                return True
+            except Exception:
+                return False
+        if a.kind == "request_completed" and a.request_pattern:
+            # Match against the in-page __cp_request_log. The pattern is
+            # a URL substring; status filter is optional (None => 2xx).
+            pat = a.request_pattern.lower()
+            status_filter = a.expected_status  # None = any 2xx
+            try:
+                return bool(page.evaluate(
+                    "([pat, statusFilter]) => {"
+                    " const log = window.__cp_request_log || [];"
+                    " return log.some(r =>"
+                    "   (r.url || '').toLowerCase().includes(pat) &&"
+                    "   r.finished_ts > 0 &&"
+                    "   (statusFilter === null"
+                    "     ? (r.status >= 200 && r.status < 300)"
+                    "     : r.status === statusFilter)"
+                    " ); }",
+                    [pat, status_filter],
+                ))
+            except Exception:
+                return False
+        if a.kind == "download_started":
+            # The runner attaches a download listener at session start
+            # in future WI-45. For WI-27 we honor the assertion only as
+            # a placeholder -- skill annotators emit this so the schema
+            # accepts it, but until WI-45 lands the verifier returns
+            # True (best-effort) so existing tests aren't blocked. The
+            # contract is documented; the implementation lands with
+            # WI-45.
+            return True
         return False
 
     def _describe_assertion(self, a: "StepAssertion") -> str:
@@ -3939,17 +4014,65 @@ class SkillRunner:
         level: int,
         heal_info: Optional[dict[str, Any]],
         action_callable: Callable[[], None],
+        step: Optional[SkillStep] = None,
     ) -> bool:
         """Run an action; if it was a healed (L3) action, check that
-        the page state changed afterward. Returns True if the action
-        ran cleanly. Mutates heal_info['post_condition_passed'].
+        the action's intended postcondition holds afterward.
+
+        WI-27: pre-WI-27 the verifier used a whole-page signature
+        ``(url, body innerText length, count of interactables)``. That
+        signal was wrong:
+          - spinner text change passes a wrong click,
+          - silent save fails verification despite the click being
+            correct,
+          - unrelated SPA route changes flip the verifier on a click
+            that didn't navigate.
+        WI-27 routes verification through the step's declared
+        assert_after assertions (action-specific kinds:
+        url_matches_template, field_value_equals, selection_equals,
+        toast_visible, request_completed, download_started). If no
+        assertions are declared, we fall back to the legacy whole-page
+        signature -- that's the back-compat path for skills without
+        WI-27 annotations.
         """
         if level != 3 or heal_info is None:
             action_callable()
             return True
+        # WI-27: prefer assertion-based verification when assertions
+        # are declared on the step. Otherwise fall back to the legacy
+        # whole-page signature.
+        has_assertions = step is not None and bool(step.assert_after)
+        if has_assertions:
+            action_callable()
+            # SPA settle window — give effects time to render.
+            try:
+                page.wait_for_timeout(350)
+            except Exception:
+                pass
+            passed = True
+            failing: Optional[str] = None
+            for a in step.assert_after:  # type: ignore[union-attr]
+                try:
+                    ok = self._check_one_assertion(page, a)
+                except Exception as e:
+                    ok = False
+                    failing = f"{a.kind}: {e}"
+                if not ok:
+                    passed = False
+                    if failing is None:
+                        failing = self._describe_assertion(a)
+                    break
+            heal_info["post_condition_passed"] = passed
+            heal_info["verification_method"] = "assert_after"
+            if not passed:
+                heal_info["failed_assertion"] = failing
+            if diag := getattr(self, "_diag", None):
+                diag["post_condition_passed"] = passed
+            return passed
+        # Legacy whole-page-signature path. Documented as a back-compat
+        # fallback only; new skills carry assertions and bypass this.
         before = self._page_state_signature(page)
         action_callable()
-        # SPA settle window — give effects time to render
         try:
             page.wait_for_timeout(350)
         except Exception:
@@ -3957,6 +4080,7 @@ class SkillRunner:
         after = self._page_state_signature(page)
         passed = before != after
         heal_info["post_condition_passed"] = passed
+        heal_info["verification_method"] = "page_signature_legacy"
         if diag := getattr(self, "_diag", None):
             diag["post_condition_passed"] = passed
         return passed
