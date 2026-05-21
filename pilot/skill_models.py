@@ -2972,6 +2972,15 @@ class Skill(BaseModel):
     # Pydantic accepts missing fields = default for old files, so v1
     # skills load with schema_version=1 automatically.
     schema_version: int = 1
+    upgraded_from: Optional[int] = None
+    """WI-50: audit breadcrumb stamped by ``pilot.skill_upgrade.upgrade_skill_to_v2``
+    when a legacy v1 skill is migrated. ``None`` means "natively this
+    schema_version" (either a freshly recorded v2 or an unmodified v1).
+    A non-None value records the version we upgraded FROM, so the audit
+    log can distinguish 'this skill was hand-written at v2' from 'this
+    skill was a v1 recording silently migrated at load'. Persisted in
+    the JSON; re-upgrading a v2 that already carries the marker does
+    not overwrite it."""
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     base_url: Optional[str] = None
