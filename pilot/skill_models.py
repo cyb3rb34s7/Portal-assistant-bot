@@ -714,13 +714,57 @@ class HoverEffect(BaseModel):
 
 
 class ToastEffect(BaseModel):
-    """A transient toast/snackbar that appeared after the action.
+    """WI-42: a transient toast/snackbar that appeared after the action.
 
     Used for save-confirm toasts, conflict-resolution toasts, undo
-    toasts. May carry an action button the workflow can click."""
+    toasts. May carry an action button the workflow can click.
+
+    Runner contract:
+      - When ``level='error'`` the post-action verify FAILS the step
+        with ``error_kind='toast_error'`` and ``text_pattern`` in
+        error_details so the operator sees the validation message.
+      - When ``level`` in (info, success, warning) the toast is
+        treated as confirmation. The runner asserts visibility (when
+        ``message_matcher`` is set) via the WI-27 ``toast_visible``
+        assertion semantics.
+      - ``dependent_actions`` describes Undo / Retry buttons the
+        workflow may click as a follow-up. Today these surface as
+        ambiguity-prompt-style pauses to the operator; future WIs
+        will model 'click Undo on the toast' as its own step.
+    """
+
+    level: Optional[Literal["info", "success", "warning", "error"]] = None
+    """WI-42: severity of the toast. ``error`` flips the step to
+    failed; the others are confirmation/audit only. None means the
+    grabber couldn't infer a level (no explicit class / role hint);
+    the runner treats None as info."""
+
+    text_pattern: Optional[str] = None
+    """WI-42: substring the toast text must match for the assertion
+    to succeed. Distinct from ``message_matcher`` only in name; both
+    are kept for back-compat. Annotator populates text_pattern for
+    new skills."""
+
+    dismiss_strategy: Optional[Literal[
+        "auto", "manual_close", "click_action",
+    ]] = None
+    """WI-42: how the toast disappears. ``auto`` -- it expires on its
+    own; ``manual_close`` -- has an X / dismiss button the operator
+    pressed during recording; ``click_action`` -- it had an action
+    button (Undo / Retry) the operator may want to click. Drives the
+    runner's post-toast wait."""
+
+    dependent_actions: list[dict[str, Any]] = Field(default_factory=list)
+    """WI-42: interactive controls (Undo, Retry, View Details) the
+    toast carried. Each entry shape: {label, test_id, action_kind:
+    'undo'|'retry'|'view'}. Audit-only today; future WIs may model
+    'click the Undo' as a follow-up step."""
 
     message_matcher: Optional[str] = None
-    """Substring or regex the toast text must match."""
+    """Pre-WI-42: substring/regex match for the toast text. Kept for
+    back-compat with skills built before WI-42. New annotations
+    populate text_pattern instead; the runner reads text_pattern
+    first, falls back to message_matcher."""
     action_button_test_id: Optional[str] = None
     expiry_policy: Optional[Literal["auto", "manual", "click"]] = None
     conflict_kind: Optional[str] = None
@@ -2813,6 +2857,14 @@ class TraceEvent(BaseModel):
         "dragstart",
         "dragover",
         "drop",
+        # WI-42: toast / snackbar appeared. Emitted by the grabber's
+        # role=status / role=alert / known toast-container watcher
+        # during a user interaction window. Carries toast_level (info
+        # / success / warning / error inferred from class names + role)
+        # and toast_text + optional action_button_test_id. The
+        # annotator folds toasts into the causing step's
+        # effects.toast (ToastEffect).
+        "toast",
         # WI-40: hover that revealed a submenu. Emitted by the grabber
         # when a pointerenter / mouseover fires on a menu-trigger
         # element AND a subsequent DOM mutation makes a submenu visible
@@ -3029,6 +3081,27 @@ class TraceEvent(BaseModel):
     by the scroll detector to confirm the scroll caused new rows to
     render (positive delta) rather than just shifting the viewport
     within already-rendered content (zero delta)."""
+
+    # WI-42: toast / snackbar payload. Populated on kind='toast' events
+    # emitted by the grabber's role=status / role=alert watcher when
+    # a toast container became visible during an interaction window.
+    toast_text: Optional[str] = None
+    """For ``toast`` events: the toast's textContent (trimmed, capped
+    at 512 chars). Drives ToastEffect.text_pattern via substring
+    matching."""
+    toast_level: Optional[Literal["info", "success", "warning", "error"]] = None
+    """For ``toast`` events: severity inferred from class names +
+    role. ``error`` for role=alert / .toast-error / .error variants;
+    ``success`` for .toast-success / .success classes; ``warning``
+    for .warning / .warn; default ``info``. The annotator stamps this
+    onto ToastEffect.level which controls runner failure on error."""
+    toast_selector: Optional[str] = None
+    """For ``toast`` events: a CSS selector the runner can re-resolve
+    to assert toast_visible. Prefers data-testid > id > role+class."""
+    toast_action_buttons: Optional[list[dict[str, Any]]] = None
+    """For ``toast`` events: interactive controls inside the toast
+    (Undo / Retry / View / Dismiss). Each entry: {label, test_id,
+    action_kind}. Drives ToastEffect.dependent_actions."""
 
     # WI-41: keyboard shortcut payload. Populated on kind='key' events
     # whose raw_event_kind='shortcut' (the grabber sets this for

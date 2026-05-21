@@ -583,6 +583,30 @@ class SkillRunner:
                     0,
                 )
 
+            # WI-42: toast verification BEFORE generic assert_after.
+            # When the step declared an effects.toast, the runner waits
+            # for the matching toast and fails on level=error (the
+            # operator's save / publish was rejected by the backend
+            # with a structured error message, not a generic locator
+            # timeout). Success / info / warning toasts confirm but
+            # do not fail the step.
+            if result.success and step.effects is not None and step.effects.toast is not None:
+                ok, desc, details = self._verify_toast_effect(step.effects.toast)
+                if not ok:
+                    shot = self._screenshot(f"step_{step.index}_toast_failed")
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=result.action_taken,
+                            error=f"toast effect failed: {desc}",
+                            error_kind="toast_error" if (step.effects.toast.level == "error") else "toast_assertion_failed",
+                            error_details=details,
+                            screenshot_path=shot,
+                            healed=result.healed,
+                        ),
+                        level,
+                    )
+
             # Declarative post-condition check. A "successful" action
             # whose post-condition fails is reclassified as failed with
             # error_kind="post_condition_failed" so the orchestrator's
@@ -666,6 +690,108 @@ class SkillRunner:
             ),
             1,
         )
+
+    def _verify_toast_effect(
+        self, toast_eff: Any
+    ) -> tuple[bool, Optional[str], dict[str, Any]]:
+        """WI-42: verify a declared toast effect after the action.
+
+        Strategy:
+          1. Look for any role=alert / role=status / .toast / .snackbar
+             element on the page.
+          2. Match its textContent against text_pattern (substring,
+             case-insensitive). When no text_pattern is declared,
+             any visible toast satisfies the existence check.
+          3. On level='error': the toast MUST match AND the operator's
+             intent is to surface the failure -- return (False,
+             toast text, details) so the runner flips the step to
+             failed with toast_error.
+          4. On info / success / warning / None: return (True, None,
+             {}) when a toast matched; (False, 'expected toast missing',
+             ...) when text_pattern was set but no matching toast
+             appeared.
+
+        Returns (ok, description, details_dict).
+        """
+        page = self.session.page
+        # Cheap selector union: cover the common toast markers.
+        toast_selector = (
+            "[role='alert'], [role='status'], "
+            "[data-testid*='toast' i], [data-testid*='snackbar' i], "
+            "[class*='toast' i], [class*='snackbar' i]"
+        )
+        # Give the toast a generous post-action window (toasts often
+        # fire after the network call settles).
+        try:
+            page.wait_for_selector(
+                toast_selector, state="visible", timeout=4000
+            )
+        except Exception:
+            # No toast appeared. For declared error-level toasts this
+            # is a structural failure (we expected one). For success
+            # toasts with no text_pattern set we are lenient: the
+            # action may still have succeeded without a confirmation
+            # toast.
+            if toast_eff.level == "error":
+                return False, "expected error toast did not appear", {
+                    "level": "error",
+                    "text_pattern": toast_eff.text_pattern,
+                }
+            if toast_eff.text_pattern:
+                return False, (
+                    f"expected toast matching {toast_eff.text_pattern!r} "
+                    "did not appear"
+                ), {
+                    "level": toast_eff.level,
+                    "text_pattern": toast_eff.text_pattern,
+                }
+            return True, None, {}
+
+        # A toast is visible. Read its text and match.
+        try:
+            toasts = page.locator(toast_selector).all()
+        except Exception:
+            toasts = []
+        matched_text: Optional[str] = None
+        for tloc in toasts:
+            try:
+                if not tloc.is_visible(timeout=500):
+                    continue
+                text = (tloc.inner_text(timeout=500) or "").strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+            pattern = toast_eff.text_pattern or toast_eff.message_matcher
+            if pattern:
+                if pattern.lower() in text.lower():
+                    matched_text = text
+                    break
+            else:
+                # No pattern set -- any visible toast matches.
+                matched_text = text
+                break
+
+        if matched_text is None:
+            return False, (
+                f"toast appeared but did not match pattern "
+                f"{toast_eff.text_pattern!r}"
+            ), {
+                "level": toast_eff.level,
+                "text_pattern": toast_eff.text_pattern,
+            }
+
+        # WI-42: error-level toast = structural failure.
+        if toast_eff.level == "error":
+            return False, matched_text, {
+                "level": "error",
+                "text_pattern": toast_eff.text_pattern,
+                "actual_text": matched_text[:512],
+            }
+        return True, None, {
+            "level": toast_eff.level,
+            "actual_text": matched_text[:512],
+        }
 
     def _perform_hover_prerequisite(
         self, step: SkillStep, hover_eff: Any

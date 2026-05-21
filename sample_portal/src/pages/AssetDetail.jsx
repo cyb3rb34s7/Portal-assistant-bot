@@ -30,6 +30,9 @@ export default function AssetDetail() {
   const [saving, setSaving] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const [error, setError] = useState(null);
+  // WI-42: transient toast notification (Saved / Failed / Undo).
+  // Auto-clears after 4s unless dismissed or undone.
+  const [toast, setToast] = useState(null);
 
   // Editable form state (mirrors the asset, plus local-only fields).
   const [form, setForm] = useState({
@@ -163,8 +166,18 @@ export default function AssetDetail() {
         { idempotencyKey: newIdempotencyKey() },
       );
       setAsset(updated);
+      // WI-42: success toast. Auto-dismisses after 4s.
+      setToast({ level: "success", text: "Saved" });
+      setTimeout(() => setToast((t) => (t && t.text === "Saved" ? null : t)), 4000);
     } catch (e) {
       setError(String(e.message || e));
+      // WI-42: error toast surfaces the failure message. The
+      // runner's _verify_toast_effect picks up level=error and
+      // fails the step with toast_error.
+      setToast({
+        level: "error",
+        text: `Save failed: ${String(e.message || e)}`,
+      });
     } finally {
       setSaving(false);
     }
@@ -600,6 +613,45 @@ export default function AssetDetail() {
           </p>
         )}
       </div>
+
+      {/* WI-42: toast / snackbar. role=status for success/info,
+          role=alert for error. The grabber's WI-42 toast watcher
+          picks both up via role and class name. */}
+      {toast && (
+        <div
+          className={`toast toast-${toast.level}`}
+          data-testid={`toast-${toast.level}`}
+          role={toast.level === "error" ? "alert" : "status"}
+          style={{
+            position: "fixed",
+            right: 16,
+            bottom: 16,
+            background: toast.level === "error" ? "#dc2626"
+              : toast.level === "warning" ? "#f59e0b"
+              : toast.level === "success" ? "#16a34a"
+              : "#374151",
+            color: "white",
+            padding: "12px 16px",
+            borderRadius: 6,
+            boxShadow: "0 6px 16px rgba(0,0,0,0.2)",
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            zIndex: 9999,
+          }}
+        >
+          <span data-testid="toast-text">{toast.text}</span>
+          <button
+            type="button"
+            className="btn-link"
+            data-testid="toast-dismiss"
+            onClick={() => setToast(null)}
+            style={{ color: "white" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {(asset.workflow_history || []).length > 0 && (
         <div className="card" data-testid="workflow-history">

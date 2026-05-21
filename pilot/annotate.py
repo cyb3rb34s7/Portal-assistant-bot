@@ -994,6 +994,9 @@ _OBSERVED_EVENT_KINDS: frozenset[str] = frozenset({
     # annotator folds them into the causing user action's
     # effects.modal field rather than producing standalone steps.
     "modal",
+    # WI-42: toast / snackbar observations. Folded into the causing
+    # step's effects.toast; never emitted as their own step.
+    "toast",
 })
 
 
@@ -3103,6 +3106,55 @@ def build_skill(
                 destructive_user_events.add(user_id)
                 break
 
+    # WI-42: toast events indexed by causing event id. Each entry
+    # becomes effects.toast on the causing step. The grabber attributes
+    # toasts emitted during an interaction window via initiator_event_id.
+    from .skill_models import ToastEffect as _ToastEff
+    toast_effects_by_cause: dict[str, "_ToastEff"] = {}
+    for ev in events:
+        if ev.kind != "toast":
+            continue
+        cause_id = ev.caused_by or ev.initiator_event_id
+        if not cause_id:
+            continue
+        # Build the ToastEffect from the toast event payload. The
+        # annotator picks text_pattern as a substring of the captured
+        # text (first 200 chars stripped) so the runner can
+        # substring-match on replay even when the toast text varies
+        # slightly (interpolated user names, timestamps).
+        text = ev.toast_text or ""
+        text_pattern: Optional[str] = None
+        if text:
+            text_pattern = text[:200]
+        # Dependent actions: lift the action buttons captured by the
+        # grabber. dismiss_strategy: 'click_action' when there are
+        # Undo/Retry buttons; 'manual_close' for dismiss-only; 'auto'
+        # otherwise.
+        dependent_actions: list[dict[str, Any]] = list(
+            ev.toast_action_buttons or []
+        )
+        has_actionable = any(
+            b.get("action_kind") in ("undo", "retry", "view")
+            for b in dependent_actions
+        )
+        has_dismiss_only = (
+            all(b.get("action_kind") == "dismiss" for b in dependent_actions)
+            and bool(dependent_actions)
+        )
+        if has_actionable:
+            dismiss_strat: Optional[str] = "click_action"
+        elif has_dismiss_only:
+            dismiss_strat = "manual_close"
+        else:
+            dismiss_strat = "auto"
+        toast_effects_by_cause[cause_id] = _ToastEff(
+            level=ev.toast_level,  # type: ignore[arg-type]
+            text_pattern=text_pattern,
+            dismiss_strategy=dismiss_strat,  # type: ignore[arg-type]
+            dependent_actions=dependent_actions,
+            message_matcher=text_pattern,  # back-compat alias
+        )
+
     # WI-40: hover events indexed by the FOLLOWING click's event_id.
     # The grabber emits ONE hover event when a pointerenter on a menu
     # trigger revealed a submenu within the window. The annotator pairs
@@ -3182,6 +3234,9 @@ def build_skill(
         # WI-34: dialog mount/unmount observations -- folded into the
         # causing click's effects.modal, never emitted as their own step.
         "modal",
+        # WI-42: toast / snackbar observations -- folded into the
+        # causing step's effects.toast.
+        "toast",
     })
 
     for idx, ev in enumerate(events):
@@ -3340,6 +3395,17 @@ def build_skill(
                 effects = StepEffect(popup=popup_eff)
             else:
                 effects.popup = popup_eff
+
+        # WI-42: fold toast observations onto this step's effects.toast.
+        # On level=error the runner fails the step with toast_error;
+        # on success / info / warning the toast confirms the action
+        # (the runner asserts visibility via text_pattern).
+        if ev.event_id and ev.event_id in toast_effects_by_cause:
+            toast_eff = toast_effects_by_cause[ev.event_id]
+            if effects is None:
+                effects = StepEffect(toast=toast_eff)
+            else:
+                effects.toast = toast_eff
 
         # WI-40: fold the preceding hover (paired by the
         # hover_events_by_click pass above) onto this step's

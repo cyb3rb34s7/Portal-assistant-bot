@@ -785,6 +785,164 @@
   }
   _installDialogWatcher();
 
+  // ---- WI-42: toast / snackbar watcher -----------------------------------
+  //
+  // Toasts appear after save / publish / delete actions to confirm
+  // success or signal a conflict. The grabber watches for role=status
+  // / role=alert nodes appearing during a user interaction window AND
+  // for common toast-container patterns (react-toastify, sonner,
+  // antd-message, .toast / .snackbar generic classes).
+  //
+  // Emits ONE ``kind='toast'`` event per appearance with toast_text,
+  // toast_level, toast_selector, and toast_action_buttons. The
+  // annotator folds toasts into the causing step's effects.toast
+  // (ToastEffect).
+  function _installToastWatcher() {
+    if (window.__cp_toast_installed) return;
+    window.__cp_toast_installed = true;
+
+    var trackedToasts = (typeof WeakSet === "function") ? new WeakSet() : null;
+    function _wasTracked(el) {
+      if (!trackedToasts) return false;
+      try { return trackedToasts.has(el); } catch (e) { return false; }
+    }
+    function _markTracked(el) {
+      if (!trackedToasts) return;
+      try { trackedToasts.add(el); } catch (e) {}
+    }
+
+    var TOAST_TESTID_RE = /toast|snackbar|notification|alert/i;
+    var TOAST_CLASS_RE = /(^|\s)(toast|snackbar|notification|Toastify__toast|sonner|ant-message|ant-notification)(\s|$|-|_)/i;
+
+    function _isToastEl(el) {
+      if (!el || el.nodeType !== 1) return false;
+      var role = el.getAttribute && el.getAttribute("role");
+      if (role === "status" || role === "alert") return true;
+      var tid = el.getAttribute && el.getAttribute("data-testid");
+      if (tid && TOAST_TESTID_RE.test(tid)) return true;
+      var cls = (el.className && typeof el.className === "string")
+        ? el.className : "";
+      if (cls && TOAST_CLASS_RE.test(cls)) return true;
+      return false;
+    }
+
+    function _inferLevel(el) {
+      var role = el.getAttribute && el.getAttribute("role");
+      if (role === "alert") return "error";
+      var cls = (el.className && typeof el.className === "string")
+        ? el.className.toLowerCase() : "";
+      if (/(toast|message|alert|notification)[-_]error|error[-_](toast|message)|--error|\bfailure\b/.test(cls)) {
+        return "error";
+      }
+      if (/--success|success[-_]|\bsuccess\b/.test(cls)) return "success";
+      if (/--warning|warning[-_]|\bwarn\b/.test(cls)) return "warning";
+      return "info";
+    }
+
+    function _toastSelector(el) {
+      var tid = el.getAttribute && el.getAttribute("data-testid");
+      if (tid) {
+        return "[data-testid=\"" + tid.replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\"]";
+      }
+      if (el.id) return "#" + cssEscape(el.id);
+      var role = el.getAttribute && el.getAttribute("role");
+      if (role) return "[role=\"" + role + "\"]";
+      return buildCssPath(el);
+    }
+
+    function _collectActionButtons(el) {
+      var out = [];
+      try {
+        var btns = el.querySelectorAll("button, [role='button'], a[href]");
+        for (var i = 0; i < btns.length && i < 5; i++) {
+          var b = btns[i];
+          var lbl = trim(b.innerText || b.textContent || b.getAttribute("aria-label") || "");
+          if (!lbl) continue;
+          var bt = b.getAttribute && b.getAttribute("data-testid");
+          // Infer action_kind from the label
+          var akind = "view";
+          var lower = lbl.toLowerCase();
+          if (/undo|revert/.test(lower)) akind = "undo";
+          else if (/retry|try again/.test(lower)) akind = "retry";
+          else if (/dismiss|close|×/.test(lower)) akind = "dismiss";
+          out.push({
+            label: lbl.slice(0, 60),
+            test_id: bt || null,
+            action_kind: akind,
+          });
+        }
+      } catch (e) {}
+      return out;
+    }
+
+    function _emitToast(el) {
+      if (_wasTracked(el)) return;
+      _markTracked(el);
+      var text = "";
+      try {
+        text = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text.length > 512) text = text.slice(0, 512) + "...";
+      } catch (e) {}
+      if (!text) return;
+      var level = _inferLevel(el);
+      var sel = _toastSelector(el);
+      var buttons = _collectActionButtons(el);
+      var attr = _attribution("toast_observer");
+      try {
+        post(_merge({
+          kind: "toast",
+          page_url: location.href,
+          raw_event_kind: "toast_appeared",
+          toast_text: text,
+          toast_level: level,
+          toast_selector: sel,
+          toast_action_buttons: buttons.length ? buttons : null,
+          initiator_event_id: (activeInteraction && _isWithinWindow())
+            ? activeInteraction.id : null,
+        }, attr));
+      } catch (e) {
+        if (DEBUG) console.warn("[cp] toast emit failed", e);
+      }
+    }
+
+    try {
+      var root = document.body || document.documentElement;
+      if (!root) {
+        return setTimeout(_installToastWatcher, 100);
+      }
+      var mo = new MutationObserver(function (records) {
+        for (var i = 0; i < records.length; i++) {
+          var r = records[i];
+          if (!r.addedNodes) continue;
+          for (var j = 0; j < r.addedNodes.length; j++) {
+            var n = r.addedNodes[j];
+            if (!n || n.nodeType !== 1) continue;
+            if (_isToastEl(n)) {
+              _emitToast(n);
+              continue;
+            }
+            // Walk shallow children too (some toast libs mount inside
+            // a wrapper).
+            try {
+              if (n.querySelectorAll) {
+                var inner = n.querySelectorAll(
+                  "[role='alert'], [role='status'], [data-testid*='toast' i], [data-testid*='snackbar' i], [class*='toast' i], [class*='snackbar' i]"
+                );
+                for (var k = 0; k < inner.length && k < 5; k++) {
+                  if (_isToastEl(inner[k])) _emitToast(inner[k]);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      });
+      mo.observe(root, { childList: true, subtree: true });
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] toast watcher install failed", e);
+    }
+  }
+  _installToastWatcher();
+
   // ---- WI-37: scroll-to-find-row capture ---------------------------------
   //
   // Scroll events are normally filtered (the very first line of this
