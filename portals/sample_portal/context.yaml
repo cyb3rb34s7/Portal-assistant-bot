@@ -149,4 +149,4 @@ idempotency:
   method_patterns: ["POST", "PUT", "PATCH", "DELETE"]
   key_components: ["session", "step_index", "method", "url_path", "body_hash"]
   body_hash_fields: []   # hash the whole body
-  allow_existing_header: true
+  allow_existing_header: false
