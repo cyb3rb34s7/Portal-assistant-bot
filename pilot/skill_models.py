@@ -55,6 +55,15 @@ ActionType = Literal[
 ]
 
 
+class OptionSnapshot(BaseModel):
+    """One option captured from a select/listbox at record time."""
+
+    value: str
+    label: str
+    selected: bool = False
+    disabled: bool = False
+
+
 class ElementFingerprint(BaseModel):
     """Fat fingerprint of a DOM element, captured at teach time.
 
@@ -118,12 +127,12 @@ class ElementFingerprint(BaseModel):
     """Type of value the control yields. ``html`` is for
     contenteditable / rich-text editors. ``none`` is for clickable
     elements that don't carry a value (buttons, links)."""
-    options_snapshot: Optional[list[dict[str, str]]] = None
+    options_snapshot: Optional[list[OptionSnapshot]] = None
     """For selects, listboxes, comboboxes: every option's value + label
     + selected flag at the moment of recording. The annotator uses
     this to emit declared aliases (WI-25) so replay doesn't fuzzy-
     match wrong locale/status options. Each entry: ``{value, label,
-    selected?}``."""
+    selected?, disabled?}``."""
     selected_options: Optional[list[str]] = None
     """Currently-selected option values at record time. For
     select_multiple / combobox, may carry multiple. For

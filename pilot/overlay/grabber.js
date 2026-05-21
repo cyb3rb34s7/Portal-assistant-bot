@@ -627,8 +627,9 @@
           var entry = {
             value: o.value,
             label: trim(o.textContent || ""),
+            selected: !!o.selected,
+            disabled: !!o.disabled,
           };
-          if (o.selected) entry.selected = true;
           opts.push(entry);
           if (o.selected) selected.push(o.value);
         }
