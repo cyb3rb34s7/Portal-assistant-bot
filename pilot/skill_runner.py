@@ -61,6 +61,30 @@ LEVEL_LABELS = {
 }
 
 
+# WI-01: action types declared in the schema but whose runner
+# implementation lands in subsequent WIs. Dispatching to a stub gives
+# operators a clear "this WI hasn't shipped yet" error instead of a
+# silent no-op when an annotator (current or future) emits one of these.
+# As each WI lands, the action type moves from this set to its real
+# handler in _execute_step.
+_UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
+    "fill_submit",          # WI-15
+    "select_option",        # WI-17
+    "select_autocomplete",  # WI-16
+    "date_select",          # WI-21
+    "slider_set",           # WI-28
+    "drag_drop",             # WI-30
+    "toggle_state",         # WI-33
+    "modal",                # WI-34
+    "popup",                # WI-35
+    "download",             # WI-45
+    "scroll_until",         # WI-38
+    "rich_text_set",        # WI-39
+    "shortcut",             # WI-41
+    "canvas_gesture",       # WI-49
+})
+
+
 class SkillExecutionError(Exception):
     pass
 
@@ -261,6 +285,8 @@ class SkillRunner:
                 result, level = self._do_wait(step)
             elif step.action == "set_selection":
                 result, level = self._do_set_selection(step)
+            elif step.action in _UNIMPLEMENTED_ACTIONS:
+                result, level = self._do_unimplemented_action(step)
             else:
                 return (
                     ToolResult(
@@ -497,6 +523,41 @@ class SkillRunner:
         return (
             ToolResult(success=True, action_taken=f"waited {step.wait_ms}ms"),
             1,
+        )
+
+    def _do_unimplemented_action(
+        self, step: SkillStep
+    ) -> tuple[ToolResult, int]:
+        """Stub for ActionTypes introduced in WI-01 (schema-only) but
+        whose runner behavior lands in later WIs.
+
+        Fails loudly so an operator sees exactly which WI is pending
+        and so a skill that uses a new action type can't silently
+        succeed without actually doing the action. The orchestrator's
+        pause flow takes over from here per the step's replay_policy.
+        """
+        self.audit.log(
+            "warn",
+            (
+                f"step {step.index} action {step.action!r} declared in "
+                "schema but runner implementation not yet shipped"
+            ),
+            data={"action": step.action},
+        )
+        return (
+            ToolResult(
+                success=False,
+                action_taken=f"step {step.index} {step.action} (stub)",
+                error=(
+                    f"action {step.action!r} is declared in the schema but "
+                    "its runner implementation has not landed yet. See "
+                    "DOCS/reviews/2026-05-21_fix-everything-plan.md for "
+                    "the work item that will implement it."
+                ),
+                error_kind="action_not_implemented",
+                error_details={"action": step.action},
+            ),
+            0,
         )
 
     def _do_set_selection(self, step: SkillStep) -> tuple[ToolResult, int]:

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 
 ActionType = Literal[
+    # Legacy v1 actions -- continue to work without changes
     "navigate",
     "click",
     "change",         # form input value set (debounced typing, select, etc.)
@@ -32,6 +33,25 @@ ActionType = Literal[
     "wait",           # explicit wait / sleep
     "assert",         # post-condition assertion
     "set_selection",  # multi-select reconciliation (replace/add/remove items in a picker)
+    # WI-01: structured action types. Schema accepts them now; runner
+    # dispatches to per-action handlers as each subsequent WI lands.
+    # Unimplemented handlers fail loudly with error_kind="action_not_implemented"
+    # so the operator sees exactly which WI is pending instead of a
+    # silent no-op.
+    "fill_submit",          # text input burst + Enter/form submit, collapsed to one step (WI-15)
+    "select_option",        # native single-select with declared enum aliases (WI-17)
+    "select_autocomplete",  # query input + result selection from response container (WI-16)
+    "date_select",          # native or custom calendar date picker (WI-21)
+    "slider_set",           # range slider final value + event dispatch (WI-28)
+    "drag_drop",            # pointer drag with DataTransfer semantics (WI-30)
+    "toggle_state",         # accordion / expand-collapse desired state (WI-33)
+    "modal",                # modal open/close with dialog visibility assertion (WI-34)
+    "popup",                # window.open / target=_blank popup workflow (WI-35)
+    "download",             # click + browser download capture (WI-45)
+    "scroll_until",         # scroll a container until a target is visible (WI-38)
+    "rich_text_set",        # contenteditable / rich-text editor content set (WI-39)
+    "shortcut",             # global keyboard shortcut (Ctrl+S etc.) (WI-41)
+    "canvas_gesture",       # canvas/SVG/media adapter-driven gesture (WI-49)
 ]
 
 
@@ -190,6 +210,235 @@ class ExpectedSignals(BaseModel):
     dom: list[DomExpectation] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# WI-01: StepEffect family
+#
+# Effects model the consequences of an action. Today's recordings treat
+# every consequence as a separate independent step ("click", then a
+# standalone "navigate", then a standalone "modal-appear"). That loses
+# causality and produces the click-then-hardcoded-navigate bug from the
+# fix-everything-plan audit (BLOCKER 1).
+#
+# Going forward, the annotator folds caused consequences into the
+# causing step's ``effects`` field. The runner asserts the effect after
+# executing the action -- it does not re-execute the consequence.
+#
+# Each effect subtype is optional. A click that triggers navigation
+# would have ``effects.navigation`` populated; the standalone
+# ``navigate`` step that today's recorder emits would be either dropped
+# (it's the same action) or rewritten as a click-with-effect.
+# ---------------------------------------------------------------------------
+
+
+class NavigationEffect(BaseModel):
+    """An action that caused (or is expected to cause) a URL change."""
+
+    kind: Literal[
+        "spa_route",        # history.pushState / popstate / hashchange
+        "full_document",    # full document navigation
+        "hash",             # hash-only navigation
+        "history_replace",  # history.replaceState
+        "manual",           # operator typed in address bar (rare)
+    ]
+    url: Optional[str] = None
+    """Literal URL observed at recording. Kept verbatim for audit, but
+    NOT used as the replay target -- use ``url_template`` if you want
+    to navigate to a parameterized URL."""
+    url_template: Optional[str] = None
+    """Templated URL with ``{param}`` placeholders, derived from
+    provenance at annotate time. For verification only when used on a
+    click effect -- runner asserts URL matches this template, never
+    calls ``page.goto`` for caused navigation."""
+    source: Optional[str] = None
+    """How the navigation fired: ``history.pushState`` /
+    ``history.replaceState`` / ``popstate`` / ``hashchange`` /
+    ``anchor`` / ``form_submit`` / ``location_assign`` / ``manual``."""
+    reload_allowed: bool = False
+    """If True, runner is allowed to call ``page.goto`` to force the
+    URL. Default False: caused navigations must come from the action,
+    not from a redundant goto."""
+    assert_url: Optional[str] = None
+    """Optional regex or substring the post-action URL must match.
+    Default: derived from ``url_template`` if absent."""
+    timeout_ms: int = 5000
+
+
+class PopupEffect(BaseModel):
+    """An action that opens a new tab / window / popup."""
+
+    url_template: Optional[str] = None
+    window_name: Optional[str] = None
+    page_binding_key: Optional[str] = None
+    """Key the runner uses to register the new page in its page
+    registry. Subsequent steps targeting this page bind by key."""
+    switch_policy: Literal["switch", "stay"] = "switch"
+    """``switch``: subsequent steps execute on the popup until an
+    explicit context-switch step. ``stay``: popup opens but the
+    original page remains active."""
+    close_policy: Literal["explicit", "auto"] = "explicit"
+
+
+class DownloadEffect(BaseModel):
+    """An action that triggers a browser download."""
+
+    filename_template: Optional[str] = None
+    mime: Optional[str] = None
+    save_policy: Literal["session_artifact", "user_path"] = "session_artifact"
+    path_param: Optional[str] = None
+    """Skill param holding the target save path when save_policy is
+    ``user_path``."""
+
+
+class ModalEffect(BaseModel):
+    """An action that opens or closes a modal/dialog."""
+
+    kind: Literal["open", "close"]
+    dialog_test_id: Optional[str] = None
+    dialog_selector: Optional[str] = None
+    expected_visibility: Optional[bool] = None
+    """After the action: True = dialog visible, False = dialog hidden."""
+
+
+class ToastEffect(BaseModel):
+    """A transient toast/snackbar that appeared after the action.
+
+    Used for save-confirm toasts, conflict-resolution toasts, undo
+    toasts. May carry an action button the workflow can click."""
+
+    message_matcher: Optional[str] = None
+    """Substring or regex the toast text must match."""
+    action_button_test_id: Optional[str] = None
+    expiry_policy: Optional[Literal["auto", "manual", "click"]] = None
+    conflict_kind: Optional[str] = None
+    """``save_conflict`` | ``validation_error`` | ``info`` | ..."""
+
+
+class NewTabEffect(BaseModel):
+    """Less specific than PopupEffect -- the action opens a new tab via
+    some mechanism (target=_blank, window.open, CDP page event)."""
+
+    binding_key: str
+    target_url_template: Optional[str] = None
+
+
+class StateChangeEffect(BaseModel):
+    """A targeted attribute/state mutation on a specific element. Used
+    to describe accordion / expanded / disabled-to-enabled / aria-busy
+    transitions caused by the action."""
+
+    target_selector: str
+    attribute: str
+    from_value: Optional[str] = None
+    to_value: Optional[str] = None
+
+
+class StepEffect(BaseModel):
+    """Container for all consequence types of an action.
+
+    Multiple effect types can co-exist on one step (e.g. a click that
+    opens a modal AND triggers a network call). Each field is optional
+    and defaults None; the runner inspects only the populated ones."""
+
+    navigation: Optional[NavigationEffect] = None
+    popup: Optional[PopupEffect] = None
+    download: Optional[DownloadEffect] = None
+    modal: Optional[ModalEffect] = None
+    toast: Optional[ToastEffect] = None
+    new_tab: Optional[NewTabEffect] = None
+    state_change: Optional[StateChangeEffect] = None
+    network: list["NetworkExpectation"] = Field(default_factory=list)
+    """Network calls the action is expected to cause. Different from the
+    legacy step.expected_signals.network which gates a wait; these are
+    declared as consequences of THIS action, scoped to the action's
+    timeframe."""
+    dom: list["DomExpectation"] = Field(default_factory=list)
+    """DOM mutations the action is expected to cause."""
+
+
+# ---------------------------------------------------------------------------
+# WI-01: ReplayPolicy
+#
+# Default policy for steps is fail-fast (on_failure="abort"). Today's
+# runner continues after a sub-step failure (BLOCKER 5 in the audit);
+# that's wrong for state-mutating skills. Steps that are explicitly
+# observational or expected-to-fail-sometimes can declare
+# on_failure="continue" or "optional".
+# ---------------------------------------------------------------------------
+
+
+class ReplayPolicy(BaseModel):
+    on_failure: Literal["abort", "continue", "optional", "recover"] = "abort"
+    """``abort`` (default): runner stops the skill on this step's
+    failure; orchestrator pause flow takes over. ``continue``:
+    explicitly tolerate failure, log + proceed. ``optional``: same as
+    continue but no error_kind emitted. ``recover``: hand off to the
+    runner's recovery hooks (future WI-26)."""
+    reload_allowed: bool = False
+    """Permit ``page.goto`` to force the recorded URL if the action's
+    natural behavior doesn't produce the expected navigation. Default
+    False -- prevents accidental full SPA reloads that re-trigger the
+    page's initial fetches."""
+    requires_current_page: Optional[str] = None
+    """URL pattern (substring) that must currently match before this
+    step runs. Used by cross-tab workflows (WI-46) so a step bound to
+    the preview tab doesn't accidentally run on the catalog tab."""
+    optional: bool = False
+    """Marks the step as observational. Failures don't propagate as
+    skill failure. Convenience flag; equivalent to on_failure="optional"."""
+
+
+# ---------------------------------------------------------------------------
+# WI-01: Provenance
+#
+# Replaces "templating by substring luck" (STRATEGIC item 2 in the
+# audit). Param values become templated in URLs / selectors / IDs
+# based on KNOWN sources (route param, request body, selected option,
+# row key) rather than mechanical substring replace. The substring
+# pass remains as a last-resort fallback for legacy skills, but new
+# annotations should always have provenance.
+# ---------------------------------------------------------------------------
+
+
+class ParamProvenance(BaseModel):
+    source: Literal[
+        "operator_input",      # provided directly by the operator at replay
+        "csv_row",             # parsed from a CSV row at intake
+        "csv_column",          # parsed from a CSV column header
+        "trace_recorded",      # captured value during teach
+        "route_param",         # extracted from a URL path segment
+        "request_param",       # extracted from a request query/body
+        "selected_option",     # a <select>/listbox option that was chosen
+        "file_metadata",       # filename / MIME / size
+        "row_key",             # the key of a clicked table row
+        "ancestor_attribute",  # an attribute on a parent element
+    ]
+    source_step: Optional[int] = None
+    """Step index where the param value originated. Pairs with
+    source_attribute to make the lineage explicit."""
+    source_attribute: Optional[str] = None
+    """Attribute / field name on the source. E.g. for source_step=4
+    being a row click, source_attribute might be ``data-row-key``."""
+    confidence: Optional[float] = None
+    """Annotator's confidence in this provenance (0.0-1.0). LLM-derived
+    provenance carries lower confidence than deterministic; operator
+    review can boost to 1.0."""
+
+
+class StepProvenance(BaseModel):
+    """Per-step audit trail of how the annotator constructed this step
+    from the raw trace events. Lets a future operator (or auditor) see
+    why a click became a fill_submit, or which raw events were
+    collapsed into a set_selection."""
+
+    raw_event_ids: list[str] = Field(default_factory=list)
+    """IDs of the TraceEvents that contributed to this step. Populated
+    once WI-02 lands; empty for legacy traces."""
+    cluster_kind: Optional[str] = None
+    """How the annotator classified this cluster: ``single_event``,
+    ``fill_submit``, ``set_selection``, ``cascading_select``, ..."""
+    detection_method: Optional[Literal["deterministic", "llm", "operator"]] = None
+
+
 class DisambiguationHint(BaseModel):
     """Features captured when an operator resolved an ambiguous_target.
 
@@ -313,6 +562,22 @@ class SkillStep(BaseModel):
     open/close fingerprints, the search/checkbox templates, and the
     reconciliation mode."""
 
+    # WI-01: structured effects + replay policy + provenance. Each is
+    # optional and defaults to None / a permissive default so legacy
+    # v1 skills load and execute exactly as before.
+    effects: Optional[StepEffect] = None
+    """Consequences of this action (navigation / popup / modal /
+    download / toast / etc.). Used by the runner to verify the action
+    achieved what it should, instead of relying on a separate
+    independent step that hardcodes the consequence."""
+    replay_policy: ReplayPolicy = Field(default_factory=ReplayPolicy)
+    """Per-step fail-fast / continue / optional policy. Default
+    ``on_failure="abort"`` is intentional: the runner stops on the
+    first failure unless a step explicitly opts into continuation."""
+    provenance: Optional[StepProvenance] = None
+    """How the annotator built this step from the raw trace. Empty
+    for legacy traces; populated for new skills from WI-02 onward."""
+
     # Debug / context
     captured_at: Optional[datetime] = None
     screenshot_path: Optional[str] = None
@@ -350,6 +615,10 @@ class SkillParam(BaseModel):
     even for non-dependent params. Useful when the option set is
     inherently dynamic (e.g. asset status transitions)."""
 
+    # WI-01: provenance for the param value. None for legacy auto-named
+    # params; populated by future deterministic annotation pass (WI-11).
+    provenance: Optional[ParamProvenance] = None
+
 
 class Skill(BaseModel):
     """A learned, parameterized, replayable skill."""
@@ -359,6 +628,13 @@ class Skill(BaseModel):
     portal: Optional[str] = None                 # e.g. "sample_portal"
     tags: list[str] = Field(default_factory=list)
     version: int = 1
+    # WI-01: structural-features schema version. ``1`` (default) means
+    # legacy v1 skills with original ActionType set + no StepEffect /
+    # ReplayPolicy / provenance. ``2`` indicates a skill built with the
+    # post-WI-01 annotator and that the new fields may be populated.
+    # Pydantic accepts missing fields = default for old files, so v1
+    # skills load with schema_version=1 automatically.
+    schema_version: int = 1
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     base_url: Optional[str] = None

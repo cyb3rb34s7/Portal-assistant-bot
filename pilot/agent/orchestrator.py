@@ -763,6 +763,23 @@ class Orchestrator:
             await self._cancel_task()
             raise
         except Exception as e:  # noqa: BLE001 - surfaced as task.failed
+            # Print the full traceback to stderr so the FastAPI terminal
+            # actually shows what failed. Without this, the operator sees
+            # only the short "APIConnectionError: Connection error." in
+            # the UI and has to guess where it came from.
+            import sys
+            import traceback as _tb
+            _tb.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
+            sys.stderr.flush()
+            # Also surface the traceback's last frame in the event so the
+            # UI shows WHERE it failed, not just WHAT.
+            tb_str = "".join(_tb.format_exception(type(e), e, e.__traceback__))
+            await self._log(
+                f"agent task crashed: {type(e).__name__}: {e}",
+                level="error",
+                source="orchestrator",
+                traceback=tb_str,
+            )
             await self._emit(
                 TaskFailed(
                     task_id=self.task_id,
