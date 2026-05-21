@@ -955,8 +955,273 @@ def _detect_select_autocomplete_clusters(
     causality: dict[str, Any],
     consumed: set[str],
 ) -> list[SemanticCluster]:
-    """WI-16 detector stub. Implementation in the WI-16 commit."""
-    return []
+    """WI-16: detect a query input + autocomplete network call +
+    result-container click. Collapsed to one ``select_autocomplete``
+    cluster.
+
+    Pattern: input_change burst on field A -> network_request
+    (caused by the input or by a debounce-triggered fetch) ->
+    network_response -> click on element X. We collapse when:
+      (a) the click target's ancestor chain or fingerprint context
+          shows it is INSIDE a result container that appeared after
+          the query (an option / listbox-item / autocomplete-row /
+          'btn-open-...' inside a results panel), AND
+      (b) the click is the next user action after the burst.
+
+    Distinguished from fill_submit by the presence of a click on a
+    RESULT (option/row item) rather than a submit button. To keep
+    detection conservative and predictable, the WI-16 detector
+    requires the click event's fingerprint to satisfy ONE of:
+      - input_type / role / control_kind suggests an option / listitem
+        (control_kind in {option, treeitem, menuitem}), or
+      - test_id contains 'result' / 'row' / 'option', or
+      - the click has a caused_by pointing at a network_response, or
+      - the click's ancestor_chain contains a listbox / option / menu.
+
+    A separate `query` param vs `selected_item` param is preserved at
+    step-construction time -- the detector returns the cluster; the
+    spec build at _build_select_autocomplete_spec separates them.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    children_of: dict[str, list[str]] = causality.get("children_of") or {}
+    clusters: list[SemanticCluster] = []
+
+    i = 0
+    n = len(events)
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.kind != "input_change"
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+
+        burst_target = _fp_target_id(ev.fingerprint)
+        if burst_target is None:
+            i += 1
+            continue
+        burst_events: list[TraceEvent] = [ev]
+        # Gather contiguous inputs on same field; observed children
+        # (network_request) interspersed are fine (autocomplete fires
+        # debounced requests during typing).
+        j = i + 1
+        observed_children: list[TraceEvent] = []
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                # Autocomplete typically fires network_request /
+                # network_response during typing. Track them so we can
+                # fold into the cluster's audit trail.
+                observed_children.append(ne)
+                j += 1
+                continue
+            if (
+                ne.kind == "input_change"
+                and _fp_target_id(ne.fingerprint) == burst_target
+            ):
+                burst_events.append(ne)
+                j += 1
+                continue
+            break
+
+        # Next non-observed event must be a click on a RESULT.
+        k = j
+        while k < n and events[k].kind in _OBSERVED_EVENT_KINDS:
+            observed_children.append(events[k])
+            k += 1
+        if k >= n:
+            i = k
+            continue
+        click_ev = events[k]
+        if click_ev.kind != "click":
+            i = j
+            continue
+        if not _looks_like_autocomplete_result(click_ev):
+            i = j
+            continue
+
+        # Collect raw event ids: burst inputs + observed children + click.
+        raw_ids: list[str] = []
+        for e in burst_events:
+            if e.event_id:
+                raw_ids.append(e.event_id)
+        for e in observed_children:
+            if e.event_id and e.event_id not in raw_ids:
+                raw_ids.append(e.event_id)
+        if click_ev.event_id:
+            raw_ids.append(click_ev.event_id)
+        # Fold any observed children OF the click (e.g. nav fired by the
+        # result click -- a search-pick that also navigates).
+        if click_ev.event_id:
+            for cid in children_of.get(click_ev.event_id, []):
+                ce = by_id.get(cid)
+                if ce is not None and ce.kind in _OBSERVED_EVENT_KINDS:
+                    if cid not in raw_ids:
+                        raw_ids.append(cid)
+                    consumed.add(cid)
+
+        # Mark consumed.
+        for e in burst_events:
+            if e.event_id:
+                consumed.add(e.event_id)
+        for e in observed_children:
+            if e.event_id:
+                consumed.add(e.event_id)
+        if click_ev.event_id:
+            consumed.add(click_ev.event_id)
+
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="select_autocomplete",
+                # primary target is the CLICK -- the spec consumer
+                # needs to pick the result identity from its
+                # fingerprint, and the step's fingerprint should be
+                # the result template so the runner can materialize
+                # with a different selected_item.
+                primary_target_event_id=click_ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["fill_submit", "single_event"],
+            )
+        )
+        i = k + 1
+    return clusters
+
+
+# Test-id substrings that strongly suggest 'I'm a row/option/result'.
+_AUTOCOMPLETE_RESULT_TEST_ID_RE = re.compile(
+    r"(result|row|option|item|suggest|autocomplete|listbox)", re.I
+)
+
+
+def _looks_like_autocomplete_result(ev: TraceEvent) -> bool:
+    """WI-16: return True iff the clicked element is inside an
+    autocomplete/result container. Looks at:
+      - control_kind (option / treeitem / menuitem),
+      - role (option / listitem / row / menuitem / treeitem),
+      - test_id containing 'result' / 'row' / 'option' / etc.,
+      - the click being caused_by a network_response (the
+        grabber attributes clicks inside late-rendered containers
+        to the request that rendered them).
+    """
+    if ev.fingerprint is None:
+        return False
+    fp = ev.fingerprint
+    if fp.control_kind in ("option", "treeitem", "menuitem"):
+        return True
+    if (fp.role or "").lower() in (
+        "option", "listitem", "row", "menuitem", "treeitem",
+    ):
+        return True
+    tid = fp.test_id or ""
+    if tid and _AUTOCOMPLETE_RESULT_TEST_ID_RE.search(tid):
+        return True
+    # Element id pattern that suggests result.
+    eid = fp.element_id or ""
+    if eid and _AUTOCOMPLETE_RESULT_TEST_ID_RE.search(eid):
+        return True
+    # Last resort: walk the ancestor_chain looking for a listbox /
+    # listitem ancestor (the grabber's WI-03 ancestor_chain field).
+    for anc in (fp.ancestor_chain or []):
+        if not isinstance(anc, dict):
+            continue
+        anc_role = (anc.get("role") or "").lower()
+        anc_test = anc.get("data-testid") or anc.get("test_id") or ""
+        if anc_role in ("listbox", "menu", "tree", "grid"):
+            return True
+        if isinstance(anc_test, str) and _AUTOCOMPLETE_RESULT_TEST_ID_RE.search(
+            anc_test
+        ):
+            return True
+    return False
+
+
+def _build_select_autocomplete_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    click_binding_name: Optional[str],
+) -> tuple[AutocompleteSpec, Optional[str], Optional[ElementFingerprint]]:
+    """WI-16: derive an AutocompleteSpec from a select_autocomplete cluster.
+
+    Returns (spec, query_value, query_input_fp). The caller uses
+    query_value to seed a separate ``query`` skill param (distinct from
+    the click's binding which represents the SELECTED result identity).
+
+    The primary_target is the CLICK event; its fingerprint is the
+    result row. We walk the cluster's raw_event_ids to find:
+      - the LAST input_change (final query value),
+      - the FIRST network_request (the search endpoint URL is the
+        signal we wait on at replay),
+      - the click event for the option_identity_template (we set
+        this to the click's fingerprint -- WI-11 templating will
+        derive a {selected_item} placeholder from the click target).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    last_input: Optional[TraceEvent] = None
+    first_request: Optional[TraceEvent] = None
+    click_ev: Optional[TraceEvent] = None
+
+    for eid in cluster.raw_event_ids:
+        e = by_id.get(eid)
+        if e is None:
+            continue
+        if e.kind == "input_change":
+            last_input = e  # later input overrides earlier
+        elif e.kind in ("network_request", "network_response") and first_request is None:
+            first_request = e
+        elif e.kind == "click":
+            click_ev = e
+
+    query_value: Optional[str] = (last_input.value if last_input else None)
+    # Use the binding name (from the click event's binding) for the
+    # selected_item param. If the click event didn't bind to a param
+    # the spec falls back to "selected_item".
+    selected_item_name = click_binding_name or "selected_item"
+    # The query param is conventionally named "query" but if a binding
+    # came from the input event the caller can rename it. We declare
+    # the standard name here.
+    query_name = "query"
+
+    network_expectation: Optional[NetworkExpectation] = None
+    if first_request is not None and first_request.url:
+        try:
+            url_pattern = first_request.url.split("?", 1)[0]
+        except Exception:
+            url_pattern = first_request.url
+        method = (first_request.method or "GET").upper()
+        if method not in ("GET", "POST", "PATCH", "PUT", "DELETE"):
+            method = "GET"
+        network_expectation = NetworkExpectation(
+            url_pattern=url_pattern,
+            method=method,  # type: ignore[arg-type]
+            optional=False,
+        )
+
+    # Build option identity template from the click's fingerprint;
+    # WI-11 template derivation runs later and will populate
+    # templates/template_sources with {selected_item} as the
+    # placeholder when the click target's test_id matches the
+    # recorded selected_item value.
+    option_identity_template = click_ev.fingerprint if click_ev else None
+
+    spec = AutocompleteSpec(
+        query_param=query_name,
+        selected_item_param=selected_item_name,
+        query_input_fp=last_input.fingerprint if last_input else None,
+        result_container_fp=None,
+        option_identity_template=option_identity_template,
+        network_expectation=network_expectation,
+    )
+    query_input_fp = last_input.fingerprint if last_input else None
+    return spec, query_value, query_input_fp
 
 
 def _detect_select_option_clusters(
@@ -1376,6 +1641,28 @@ def build_skill(
                 cluster_here, events, causality, binding
             )
 
+        # WI-16: build the AutocompleteSpec for select_autocomplete
+        # cluster steps. The primary_target is the CLICK on the result;
+        # the spec carries the separated query / selected_item params,
+        # the query input fingerprint, the option identity template
+        # (the click target fingerprint), and the network expectation
+        # of the search request URL.
+        select_autocomplete_spec: Optional[AutocompleteSpec] = None
+        # Track the query example for param declaration outside the loop.
+        autocomplete_query_value: Optional[str] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "select_autocomplete"
+        ):
+            (
+                select_autocomplete_spec,
+                autocomplete_query_value,
+                _query_input_fp,
+            ) = _build_select_autocomplete_spec(
+                cluster_here, events, causality,
+                click_binding_name=binding.name if binding else None,
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -1394,6 +1681,7 @@ def build_skill(
             click_gesture=click_gesture,  # type: ignore[arg-type]
             effect_signature=effect_signature,
             fill_submit=fill_submit_spec,
+            select_autocomplete=select_autocomplete_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;
@@ -1405,6 +1693,53 @@ def build_skill(
             ),
         )
         steps.append(step)
+
+        # WI-16: declare separate skill params for autocomplete steps.
+        # The cluster's primary_target is the CLICK; ``binding`` here
+        # carries the selected_item (from the click target). We also
+        # need to declare the ``query`` param from the typed-in value.
+        if select_autocomplete_spec is not None:
+            if (
+                autocomplete_query_value
+                and select_autocomplete_spec.query_param not in declared_params
+            ):
+                declared_params[select_autocomplete_spec.query_param] = SkillParam(
+                    name=select_autocomplete_spec.query_param,
+                    type="string",
+                    codec="raw",
+                    description=(
+                        f"Autocomplete query for step {step.index}: "
+                        f"{label}"
+                    ),
+                    example=autocomplete_query_value,
+                    required=True,
+                )
+            # The selected_item param. A click event doesn't produce a
+            # ParamBinding via the legacy infer_param_binding (which only
+            # binds input_change / file_selected), so we declare the
+            # selected_item param explicitly here. The example is the
+            # clicked target's identifying attribute (test_id or text)
+            # so the operator can see what was originally picked.
+            sel_name = select_autocomplete_spec.selected_item_param
+            if sel_name and sel_name not in declared_params:
+                sel_example: Optional[str] = None
+                if ev.fingerprint is not None:
+                    sel_example = (
+                        ev.fingerprint.test_id
+                        or ev.fingerprint.accessible_name
+                        or ev.fingerprint.text
+                    )
+                declared_params[sel_name] = SkillParam(
+                    name=sel_name,
+                    type="string",
+                    codec="raw",
+                    description=(
+                        f"Autocomplete selected item for step "
+                        f"{step.index}: {label}"
+                    ),
+                    example=sel_example,
+                    required=True,
+                )
 
         # WI-08: track every (param_name, recorded_value) pair so later
         # click steps can template their navigation URL. First-seen

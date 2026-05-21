@@ -1348,17 +1348,166 @@ class SkillRunner:
     def _do_select_autocomplete(
         self, step: SkillStep
     ) -> tuple[ToolResult, int]:
-        """WI-16: fill query, wait for result container, click the
-        result identified by the operator's selected_item_param.
-        Implementation in WI-16."""
+        """WI-16: fill query, wait for declared search response, locate
+        the result row by identity (provenance-templated fingerprint),
+        click. Fail with option_not_in_results on absence.
+
+        The recording's AutocompleteSpec carries:
+          - query_param: name of the typed-text param,
+          - selected_item_param: name of the identity param for the
+            row to click (distinct from query_param so the operator
+            can pick A-9002 even though the recording picked A-9003),
+          - query_input_fp: the search input fingerprint,
+          - result_container_fp: optional container to wait for,
+          - option_identity_template: fingerprint with a placeholder
+            that materializes to the row to click,
+          - network_expectation: the search request URL to wait on
+            before clicking the result.
+        """
+        spec = step.select_autocomplete
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_autocomplete",
+                    error="select_autocomplete step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        query_value = self.params.get(spec.query_param)
+        if query_value is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_autocomplete",
+                    error=f"missing query param {spec.query_param!r}",
+                    error_kind="param_missing",
+                ),
+                0,
+            )
+        selected_value = self.params.get(spec.selected_item_param)
+        if selected_value is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_autocomplete",
+                    error=(
+                        f"missing selected_item param "
+                        f"{spec.selected_item_param!r}"
+                    ),
+                    error_kind="param_missing",
+                ),
+                0,
+            )
+
+        page = self.session.page
+
+        # Step 1: locate query input and fill it.
+        # Prefer the spec's query_input_fp; fall back to step.fingerprint.
+        query_fp = spec.query_input_fp or step.fingerprint
+        if query_fp is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_autocomplete",
+                    error="no query input fingerprint",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+        query_loc = self._locate_via_template(query_fp, {})
+        if query_loc is None:
+            return self._fallback_human(
+                step, "could not locate autocomplete query input"
+            )
+        try:
+            query_loc.fill(str(query_value), timeout=5000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"autocomplete: fill failed: {e}",
+                    error=str(e),
+                    error_kind="autocomplete_fill_failed",
+                ),
+                0,
+            )
+
+        # Step 2: wait for the search response.
+        if spec.network_expectation is not None:
+            from .skill_models import ExpectedSignals as _ES
+            self._wait_for_page_settle(
+                expected=_ES(network=[spec.network_expectation])
+            )
+        else:
+            # Generic settle when no expectation declared.
+            self._wait_for_page_settle()
+
+        # Step 3: locate the result row by selected_item and click.
+        if spec.option_identity_template is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="autocomplete: missing option_identity_template",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+        # The template fingerprint may carry templates referencing the
+        # selected_item_param; merge it in. We use _locate_via_template
+        # which already merges self.params -- self.params already
+        # contains spec.selected_item_param, so this Just Works.
+        result_loc = self._locate_via_template(
+            spec.option_identity_template, {}
+        )
+        if result_loc is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=(
+                        f"autocomplete: result {selected_value!r} "
+                        f"not found"
+                    ),
+                    error=(
+                        f"option_not_in_results: query={query_value!r} "
+                        f"selected_item={selected_value!r}"
+                    ),
+                    error_kind="option_not_in_results",
+                    error_details={
+                        "query": str(query_value),
+                        "selected_item": str(selected_value),
+                    },
+                ),
+                0,
+            )
+        try:
+            result_loc.click(timeout=4000)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_autocomplete_click")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"autocomplete: result click failed: {e}",
+                    error=str(e),
+                    error_kind="autocomplete_click_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+
+        shot = self._screenshot(f"step_{step.index}_autocomplete")
         return (
             ToolResult(
-                success=False,
-                action_taken="select_autocomplete",
-                error="WI-16 not yet implemented",
-                error_kind="action_not_implemented",
+                success=True,
+                action_taken=(
+                    f"select_autocomplete(query={query_value!r}, "
+                    f"selected={selected_value!r})"
+                ),
+                screenshot_path=shot,
             ),
-            0,
+            1,
         )
 
     def _do_select_option(
