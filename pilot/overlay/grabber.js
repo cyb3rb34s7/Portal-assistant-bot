@@ -1453,6 +1453,100 @@
     true
   );
 
+  // WI-30: drag-and-drop capture. dragstart anchors the sequence;
+  // dragover is sampled (we don't need every move -- one per 100ms
+  // per target is enough for the annotator); drop carries the final
+  // landing + DataTransfer summary. All three share an interaction
+  // via _setActiveInteraction so the annotator can causally cluster
+  // them into one drag_drop step.
+  var _lastDragoverTs = 0;
+  document.addEventListener(
+    "dragstart",
+    function (e) {
+      var t = e.target;
+      if (!t || !t.tagName) return;
+      var attr = _rootAttribution("user_dragstart");
+      _setActiveInteraction("dragstart", attr.event_id);
+      post(_merge({
+        kind: "dragstart",
+        fingerprint: fingerprint(t),
+        page_url: location.href,
+        raw_event_kind: "dragstart",
+      }, attr));
+    },
+    true
+  );
+  document.addEventListener(
+    "dragover",
+    function (e) {
+      // Sample at most once per 100ms to keep the trace bounded; a
+      // drag of 5 seconds otherwise produces 50+ dragover events.
+      var now = (typeof performance !== "undefined" && performance.now)
+        ? performance.now() : Date.now();
+      if (now - _lastDragoverTs < 100) return;
+      _lastDragoverTs = now;
+      var t = e.target;
+      if (!t || !t.tagName) return;
+      var attr = _rootAttribution("user_dragover");
+      // dragover doesn't OPEN a new interaction -- the dragstart did.
+      // _rootAttribution preserves the existing activeInteraction id
+      // when present, which is the behavior we want here.
+      post(_merge({
+        kind: "dragover",
+        fingerprint: fingerprint(t),
+        page_url: location.href,
+        raw_event_kind: "dragover",
+      }, attr));
+    },
+    true
+  );
+  document.addEventListener(
+    "drop",
+    function (e) {
+      var t = e.target;
+      if (!t || !t.tagName) return;
+      // Capture the DataTransfer summary -- types + first 200 chars
+      // of text/plain if present. dropEffect read from the event's
+      // dataTransfer.
+      var summary = null;
+      try {
+        var dt = e.dataTransfer;
+        if (dt) {
+          var types = [];
+          if (dt.types && dt.types.length != null) {
+            for (var ti = 0; ti < dt.types.length; ti++) {
+              types.push(dt.types[ti]);
+            }
+          }
+          var text_plain = null;
+          try {
+            var p = dt.getData ? dt.getData("text/plain") : null;
+            if (p) text_plain = String(p).slice(0, 200);
+          } catch (gd) {}
+          summary = {
+            types: types,
+            text_plain: text_plain,
+            drop_effect: dt.dropEffect || "move",
+          };
+        }
+      } catch (de) {}
+      var attr = _rootAttribution("user_drop");
+      // The drop is the COMMIT of the drag interaction; mark it as
+      // such so the annotator can fold dragstart -> drop into one
+      // cluster.
+      _setActiveInteraction("drop", attr.event_id);
+      post(_merge({
+        kind: "drop",
+        fingerprint: fingerprint(t),
+        drop_target_fp: fingerprint(t),
+        data_transfer_summary: summary,
+        page_url: location.href,
+        raw_event_kind: "drop",
+      }, attr));
+    },
+    true
+  );
+
   document.addEventListener(
     "submit",
     function (e) {

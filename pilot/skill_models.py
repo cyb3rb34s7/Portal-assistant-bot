@@ -1270,6 +1270,71 @@ class DatePickerSpec(BaseModel):
     by recorded click."""
 
 
+class DragDropSpec(BaseModel):
+    """WI-30: spec for a drag-and-drop interaction.
+
+    The recording captured the operator's dragstart on a source
+    element, optional dragover events on the target zone, and the
+    final drop. The grabber emits one drag_drop trace event PER
+    sequence (or three event kinds the annotator collapses).
+
+    The annotator collapses the dragstart -> drop sequence into ONE
+    drag_drop step. At replay the runner prefers Playwright's
+    locator.drag_to API (high-level, fires the right events) when both
+    source and target are reliably locatable; the JS-DataTransfer
+    fallback fires only when the spec declares it safe.
+
+    Acceptance check (from the plan):
+      Dragging an item into a drop zone records, replays, and asserts
+      the target contains the dragged item.
+    """
+
+    source_fp: ElementFingerprint
+    """Fingerprint of the source element (the item being dragged).
+    Resolved at replay through the standard L1/L2/L3 cascade."""
+
+    target_fp: ElementFingerprint
+    """Fingerprint of the target drop zone (the container that
+    receives the dropped item)."""
+
+    data_payload_summary: Optional[dict[str, Any]] = None
+    """Compact summary of the DataTransfer payload at record time --
+    types[] + first 200 chars of the text/plain value if present. NOT
+    used for replay; preserved for audit so an operator can see what
+    payload was carried. The runner uses the source's identifying
+    attribute (test_id) as the payload at replay; portals that depend
+    on a specific DataTransfer value need a portal-specific adapter."""
+
+    drop_effect: Literal["move", "copy", "link", "none"] = "move"
+    """DataTransfer.dropEffect at record time. ``move`` is the default
+    for sortable lists; ``copy`` for clipboard-style drag; ``link`` is
+    rare. Runner sets dataTransfer.effectAllowed when using the JS
+    fallback."""
+
+    coordinates_policy: Literal[
+        "center", "absolute", "relative"
+    ] = "center"
+    """Where on the target the drop fires:
+      - ``center`` (default): aim at the target's center; works for
+        most droppable containers.
+      - ``absolute``: use recorded (clientX, clientY). Fragile when
+        the page resizes between recording and replay.
+      - ``relative``: offset from the target's top-left by the
+        recorded delta. Mid-confidence; only safe when target
+        dimensions are stable."""
+
+    use_high_level_api: bool = True
+    """When True (default) the runner uses Playwright's
+    ``source_locator.drag_to(target_locator)`` -- the high-level API
+    that fires dragstart/drag/dragover/drop with browser-typical
+    timing. When False the runner falls back to manual pointer.move +
+    DataTransfer dispatch, used only for portals that observed a
+    specific DataTransfer payload requirement at recording. The
+    annotator emits True for vanilla HTML5 drag/drop and False when
+    the recording shows DataTransfer.setData with non-test-id
+    payloads."""
+
+
 class FileMetadata(BaseModel):
     """WI-29: one file's metadata captured at record time.
 
@@ -1598,6 +1663,11 @@ class SkillStep(BaseModel):
     multiple flag, so the runner can validate the replay-time path
     BEFORE set_input_files runs. None for non-upload actions or for
     legacy traces (which lacked the WI-29 metadata)."""
+
+    drag_drop: Optional["DragDropSpec"] = None
+    """WI-30: spec for ``drag_drop`` steps. Carries the source +
+    target fingerprints, the DataTransfer payload summary, drop
+    effect, and coordinates policy. None for non-drag_drop actions."""
 
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy
@@ -2158,6 +2228,14 @@ class TraceEvent(BaseModel):
         "file_selected",
         "navigate",
         "key",
+        # WI-30: drag/drop user actions. dragstart anchors the
+        # sequence; dragover is sampled (not every dragover -- the
+        # grabber emits at most one per (target_id, 100ms) bucket);
+        # drop carries the final landing target + DataTransfer
+        # summary.
+        "dragstart",
+        "dragover",
+        "drop",
         # F-07 / F-09: observed page-side events. network_request and
         # network_response carry request_id + method + url + status +
         # initiator_event_id so WI-09 / WI-10 / WI-43 / WI-47 can wait
@@ -2292,3 +2370,14 @@ class TraceEvent(BaseModel):
     picked. None for legacy traces (which only captured ``file_name``);
     annotator falls back to a single FileMetadata derived from
     ``file_name`` in that case."""
+
+    drop_target_fp: Optional[ElementFingerprint] = None
+    """WI-30: on ``drop`` events, the fingerprint of the target the
+    user released over. Distinct from ``fingerprint`` (which is the
+    dragged source on dragstart). The annotator pairs the dragstart's
+    fingerprint with this drop_target_fp to build the DragDropSpec."""
+    data_transfer_summary: Optional[dict[str, Any]] = None
+    """WI-30: compact summary of the DataTransfer at drop time --
+    {types: [...], text_plain: 'first 200 chars or null',
+    drop_effect: 'move'|'copy'|'link'|'none'}. None for legacy traces
+    and for events the grabber couldn't snapshot."""

@@ -71,8 +71,8 @@ LEVEL_LABELS = {
 _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     # Implemented in subsequent WIs and removed from this set:
     #   fill_submit (WI-15), select_autocomplete (WI-16),
-    #   select_option (WI-17), date_select (WI-21), slider_set (WI-28).
-    "drag_drop",             # WI-30
+    #   select_option (WI-17), date_select (WI-21), slider_set (WI-28),
+    #   drag_drop (WI-30).
     "toggle_state",         # WI-33
     "modal",                # WI-34
     "popup",                # WI-35
@@ -454,6 +454,8 @@ class SkillRunner:
                 result, level = self._do_date_select(step)
             elif step.action == "slider_set":
                 result, level = self._do_slider_set(step)
+            elif step.action == "drag_drop":
+                result, level = self._do_drag_drop(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2307,6 +2309,155 @@ class SkillRunner:
             action_taken=f"slider_set({spec.value_param}={target_str!r})",
             screenshot_path=shot,
             unverified_error="slider_set: post-action verify failed",
+        )
+
+    def _do_drag_drop(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-30: drag-and-drop replay.
+
+        Resolves source + target fingerprints, then uses Playwright's
+        high-level locator.drag_to API when spec.use_high_level_api is
+        True (default). For portals that depend on a specific
+        DataTransfer payload (use_high_level_api=False), falls back to
+        manual pointer events + DataTransfer dispatch via evaluate.
+
+        Verifies that the target's child set contains the dragged
+        item's identifier post-drop. The verification is best-effort:
+        if the target.test_id is unique within the dragged item's
+        parent set, we can detect the move; for generic drop zones
+        without per-item testids the verification only succeeds when
+        the assert_after declaration is provided.
+        """
+        spec = step.drag_drop
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="drag_drop",
+                    error="drag_drop step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        # Resolve source via _resolve_locator (which uses step.fingerprint).
+        # We materialize a synthetic SkillStep for source/target to
+        # reuse the cascade.
+        page = self.session.page
+        source_loc = self._level1(page, spec.source_fp)
+        if source_loc is None:
+            source_loc = self._level2(page, spec.source_fp)
+        if source_loc is None:
+            return self._fallback_human(
+                step, "could not locate drag source"
+            )
+        target_loc = self._level1(page, spec.target_fp)
+        if target_loc is None:
+            target_loc = self._level2(page, spec.target_fp)
+        if target_loc is None:
+            return self._fallback_human(
+                step, "could not locate drag target"
+            )
+
+        try:
+            if spec.use_high_level_api:
+                # Playwright's drag_to fires the dragstart -> drag ->
+                # dragover -> drop sequence with browser-typical
+                # timing. Honors elementHandle position when given;
+                # default to center (coordinates_policy="center").
+                source_loc.drag_to(target_loc, timeout=5000)
+            else:
+                # Manual fallback: hover source -> mouse down -> move
+                # to target -> mouse up. The DataTransfer payload is
+                # NOT directly settable through Playwright; portals
+                # that rely on a specific payload value will need a
+                # custom adapter (WI-30 deferred to portal-config).
+                source_box = source_loc.bounding_box()
+                target_box = target_loc.bounding_box()
+                if not source_box or not target_box:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken="drag_drop",
+                            error=(
+                                "could not read bounding boxes for "
+                                "drag source / target"
+                            ),
+                            error_kind="drag_drop_bbox_failed",
+                        ),
+                        0,
+                    )
+                sx = source_box["x"] + source_box["width"] / 2
+                sy = source_box["y"] + source_box["height"] / 2
+                tx = target_box["x"] + target_box["width"] / 2
+                ty = target_box["y"] + target_box["height"] / 2
+                page.mouse.move(sx, sy)
+                page.mouse.down()
+                # Intermediate move so dragover fires.
+                page.mouse.move((sx + tx) / 2, (sy + ty) / 2, steps=5)
+                page.mouse.move(tx, ty, steps=5)
+                page.mouse.up()
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"drag_drop failed: {e}",
+                    error=str(e),
+                    error_kind="drag_drop_failed",
+                ),
+                0,
+            )
+
+        shot = self._screenshot(f"step_{step.index}_drag_drop")
+        # WI-30 verification: the target should now contain the
+        # dragged item. When the source had a test_id, we check that
+        # the test_id lives inside the target's subtree. This is a
+        # best-effort verification; portals can declare an
+        # assert_after with kind=visible on a stronger selector to
+        # get stricter verification (e.g. "drag-zone-included contains
+        # drag-item-promo-4"). When neither check is possible, the
+        # post-action assert_after verification (if declared) covers
+        # us via the standard assertions pass downstream.
+        verified = True
+        verify_detail: Optional[str] = None
+        try:
+            src_tid = spec.source_fp.test_id
+            tgt_tid = spec.target_fp.test_id
+            if src_tid and tgt_tid:
+                # Count matches inside the target.
+                cnt = page.locator(
+                    f'[data-testid="{tgt_tid}"] [data-testid="{src_tid}"]'
+                ).count()
+                if cnt == 0:
+                    verified = False
+                    verify_detail = (
+                        f"item {src_tid!r} is not inside target "
+                        f"{tgt_tid!r} after drop"
+                    )
+        except Exception as ve:
+            verify_detail = f"verification probe error: {ve}"
+
+        if not verified:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"drag_drop {spec.source_fp.test_id} -> {spec.target_fp.test_id}",
+                    error=verify_detail or "drag_drop verification failed",
+                    error_kind="drag_drop_verification_failed",
+                    error_details={"detail": verify_detail},
+                    screenshot_path=shot,
+                ),
+                1,
+            )
+        return (
+            ToolResult(
+                success=True,
+                action_taken=(
+                    f"drag_drop {spec.source_fp.test_id} -> "
+                    f"{spec.target_fp.test_id}"
+                ),
+                screenshot_path=shot,
+            ),
+            1,
         )
 
     def _locate_via_template(

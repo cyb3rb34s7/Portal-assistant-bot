@@ -30,6 +30,7 @@ from .skill_models import (
     DatePickerSpec,
     DependencyChain,
     DomExpectation,
+    DragDropSpec,
     ElementFingerprint,
     ExpectedSignals,
     FileMetadata,
@@ -270,6 +271,13 @@ def action_for_kind(kind: str) -> ActionType:
         "submit": "submit",
         "navigate": "navigate",
         "key": "key",
+        # WI-30: drag/drop events. ``drop`` is the cluster's primary
+        # target so this mapping ensures the per-event loop emits the
+        # right action; the dragstart/dragover are folded into the
+        # cluster's raw_event_ids and never produce a step.
+        "drop": "drag_drop",
+        "dragstart": "drag_drop",
+        "dragover": "drag_drop",
     }.get(kind, "click")  # type: ignore
 
 
@@ -1987,6 +1995,133 @@ def _detect_slider_set_clusters(
     return clusters
 
 
+def _detect_drag_drop_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-30: detect drag/drop interactions.
+
+    A drag interaction is: dragstart -> (dragover*) -> drop. The
+    grabber attributes all three to the same interaction so the
+    causality graph lists them as siblings of the same parent. The
+    detector pairs each ``drop`` event with the LATEST ``dragstart``
+    that preceded it within the same interaction; intervening dragover
+    events are folded into the cluster's raw_event_ids for audit but
+    don't drive replay.
+
+    The cluster's primary_target is the DROP event (carries the
+    landing target's fingerprint + DataTransfer summary). The source
+    fingerprint is read from the dragstart's fingerprint at build-spec
+    time.
+    """
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    # Walk events; remember the most recent unconsumed dragstart and
+    # any dragover events accumulated since.
+    pending_dragstart: Optional[TraceEvent] = None
+    pending_dragovers: list[TraceEvent] = []
+
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind == "dragstart":
+            # A fresh dragstart abandons any prior incomplete drag
+            # (operator cancelled mid-drag with Escape; not modeled
+            # today, just skip).
+            if pending_dragstart is not None:
+                # Mark the prior dragstart as a single_event for now --
+                # it has no commit. Don't claim it here; the fallback
+                # loop will emit it.
+                pass
+            pending_dragstart = ev
+            pending_dragovers = []
+            continue
+        if ev.kind == "dragover":
+            if pending_dragstart is not None:
+                pending_dragovers.append(ev)
+            continue
+        if ev.kind == "drop":
+            if pending_dragstart is None:
+                # Drop without a paired dragstart -- discard. Browsers
+                # don't typically emit this, but be safe.
+                continue
+            # Build the cluster.
+            raw_ids: list[str] = []
+            if pending_dragstart.event_id:
+                raw_ids.append(pending_dragstart.event_id)
+                consumed.add(pending_dragstart.event_id)
+            for dv in pending_dragovers:
+                if dv.event_id:
+                    raw_ids.append(dv.event_id)
+                    consumed.add(dv.event_id)
+            if ev.event_id:
+                raw_ids.append(ev.event_id)
+                consumed.add(ev.event_id)
+            clusters.append(
+                SemanticCluster(
+                    raw_event_ids=raw_ids,
+                    cluster_kind="drag_drop",
+                    primary_target_event_id=ev.event_id,
+                    confidence=1.0,
+                    alternatives_considered=["single_event"],
+                )
+            )
+            pending_dragstart = None
+            pending_dragovers = []
+            continue
+
+    return clusters
+
+
+def _build_drag_drop_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    drop_ev: TraceEvent,
+) -> Optional["DragDropSpec"]:
+    """WI-30: derive a DragDropSpec from the cluster's dragstart +
+    drop pair.
+
+    The cluster's raw_event_ids list begins with the dragstart and
+    ends with the drop; we look up the dragstart fingerprint as the
+    source and use the drop event's drop_target_fp (or fallback to
+    its fingerprint) as the target. The DataTransfer summary is
+    pulled from the drop event.
+    """
+    _ = cluster
+    # Find the dragstart by walking the cluster's raw_event_ids in
+    # order; the first dragstart is the source.
+    source_fp: Optional[ElementFingerprint] = None
+    by_id = {e.event_id: e for e in events if e.event_id}
+    for raw_id in cluster.raw_event_ids:
+        e = by_id.get(raw_id)
+        if e is not None and e.kind == "dragstart":
+            source_fp = e.fingerprint
+            break
+    if source_fp is None:
+        return None
+    target_fp = drop_ev.drop_target_fp or drop_ev.fingerprint
+    if target_fp is None:
+        return None
+    # Drop effect from the DataTransfer summary, default move.
+    drop_effect: Literal["move", "copy", "link", "none"] = "move"
+    if drop_ev.data_transfer_summary:
+        de = (
+            drop_ev.data_transfer_summary.get("drop_effect") or "move"
+        ).lower()
+        if de in ("move", "copy", "link", "none"):
+            drop_effect = de  # type: ignore[assignment]
+    return DragDropSpec(
+        source_fp=source_fp,
+        target_fp=target_fp,
+        data_payload_summary=drop_ev.data_transfer_summary,
+        drop_effect=drop_effect,
+        coordinates_policy="center",
+        use_high_level_api=True,
+    )
+
+
 def _build_slider_set_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -2138,6 +2273,9 @@ def detect_semantic_clusters(
     clusters.extend(
         _detect_slider_set_clusters(events, causality, folded_ids)
     )
+    clusters.extend(
+        _detect_drag_drop_clusters(events, causality, folded_ids)
+    )
 
     for ev in events:
         if not ev.event_id or ev.event_id in folded_ids:
@@ -2286,7 +2424,7 @@ def build_skill(
         if c.cluster_kind in (
             "fill_submit", "select_autocomplete", "select_option",
             "set_selection", "date_select", "cascading_select",
-            "slider_set",
+            "slider_set", "drag_drop",
         ):
             for raw_id in c.raw_event_ids:
                 if (
@@ -2391,6 +2529,8 @@ def build_skill(
                 action = "set_selection"
             elif cluster_here.cluster_kind == "slider_set":
                 action = "slider_set"
+            elif cluster_here.cluster_kind == "drag_drop":
+                action = "drag_drop"
             # ``cascading_select`` keeps action='change' but gets a
             # dependency_chain populated below (WI-18).
 
@@ -2498,6 +2638,19 @@ def build_skill(
         ):
             fill_submit_spec = _build_fill_submit_spec(
                 cluster_here, events, causality, binding
+            )
+
+        # WI-30: build the DragDropSpec for drag_drop cluster steps.
+        # The cluster's primary_target is the DROP event; the source
+        # fingerprint is read from the dragstart at the head of the
+        # cluster's raw_event_ids list.
+        drag_drop_spec: Optional[DragDropSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "drag_drop"
+        ):
+            drag_drop_spec = _build_drag_drop_spec(
+                cluster_here, events, ev
             )
 
         # WI-28: build the SliderSpec for slider_set cluster steps.
@@ -2750,6 +2903,7 @@ def build_skill(
             date_select=date_select_spec,
             slider_set=slider_set_spec,
             file_spec=file_spec_value,
+            drag_drop=drag_drop_spec,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
