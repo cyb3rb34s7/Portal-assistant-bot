@@ -1270,6 +1270,62 @@ class DatePickerSpec(BaseModel):
     by recorded click."""
 
 
+class SliderSpec(BaseModel):
+    """WI-28: spec for a range slider (``<input type=range>``) final
+    value + event dispatch.
+
+    The recording captures a drag burst (multiple ``input`` events fired
+    by the browser as the slider thumb moves, then a final ``change``
+    event on release). The annotator collapses this burst into ONE
+    ``slider_set`` step parameterized by the FINAL committed value.
+
+    At replay the runner:
+      1. Resolves the slider locator from step.fingerprint.
+      2. Sets the value via ``element.value = X`` + dispatches input +
+         change events (mirrors what the browser does on a real drag
+         commit). ``locator.fill`` works for ``type=range`` in modern
+         Playwright but the explicit JS path is portable across
+         older Playwright versions AND ensures the synthetic event
+         sequence matches what React/Vue controlled sliders listen for.
+      3. Verifies the slider's final value matches the target.
+
+    Acceptance check (from the plan):
+      Moving slider during teach emits one ``slider_set`` step; replay
+      sets a DIFFERENT value and verifies it.
+    """
+
+    value_param: str
+    """Name of the param holding the target slider value. Resolved at
+    replay through the SkillParam's codec (typically ``raw`` since the
+    value is already a number string)."""
+
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+    """Slider's HTML constraints captured at record time. The annotator
+    surfaces these as ParamConstraints (min/max) on the SkillParam so
+    the runner rejects out-of-range values BEFORE setting them on the
+    page. ``step`` is informational -- the runner doesn't enforce
+    quantization (the browser does)."""
+
+    orientation: Literal["horizontal", "vertical"] = "horizontal"
+    """Slider orientation. ``vertical`` is rare but valid (aria-
+    orientation=vertical or CSS-rotated thumb). Audit-only today; the
+    JS-dispatch path doesn't differ by orientation."""
+
+    event_mode: Literal["input", "change", "both"] = "both"
+    """Which DOM events the page listens for. Most React controlled
+    sliders bind onChange to ``input`` (live updates); native form
+    handlers expect ``change``. ``both`` (default) dispatches both so
+    we cover both shapes -- the runner is conservative."""
+
+    final_value: Optional[str] = None
+    """Record-time committed value (the value at the LAST input/change
+    in the drag burst). Audit-only -- the runner uses
+    ``self.params[value_param]`` for the target. Kept so the operator
+    can see what was originally recorded."""
+
+
 class SetSelectionSpec(BaseModel):
     """Specification for a multi-select reconciliation step.
 
@@ -1468,6 +1524,11 @@ class SkillStep(BaseModel):
     native/custom kind, the value param, locale/timezone hints, and
     (for custom) calendar widget navigation fingerprints. None for
     non-date_select actions."""
+
+    slider_set: Optional["SliderSpec"] = None
+    """WI-28: spec for action='slider_set' steps. Carries the value
+    param, the min/max/step constraints, orientation, and the event
+    dispatch mode. None for non-slider actions."""
 
     # WI-01: structured effects + replay policy + provenance. Each is
     # optional and defaults to None / a permissive default so legacy

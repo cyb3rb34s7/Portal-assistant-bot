@@ -37,12 +37,14 @@ from .skill_models import (
     NetworkExpectation,
     OptionSnapshot,
     ParamBinding,
+    ParamConstraints,
     SelectOptionSpec,
     SemanticCluster,
     SetSelectionSpec,
     Skill,
     SkillParam,
     SkillStep,
+    SliderSpec,
     StepEffect,
     StepProvenance,
     TraceEvent,
@@ -1824,6 +1826,160 @@ def _detect_date_select_clusters(
     return clusters
 
 
+def _detect_slider_set_clusters(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    consumed: set[str],
+) -> list[SemanticCluster]:
+    """WI-28: detect range slider drag bursts.
+
+    A drag emits many ``input`` events as the thumb moves, followed by
+    a ``change`` event on release. The grabber attributes all of them
+    to the same interaction (interaction_id shared) and stamps
+    raw_event_kind=``input`` on the burst events, ``change`` on the
+    commit.
+
+    Detector logic:
+      - Find consecutive user-action input_change events on the SAME
+        range_slider control (fingerprint match by test_id +
+        control_kind=range_slider).
+      - Anchor the cluster on the LAST event in the burst (which
+        carries the final committed value).
+      - Fold the burst input_change events as the cluster's raw events.
+
+    The annotator collapses the whole burst into ONE slider_set step;
+    the runner sets the final value once and dispatches input + change.
+
+    Conservative: requires control_kind=range_slider AND value to look
+    numeric to avoid false-positive clustering of accidental text
+    inputs that happened to fire raw_event_kind=``input`` (shouldn't
+    happen post-WI-13 but guard anyway).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    # Group range_slider input_changes by their (test_id, element_id,
+    # name) identity. We only consider USER-ACTION events; the grabber's
+    # interaction-id grouping is reflected in user_actions but multiple
+    # range events on the SAME slider share an interaction so they are
+    # all root-attributed.
+    def slider_key(ev: TraceEvent) -> Optional[str]:
+        fp = ev.fingerprint
+        if fp is None or fp.control_kind != "range_slider":
+            return None
+        # Prefer test_id; fall back to element_id / name. css_path is
+        # too fragile -- a re-render can change positional selectors.
+        return fp.test_id or fp.element_id or fp.name or None
+
+    # Walk events in order, accumulating contiguous runs of slider input
+    # events on the same key. A foreign event on the same key (e.g.
+    # click on another control) breaks the run.
+    current_key: Optional[str] = None
+    current_run: list[TraceEvent] = []
+
+    def emit_run() -> None:
+        nonlocal current_run
+        if len(current_run) == 0:
+            return
+        # Anchor on the LAST event -- it carries the committed value.
+        last = current_run[-1]
+        # Mark all run event ids consumed; the primary target is `last`.
+        run_ids = [e.event_id for e in current_run if e.event_id]
+        for rid in run_ids:
+            consumed.add(rid)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=run_ids,
+                cluster_kind="slider_set",
+                primary_target_event_id=last.event_id,
+                confidence=1.0,
+                alternatives_considered=(
+                    ["single_event"] if len(current_run) == 1 else []
+                ),
+            )
+        )
+        current_run = []
+
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "input_change" or ev.event_id not in user_actions:
+            # Boundary: a non-slider user action breaks any active run.
+            if current_run:
+                emit_run()
+                current_key = None
+            continue
+        k = slider_key(ev)
+        if k is None:
+            # Not a slider -- close any open run.
+            if current_run:
+                emit_run()
+                current_key = None
+            continue
+        # Numeric-value guard: range_slider should always carry a
+        # numeric value. If it doesn't, skip rather than mis-cluster.
+        val = ev.value or ""
+        try:
+            float(val)
+        except (TypeError, ValueError):
+            if current_run:
+                emit_run()
+                current_key = None
+            continue
+
+        if current_key is None or k != current_key:
+            # Start a new run.
+            if current_run:
+                emit_run()
+            current_key = k
+            current_run = [ev]
+        else:
+            current_run.append(ev)
+
+    # Flush any trailing run.
+    if current_run:
+        emit_run()
+
+    return clusters
+
+
+def _build_slider_set_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    ev: TraceEvent,
+    param_name: str,
+) -> SliderSpec:
+    """WI-28: derive a SliderSpec from the last (committed) event in
+    the drag burst. The grabber captured min/max/step on the
+    fingerprint at L907-909 of grabber.js."""
+    _ = cluster
+    _ = events
+    _ = causality
+    fp = ev.fingerprint
+
+    def _to_float(s: Optional[str]) -> Optional[float]:
+        if s is None or s == "":
+            return None
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+
+    return SliderSpec(
+        value_param=param_name,
+        min=_to_float(fp.min if fp else None),
+        max=_to_float(fp.max if fp else None),
+        step=_to_float(fp.step if fp else None),
+        orientation="horizontal",  # default; the grabber doesn't
+        # distinguish vertical sliders today. The runner doesn't differ
+        # in behavior; orientation is informational.
+        event_mode="both",
+        final_value=ev.value,
+    )
+
+
 def _build_date_select_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -1935,6 +2091,9 @@ def detect_semantic_clusters(
     )
     clusters.extend(
         _detect_date_select_clusters(events, causality, folded_ids)
+    )
+    clusters.extend(
+        _detect_slider_set_clusters(events, causality, folded_ids)
     )
 
     for ev in events:
@@ -2084,6 +2243,7 @@ def build_skill(
         if c.cluster_kind in (
             "fill_submit", "select_autocomplete", "select_option",
             "set_selection", "date_select", "cascading_select",
+            "slider_set",
         ):
             for raw_id in c.raw_event_ids:
                 if (
@@ -2186,6 +2346,8 @@ def build_skill(
                 action = "date_select"
             elif cluster_here.cluster_kind == "set_selection":
                 action = "set_selection"
+            elif cluster_here.cluster_kind == "slider_set":
+                action = "slider_set"
             # ``cascading_select`` keeps action='change' but gets a
             # dependency_chain populated below (WI-18).
 
@@ -2293,6 +2455,35 @@ def build_skill(
         ):
             fill_submit_spec = _build_fill_submit_spec(
                 cluster_here, events, causality, binding
+            )
+
+        # WI-28: build the SliderSpec for slider_set cluster steps.
+        # The cluster's primary target is the LAST event in the drag
+        # burst (carries the final committed value). The spec's
+        # value_param is bound from the operator's binding name or
+        # falls back to a derived name from the slider's identifying
+        # attribute (test_id / name / element_id).
+        slider_set_spec: Optional[SliderSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "slider_set"
+        ):
+            if binding is not None:
+                sl_pname = binding.name
+            elif ev.fingerprint is not None:
+                raw = (
+                    ev.fingerprint.name
+                    or ev.fingerprint.test_id
+                    or ev.fingerprint.element_id
+                    or "slider"
+                )
+                sl_pname = re.sub(
+                    r"[^a-zA-Z0-9_]+", "_", raw
+                ).strip("_").lower() or "slider"
+            else:
+                sl_pname = "slider"
+            slider_set_spec = _build_slider_set_spec(
+                cluster_here, events, causality, ev, sl_pname
             )
 
         # WI-21: build the DatePickerSpec for date_select cluster steps.
@@ -2505,6 +2696,7 @@ def build_skill(
             select_option=select_option_spec,
             set_selection=set_selection_spec,
             date_select=date_select_spec,
+            slider_set=slider_set_spec,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
@@ -2533,6 +2725,37 @@ def build_skill(
                 ),
                 example=(ev.value if ev.kind == "input_change" else None),
                 required=True,
+            )
+
+        # WI-28: declare a number_range param for slider_set steps with
+        # min/max captured from the slider's HTML constraints. The
+        # runner enforces these via ParamConstraints BEFORE setting the
+        # value on the page so out-of-range values surface as
+        # ``param_validation_failed`` instead of being silently clamped
+        # by the browser.
+        if (
+            slider_set_spec is not None
+            and slider_set_spec.value_param not in declared_params
+        ):
+            constraints: Optional[ParamConstraints] = None
+            if (
+                slider_set_spec.min is not None
+                or slider_set_spec.max is not None
+            ):
+                constraints = ParamConstraints(
+                    min=slider_set_spec.min,
+                    max=slider_set_spec.max,
+                )
+            declared_params[slider_set_spec.value_param] = SkillParam(
+                name=slider_set_spec.value_param,
+                type="number_range",
+                codec="raw",  # numeric stringification handled by runner
+                description=(
+                    f"Slider value for step {step.index}: {label}"
+                ),
+                example=slider_set_spec.final_value,
+                required=True,
+                constraints=constraints,
             )
 
         # WI-19: declare a string_list param for set_selection steps.

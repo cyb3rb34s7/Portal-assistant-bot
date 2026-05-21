@@ -41,7 +41,27 @@ export default function AssetDetail() {
     language: "",
     publish_at: "",
     comment: "",
+    // WI-28: priority slider 0-100. Drives the publish queue weighting.
+    priority: 50,
   });
+
+  // WI-33: accordion expand-state for the advanced-settings panel.
+  // The grabber records aria-expanded transitions so the annotator can
+  // emit a toggle_state step whose target is the DESIRED state, not a
+  // blind click count.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // WI-30: ordered-list drag-and-drop for the asset's "related items"
+  // ranking. The operator drags items between two columns ("included"
+  // vs "excluded") and the grabber captures the dragstart/dragover/
+  // drop sequence so the annotator can collapse into a drag_drop step.
+  const [relatedIncluded, setRelatedIncluded] = useState([
+    "promo-1", "promo-2", "promo-3",
+  ]);
+  const [relatedExcluded, setRelatedExcluded] = useState([
+    "promo-4", "promo-5",
+  ]);
+  const [dragItem, setDragItem] = useState(null);
 
   // ---- Initial loads ----
   useEffect(() => {
@@ -329,6 +349,133 @@ export default function AssetDetail() {
           onChange={(e) => setForm({ ...form, comment: e.target.value })}
           disabled={!isDraft}
         />
+
+        {/* WI-28: priority slider. Range 0-100, step 5. The grabber's
+            WI-28 input listener captures the drag burst; the annotator
+            collapses it into one slider_set step. */}
+        <label htmlFor="asset-priority">
+          Priority: <span data-testid="priority-value">{form.priority}</span>
+        </label>
+        <input
+          id="asset-priority"
+          type="range"
+          min={0}
+          max={100}
+          step={5}
+          data-testid="input-priority"
+          value={form.priority}
+          onChange={(e) =>
+            setForm({ ...form, priority: Number(e.target.value) })
+          }
+          disabled={!isDraft}
+        />
+
+        {/* WI-33: advanced-settings accordion. aria-expanded transitions
+            between true / false on header click. The grabber's WI-03
+            captures aria-expanded; the annotator emits a toggle_state
+            step whose target is the desired state, not a blind click. */}
+        <div className="accordion" data-testid="accordion-advanced">
+          <button
+            type="button"
+            className="btn"
+            data-testid="accordion-advanced-toggle"
+            aria-expanded={advancedOpen}
+            aria-controls="accordion-advanced-panel"
+            onClick={() => setAdvancedOpen((v) => !v)}
+          >
+            {advancedOpen ? "Hide" : "Show"} advanced settings
+          </button>
+          {advancedOpen && (
+            <div
+              id="accordion-advanced-panel"
+              data-testid="accordion-advanced-panel"
+              role="region"
+              aria-labelledby="accordion-advanced-toggle"
+            >
+              <p className="muted">
+                Advanced settings revealed. Internal flags would appear here
+                in production.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* WI-30: drag/drop ordering between included and excluded
+            related items. The grabber hooks dragstart/dragover/drop
+            on these zones; the annotator collapses the burst into a
+            drag_drop step. */}
+        <div className="drag-zones" data-testid="related-items-block">
+          <div
+            className="drag-zone"
+            data-testid="drag-zone-included"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const item = e.dataTransfer.getData("text/plain") || dragItem;
+              if (!item) return;
+              if (relatedExcluded.includes(item)) {
+                setRelatedExcluded(relatedExcluded.filter((x) => x !== item));
+                if (!relatedIncluded.includes(item)) {
+                  setRelatedIncluded([...relatedIncluded, item]);
+                }
+              }
+              setDragItem(null);
+            }}
+          >
+            <h4>Included</h4>
+            <ul>
+              {relatedIncluded.map((it) => (
+                <li
+                  key={it}
+                  draggable
+                  data-testid={`drag-item-${it}`}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/plain", it);
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragItem(it);
+                  }}
+                >
+                  {it}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div
+            className="drag-zone"
+            data-testid="drag-zone-excluded"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const item = e.dataTransfer.getData("text/plain") || dragItem;
+              if (!item) return;
+              if (relatedIncluded.includes(item)) {
+                setRelatedIncluded(relatedIncluded.filter((x) => x !== item));
+                if (!relatedExcluded.includes(item)) {
+                  setRelatedExcluded([...relatedExcluded, item]);
+                }
+              }
+              setDragItem(null);
+            }}
+          >
+            <h4>Excluded</h4>
+            <ul>
+              {relatedExcluded.map((it) => (
+                <li
+                  key={it}
+                  draggable
+                  data-testid={`drag-item-${it}`}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData("text/plain", it);
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragItem(it);
+                  }}
+                >
+                  {it}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
 
         <div className="action-row">
           <button

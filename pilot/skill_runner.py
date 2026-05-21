@@ -71,8 +71,7 @@ LEVEL_LABELS = {
 _UNIMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
     # Implemented in subsequent WIs and removed from this set:
     #   fill_submit (WI-15), select_autocomplete (WI-16),
-    #   select_option (WI-17), date_select (WI-21).
-    "slider_set",           # WI-28
+    #   select_option (WI-17), date_select (WI-21), slider_set (WI-28).
     "drag_drop",             # WI-30
     "toggle_state",         # WI-33
     "modal",                # WI-34
@@ -453,6 +452,8 @@ class SkillRunner:
                 result, level = self._do_select_option(step, value)
             elif step.action == "date_select":
                 result, level = self._do_date_select(step)
+            elif step.action == "slider_set":
+                result, level = self._do_slider_set(step)
             elif step.action in _UNIMPLEMENTED_ACTIONS:
                 result, level = self._do_unimplemented_action(step)
             else:
@@ -2016,6 +2017,145 @@ class SkillRunner:
                 screenshot_path=shot,
             ),
             1,
+        )
+
+    def _do_slider_set(self, step: SkillStep) -> tuple[ToolResult, int]:
+        """WI-28: range slider set + verify.
+
+        Resolves the slider locator, sets the value via JS (because
+        Playwright's ``locator.fill`` is unreliable across versions for
+        ``type=range`` -- some treat it as text), dispatches input +
+        change events to satisfy React/Vue controlled handlers, and
+        verifies the final value.
+
+        Acceptance: moving the slider during teach emits ONE slider_set
+        step; replay sets a DIFFERENT value and verifies it.
+
+        Param validation (min/max) ran via _resolved_value through the
+        SkillParam.constraints WI-05 path BEFORE this handler executes;
+        an out-of-range value fails fast with
+        ``error_kind=param_validation_failed`` and never reaches the
+        page.
+        """
+        spec = step.slider_set
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="slider_set",
+                    error="slider_set step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        target = self.params.get(spec.value_param)
+        if target is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="slider_set",
+                    error=f"missing slider param {spec.value_param!r}",
+                    error_kind="param_missing",
+                ),
+                0,
+            )
+        # Normalize to a string for DOM assignment. The browser will
+        # coerce; min/max enforcement happened upstream via constraints.
+        try:
+            target_num = float(target)
+        except (TypeError, ValueError):
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="slider_set",
+                    error=(
+                        f"slider value {target!r} is not numeric"
+                    ),
+                    error_kind="param_validation_failed",
+                ),
+                0,
+            )
+        target_str = str(target_num) if "." in str(target) else str(int(target_num))
+
+        locator, level, heal = self._resolve_locator(step)
+        if locator is None:
+            return self._fallback_human(
+                step, "could not locate slider"
+            )
+        page = self.session.page
+
+        # Set value via JS + dispatch input + change events. Mirrors
+        # what the browser does on a real drag commit so React's
+        # onChange (bound to input event) and native form handlers
+        # (bound to change) both fire.
+        try:
+            element = locator.element_handle(timeout=4000)
+            if element is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="slider_set",
+                        error="slider element handle unavailable",
+                        error_kind="locator_unresolved",
+                    ),
+                    0,
+                )
+            # WI-28: mode is "both" by default (input + change). Honor
+            # event_mode for portals whose handlers only listen to one.
+            mode = spec.event_mode or "both"
+            page.evaluate(
+                "([el, v, mode]) => {"
+                "  el.value = v;"
+                "  if (mode === 'input' || mode === 'both') {"
+                "    el.dispatchEvent(new Event('input', {bubbles: true}));"
+                "  }"
+                "  if (mode === 'change' || mode === 'both') {"
+                "    el.dispatchEvent(new Event('change', {bubbles: true}));"
+                "  }"
+                "}",
+                [element, target_str, mode],
+            )
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"slider_set value-set failed: {e}",
+                    error=str(e),
+                    error_kind="slider_set_failed",
+                ),
+                0,
+            )
+
+        # Verify the final value matches target. Read fresh from the DOM.
+        try:
+            actual = locator.evaluate("el => el.value")
+        except Exception:
+            actual = None
+        verified = actual is not None and str(actual) == target_str
+        shot = self._screenshot(f"step_{step.index}_slider_set")
+        if not verified:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"slider_set({spec.value_param}={target_str!r})",
+                    error=(
+                        f"slider final value {actual!r} did not match "
+                        f"target {target_str!r}"
+                    ),
+                    error_kind="slider_value_mismatch",
+                    error_details={"actual": actual, "target": target_str},
+                    screenshot_path=shot,
+                ),
+                level,
+            )
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=f"slider_set({spec.value_param}={target_str!r})",
+            screenshot_path=shot,
+            unverified_error="slider_set: post-action verify failed",
         )
 
     def _locate_via_template(

@@ -1383,7 +1383,53 @@
           page_url: location.href,
           raw_event_kind: "change",
         }, attr4), changeStateBefore);
+      } else if (tag === "input" && t.type === "range") {
+        // WI-28: range slider COMMIT. The drag burst's input events
+        // (emitted by the input handler below) already attributed
+        // back to the same interaction; this final ``change`` carries
+        // the committed value and the annotator collapses the whole
+        // burst into one slider_set step.
+        var attrR = _rootAttribution("user_change");
+        _setActiveInteraction("change", attrR.event_id);
+        _emitWithStateSnapshot(_merge({
+          kind: "input_change",
+          fingerprint: fingerprint(t),
+          value: t.value != null ? String(t.value) : "",
+          page_url: location.href,
+          raw_event_kind: "change",
+        }, attrR), changeStateBefore);
       }
+    },
+    true
+  );
+
+  // WI-28: range slider drag emits a burst of ``input`` events as the
+  // thumb moves. The text-input listener above skips range (it's not
+  // in TEXTISH_TYPES), so we hook a separate ``input`` listener
+  // dedicated to range so the burst is captured. The annotator
+  // collapses the burst (same fingerprint + adjacent same-interaction
+  // input events) into one slider_set step using the LAST value.
+  document.addEventListener(
+    "input",
+    function (e) {
+      var t = e.target;
+      if (!t || !t.tagName) return;
+      if (t.tagName.toLowerCase() !== "input") return;
+      if (t.type !== "range") return;
+      // Attribute every range input event to the same interaction so
+      // the annotator can fold the burst on the causality graph rather
+      // than guessing by adjacency. ``_setActiveInteraction`` is
+      // idempotent inside a tick; the FIRST input opens the
+      // interaction, subsequent inputs share its id.
+      var attr = _rootAttribution("user_change");
+      _setActiveInteraction("change", attr.event_id);
+      post(_merge({
+        kind: "input_change",
+        fingerprint: fingerprint(t),
+        value: t.value != null ? String(t.value) : "",
+        page_url: location.href,
+        raw_event_kind: "input",
+      }, attr));
     },
     true
   );
