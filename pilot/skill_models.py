@@ -752,6 +752,68 @@ class SemanticCluster(BaseModel):
     for the LLM enrichment pass (WI-31) and operator review UI."""
 
 
+class AmbiguityPolicy(BaseModel):
+    """WI-22: ambiguity detection configuration per step.
+
+    Today only fires for templated test_id / element_id. WI-22 extends
+    detection to every locator level (L1 exact, L2 semantic, alternates,
+    L3 repaired) so the runner cannot silently click ``.first`` when a
+    role + accessible name match yields multiple rows.
+
+    The four fields here are the operator-visible knobs the annotator
+    emits per step. Defaults are conservative: destructive actions
+    require a unique candidate; non-destructive actions prompt the
+    operator when multiple match.
+    """
+
+    locator_scope: Optional[str] = None
+    """Optional CSS selector that NARROWS the candidate search before
+    counting. E.g. ``[data-testid='row-{asset_id}']`` scopes the click
+    target lookup to within ONE row. When None, the runner searches the
+    whole page. Used by the grabber's ancestor-chain capture to identify
+    the closest dialog / row / card / section the click target lived
+    under -- the same scope at replay produces the same uniqueness
+    guarantees."""
+
+    expected_candidate_count: int = 1
+    """How many visible elements the locator should resolve to. The
+    default ``1`` matches the recording's targeted-at-one-element
+    semantics. >1 is valid for batch operations (e.g. 'select all rows
+    matching X'). When the runner counts more than this, ambiguity
+    detection fires.
+
+    Setting to ``0`` opts out entirely -- legacy escape hatch for cases
+    where the recording is known to be a multi-match (e.g. a generic
+    'click visible toast' where the runner takes any toast). Not
+    recommended for new annotations."""
+
+    ambiguity_policy: Literal[
+        "fail_if_multiple",
+        "pick_first",
+        "prompt",
+    ] = "fail_if_multiple"
+    """How to handle a multiple-candidate situation.
+      - ``fail_if_multiple`` (default for destructive actions): emit
+        ``ambiguous_target`` and pause the runner. The orchestrator
+        surfaces the row picker; operator picks one.
+      - ``pick_first``: legacy behavior. Runner clicks ``.first`` and
+        carries on. ONLY safe when the recording explicitly targeted the
+        first match (rare; usually a recording bug).
+      - ``prompt``: same as ``fail_if_multiple`` but treated as a
+        non-fatal pause -- the runner surfaces the picker but operator
+        can also choose 'continue with first'."""
+
+    candidate_context_fields: list[str] = Field(
+        default_factory=lambda: ["test_id", "text", "id", "role"]
+    )
+    """Which fingerprint fields the runner includes in the candidates
+    summary surfaced as ``ambiguous_target.error_details.candidates``.
+    The UI's row-picker modal renders these so the operator can tell
+    candidate rows apart. Default covers the common identifying fields;
+    operator can extend per portal (e.g. add ``aria-label`` for
+    accessibility-driven pickers)."""
+
+
 class DisambiguationHint(BaseModel):
     """Features captured when an operator resolved an ambiguous_target.
 
@@ -1196,6 +1258,15 @@ class SkillStep(BaseModel):
     disambiguation_hint: Optional[DisambiguationHint] = None
     """Features from a prior operator resolution of ambiguous_target.
     Runner scores candidates against this before pausing again."""
+
+    ambiguity_policy: Optional[AmbiguityPolicy] = None
+    """WI-22: per-step ambiguity detection / policy config. None means
+    'use defaults' -- which the runner translates to
+    ``fail_if_multiple`` for destructive actions (requires_gate True or
+    action in click/fill_submit/select_option/upload/select_autocomplete/
+    set_selection) and ``prompt`` for non-destructive observations.
+    Annotator emits this with the recorded ancestor chain as
+    locator_scope when available."""
 
     set_selection: Optional[SetSelectionSpec] = None
     """Spec for action='set_selection' steps. Carries the picker

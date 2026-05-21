@@ -32,7 +32,7 @@ import json
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from playwright.sync_api import Locator, Page, TimeoutError as PWTimeoutError
 from rich.console import Console
@@ -2194,60 +2194,90 @@ class SkillRunner:
                 return {"test_id": only}
         return None
 
+    # WI-22: actions that mutate portal state. These default to
+    # ambiguity_policy="fail_if_multiple" when the step's
+    # AmbiguityPolicy is unset. Non-mutating actions (wait, assert,
+    # key without enter, navigate) default to "prompt" so the
+    # operator gets a row picker but the workflow can continue when
+    # they confirm.
+    _DESTRUCTIVE_ACTIONS: frozenset[str] = frozenset({
+        "click", "change", "fill_submit", "select_option",
+        "select_autocomplete", "set_selection", "upload",
+        "date_select", "modal", "drag_drop", "download",
+        "rich_text_set", "shortcut",
+    })
+
+    def _effective_ambiguity_policy(self, step: SkillStep) -> tuple[
+        int, Literal["fail_if_multiple", "pick_first", "prompt"], list[str],
+    ]:
+        """WI-22: resolve the step's ambiguity policy with defaults.
+
+        Returns (expected_count, policy, context_fields). The default
+        policy depends on the action: destructive actions
+        ``fail_if_multiple``, others ``prompt``. Skills authored before
+        WI-22 carry no ``ambiguity_policy``; they get the safer-by-
+        default behavior automatically.
+        """
+        pol = step.ambiguity_policy
+        if pol is not None:
+            return (
+                pol.expected_candidate_count,
+                pol.ambiguity_policy,
+                pol.candidate_context_fields,
+            )
+        # Default: destructive actions fail-closed; everything else
+        # prompts so the operator can confirm.
+        is_destructive = (
+            step.action in self._DESTRUCTIVE_ACTIONS or bool(step.requires_gate)
+        )
+        return (
+            1,
+            "fail_if_multiple" if is_destructive else "prompt",
+            ["test_id", "text", "id", "role"],
+        )
+
     def _detect_ambiguity(
         self,
         page: Page,
         fp: ElementFingerprint,
         step: SkillStep,
     ) -> Optional[list[dict[str, Any]]]:
-        """Return a list of candidate elements when the recording
-        captured one specific element but replay finds multiple.
+        """WI-22: detect multiple visible candidates across L1 / L2 /
+        alternates and emit ``ambiguous_target`` BEFORE clicking ``.first``.
 
-        Only fires when the fingerprint had templated fields *and* the
-        templated value at replay would resolve to >1 visible element.
-        Untemplated fingerprints are skipped -- "click first match"
-        was the recording's own behavior, so reproducing it is correct.
+        Pre-WI-22 this only fired for templated test_id / element_id.
+        That missed the common L2 case: many rows share an accessible
+        name like 'Open' or 'Approve', and even the templated test_id
+        narrowed the recording's pick but the runner fell through to L2
+        when the test_id drifted. Now: count candidates from EVERY
+        attempted locator until something is uniquely visible OR
+        ambiguity surfaces.
+
+        Returns the candidate summary list when ambiguity was found,
+        respecting ``ambiguity_policy``. None when no ambiguity OR when
+        policy is ``pick_first``.
         """
-        if not fp.templates:
+        expected_count, policy, fields = self._effective_ambiguity_policy(step)
+        if expected_count <= 0:
+            # Opt-out (expected_candidate_count=0): caller wants the
+            # legacy "click first match" behavior. Skip detection.
+            return None
+        if policy == "pick_first":
             return None
 
-        candidates_per_attr: list[list[dict[str, Any]]] = []
+        # Track every locator we considered. If none clears the
+        # "uniquely visible" bar, we surface the broadest candidate list
+        # so the operator picker has context. Order matches resolver:
+        # test_id, element_id, name, aria_label (L1) then role+name and
+        # text (L2). For each, build a locator the same way the
+        # resolver would, then count.
+        attempts: list[tuple[str, Locator]] = []
 
-        # Templated test_id is the most common case (e.g. row-{id}).
-        if fp.test_id and "test_id" in fp.templates:
+        def _try(label: str, build):
             try:
-                loc = page.get_by_test_id(fp.test_id)
-                count = loc.count()
-                if count > 1:
-                    visible = self._collect_candidate_summaries(loc, count)
-                    if len(visible) > 1:
-                        candidates_per_attr.append(visible)
-            except Exception as e:
-                # WI-06: silent exception in ambiguity detection used to
-                # let .first win on a clearly ambiguous locator. Surface
-                # the failure -- the runner then falls through to L1/L2
-                # which would do the same .first, but at least the
-                # operator knows the safety net misfired.
-                self._diagnostic(
-                    "runner.ambiguity_scan_failed",
-                    level="warn",
-                    recoverable=True,
-                    exc_type=type(e).__name__,
-                    exc_msg=str(e)[:200],
-                    step_index=step.index,
-                    attr="test_id",
-                    test_id=fp.test_id,
-                )
-
-        # Templated id (less common but possible).
-        if fp.element_id and "element_id" in fp.templates:
-            try:
-                loc = page.locator(f"#{_css_escape(fp.element_id)}")
-                count = loc.count()
-                if count > 1:
-                    visible = self._collect_candidate_summaries(loc, count)
-                    if len(visible) > 1:
-                        candidates_per_attr.append(visible)
+                loc = build()
+                if loc is not None:
+                    attempts.append((label, loc))
             except Exception as e:
                 self._diagnostic(
                     "runner.ambiguity_scan_failed",
@@ -2256,15 +2286,79 @@ class SkillRunner:
                     exc_type=type(e).__name__,
                     exc_msg=str(e)[:200],
                     step_index=step.index,
-                    attr="element_id",
-                    element_id=fp.element_id,
+                    attr=label,
                 )
 
-        if not candidates_per_attr:
-            return None
-        # If multiple templated attrs are ambiguous, surface the first;
-        # they're usually pointing at the same elements anyway.
-        return candidates_per_attr[0]
+        # WI-22: detection now spans both locator levels, not only
+        # templated test_id / element_id. Each lambda is bound to the
+        # specific fingerprint field so the loop can call it lazily.
+        if fp.test_id:
+            _try("test_id", lambda: page.get_by_test_id(fp.test_id))
+        if fp.element_id:
+            _try(
+                "element_id",
+                lambda: page.locator(f"#{_css_escape(fp.element_id)}"),
+            )
+        if fp.name:
+            _try("name", lambda: page.locator(f"[name='{fp.name}']"))
+        if fp.aria_label:
+            _try(
+                "aria_label",
+                lambda: page.get_by_label(fp.aria_label, exact=False),
+            )
+        # L2 semantic attempts that often resolve to many rows on
+        # enterprise portals -- this is the WI-22 audit's central case.
+        if fp.role and fp.accessible_name:
+            _try(
+                "role_name",
+                lambda: page.get_by_role(
+                    fp.role, name=fp.accessible_name, exact=False
+                ),
+            )
+        if fp.accessible_name and not fp.role:
+            _try(
+                "text_accessible",
+                lambda: page.get_by_text(fp.accessible_name, exact=False),
+            )
+
+        # Pick the FIRST attempt that's neither empty (caller will fall
+        # through) nor uniquely visible -- that's the ambiguity case
+        # the operator needs to resolve. If every attempt is unique or
+        # empty, no ambiguity to surface.
+        for label, loc in attempts:
+            try:
+                cnt = loc.count()
+            except Exception:
+                continue
+            if cnt <= expected_count:
+                # Either zero (caller falls through L1 -> L2 -> L3) or
+                # within the operator's declared expectation. Skip.
+                continue
+            visible = self._collect_candidate_summaries(loc, cnt)
+            if len(visible) <= expected_count:
+                # Multiple in DOM but only one visible -- not ambiguous
+                # at replay time.
+                continue
+            # Enrich each candidate with the policy's context_fields.
+            return self._enrich_candidates(visible, fields)
+        return None
+
+    def _enrich_candidates(
+        self, candidates: list[dict[str, Any]], fields: list[str]
+    ) -> list[dict[str, Any]]:
+        """WI-22: ensure each candidate carries the policy's declared
+        context fields. The _collect_candidate_summaries default already
+        provides test_id / id / text / role / tag; extra fields the
+        annotator declares are looked up via a follow-up evaluate in a
+        future iteration. For now, ensure declared fields appear as
+        None when absent so the UI can render uniform rows."""
+        out: list[dict[str, Any]] = []
+        for c in candidates:
+            row = dict(c)
+            for f in fields:
+                row.setdefault(f, None)
+            out.append(row)
+        return out
 
     def _collect_candidate_summaries(
         self, locator: Locator, count: int
