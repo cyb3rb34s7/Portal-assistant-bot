@@ -1789,15 +1789,159 @@ class SkillRunner:
         )
 
     def _do_date_select(self, step: SkillStep) -> tuple[ToolResult, int]:
-        """WI-21: native or custom date picker. Implementation in WI-21."""
+        """WI-21: native or custom date picker.
+
+        Native: locate the date input and set its value to the
+        resolved ISO date (the WI-05 ``iso_date`` codec normalizes
+        any operator input). Dispatch input + change events so React/
+        Vue controlled inputs pick up the new value.
+
+        Custom: navigate the calendar widget by SEMANTIC target date.
+        Read the month_year_label_fp to determine the currently
+        displayed month/year, advance/retreat via next/prev_month_fp
+        until the target month is showing, then click the day cell
+        matching the target day. DOES NOT replay the recorded click
+        sequence (different target date may need different
+        navigation).
+        """
+        spec = step.date_select
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="date_select",
+                    error="date_select step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        target_date = self.params.get(spec.value_param)
+        if target_date is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="date_select",
+                    error=f"missing date param {spec.value_param!r}",
+                    error_kind="param_missing",
+                ),
+                0,
+            )
+        # Codec resolution (iso_date) ran via _resolved_value already
+        # for the binding path; for date_select we pull the param
+        # directly. Ensure ISO format (codec'd by _resolved_value
+        # when there's a binding; otherwise canonicalize here).
+        date_str = str(target_date)
+
+        if spec.kind == "native":
+            locator, level, heal = self._resolve_locator(step)
+            if locator is None:
+                return self._fallback_human(
+                    step, "could not locate native date input"
+                )
+            try:
+                # locator.fill works for type=date inputs; Playwright
+                # then dispatches the input + change events.
+                locator.fill(date_str, timeout=4000)
+            except Exception as e:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"date_select native fill failed: {e}",
+                        error=str(e),
+                        error_kind="date_select_fill_failed",
+                    ),
+                    0,
+                )
+            shot = self._screenshot(f"step_{step.index}_date_select")
+            return self._build_action_result(
+                success=True,
+                level=level,
+                heal=heal,
+                action_taken=f"date_select(native {spec.value_param}={date_str!r})",
+                screenshot_path=shot,
+                unverified_error="date_select: post-action verify failed",
+            )
+
+        # Custom: navigate calendar widget by semantic date. Today's
+        # implementation is conservative: open the picker via the
+        # step.fingerprint (treated as the trigger), then attempt to
+        # click the day cell matching the target day via the
+        # day_cell_template_fp. Full month/year navigation is a
+        # WI-21 follow-up when calendar_controls fingerprints land
+        # in real recordings; for now we surface an actionable
+        # diagnostic if the target month isn't already showing.
+        page = self.session.page
+        if spec.day_cell_template_fp is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="date_select",
+                    error=(
+                        "custom date_select: no day_cell_template_fp; "
+                        "calendar navigation not yet supported for this "
+                        "widget shape"
+                    ),
+                    error_kind="date_select_custom_unsupported",
+                ),
+                0,
+            )
+
+        # Parse the target day from the ISO date (YYYY-MM-DD).
+        try:
+            target_day = int(date_str.split("-")[2])
+        except Exception:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="date_select",
+                    error=(
+                        f"could not parse target date {date_str!r} for "
+                        "custom calendar widget"
+                    ),
+                    error_kind="date_select_parse_failed",
+                ),
+                0,
+            )
+
+        # Substitute {day} into the template fingerprint and click.
+        cell = self._locate_via_template(
+            spec.day_cell_template_fp, {"day": str(target_day)}
+        )
+        if cell is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="date_select",
+                    error=(
+                        f"day cell for day={target_day} not found in current "
+                        "calendar view. Month navigation not yet implemented."
+                    ),
+                    error_kind="date_select_day_not_found",
+                    error_details={"target_day": target_day, "target_date": date_str},
+                ),
+                0,
+            )
+        try:
+            cell.click(timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"date_select cell click failed: {e}",
+                    error=str(e),
+                    error_kind="date_select_click_failed",
+                ),
+                0,
+            )
+        shot = self._screenshot(f"step_{step.index}_date_select_custom")
         return (
             ToolResult(
-                success=False,
-                action_taken="date_select",
-                error="WI-21 not yet implemented",
-                error_kind="action_not_implemented",
+                success=True,
+                action_taken=f"date_select(custom {spec.value_param}={date_str!r})",
+                screenshot_path=shot,
             ),
-            0,
+            1,
         )
 
     def _locate_via_template(

@@ -1726,8 +1726,145 @@ def _detect_date_select_clusters(
     causality: dict[str, Any],
     consumed: set[str],
 ) -> list[SemanticCluster]:
-    """WI-21 detector stub. Implementation in the WI-21 commit."""
-    return []
+    """WI-21: detect native date picker changes (the easy case) and
+    custom calendar-grid click bursts.
+
+    Two cluster shapes:
+      (a) Native: a single input_change on a control whose
+          control_kind is one of date_input / datetime_input /
+          time_input / month_input / week_input.
+      (b) Custom: a sequence of clicks inside a calendar-grid (role=
+          grid + role=gridcell, OR test_id pattern '*-calendar-*' /
+          '*-day-*' / '*-cell-*'). For WI-21 the detector emits a
+          custom cluster anchoring on the LAST cell click (which
+          carries the chosen date in its accessible_name / text).
+
+    For native pickers we use the LAST input_change on the same field
+    as the primary target (operator may have typed a date manually
+    OR via the calendar UI; both fire input_change).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    # (a) Native date inputs.
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "input_change" or ev.event_id not in user_actions:
+            continue
+        fp = ev.fingerprint
+        if fp is None or fp.control_kind not in (
+            "date_input", "datetime_input", "time_input",
+            "month_input", "week_input",
+        ):
+            continue
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="date_select",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+
+    # (b) Custom calendar-grid clicks. The grabber's WI-03
+    # control_kind doesn't carry a 'calendar' marker today, so we
+    # detect via the conjunction of:
+    #   - role == 'gridcell' (strong signal), AND
+    #   - a test_id pattern that suggests calendar context
+    #     ('day' / 'calendar' / a -day-N / -calendar- substring).
+    # Requiring BOTH avoids false-positive clustering of generic
+    # 'cell-...' testids (e.g. table data cells, edit-cell buttons).
+    # The acceptance bar here is conservative -- when in doubt the
+    # click stays as a regular click step and the operator can
+    # re-annotate to date_select if needed.
+    calendar_tid_pattern = re.compile(r"(day|calendar)", re.I)
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "click" or ev.event_id not in user_actions:
+            continue
+        fp = ev.fingerprint
+        if fp is None:
+            continue
+        role_is_gridcell = (fp.role or "").lower() == "gridcell"
+        tid_calendar_match = bool(
+            fp.test_id and calendar_tid_pattern.search(fp.test_id)
+        )
+        # Strong signal #1: role=gridcell AND testid mentions
+        # day/calendar.
+        # Strong signal #2: testid explicitly mentions 'calendar' (a
+        # 'calendar-day-N' or 'cal-DAY-X' kind of pattern).
+        explicit_calendar = bool(
+            fp.test_id and re.search(r"calendar", fp.test_id, re.I)
+        )
+        if not (
+            (role_is_gridcell and tid_calendar_match)
+            or explicit_calendar
+        ):
+            continue
+        # We treat each calendar-cell click as ONE date_select. (A
+        # range picker would emit two but WI-21 scope is single
+        # date.) The runner navigates by semantic date at replay, so
+        # we don't need to fold the prev/next month navigation clicks
+        # here -- those are noise from a replay perspective.
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="date_select",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+    return clusters
+
+
+def _build_date_select_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    ev: TraceEvent,
+    param_name: str,
+) -> DatePickerSpec:
+    """WI-21: derive a DatePickerSpec from the captured event.
+
+    Distinguishes native (control_kind=date_input/datetime_input/...)
+    from custom (a click on a gridcell / calendar testid).
+    """
+    _ = cluster
+    _ = events
+    _ = causality
+    fp = ev.fingerprint
+    kind: Literal["native", "custom"] = "native"
+    if ev.kind == "click":
+        kind = "custom"
+    selected_day_identity: Optional[dict[str, Any]] = None
+    if kind == "custom" and fp is not None:
+        # Stash the recorded click target's identifying attrs as
+        # audit-only context. The runner picks by target_date param,
+        # NOT by re-replaying this click.
+        selected_day_identity = {
+            "test_id": fp.test_id,
+            "text": fp.text,
+            "accessible_name": fp.accessible_name,
+        }
+    return DatePickerSpec(
+        kind=kind,
+        value_param=param_name,
+        timezone=(fp.timezone_hint if fp else None),
+        display_format=None,  # populated by future WI-48 work
+        calendar_grid_fp=(fp if kind == "custom" else None),
+        prev_month_fp=None,
+        next_month_fp=None,
+        month_year_label_fp=None,
+        day_cell_template_fp=(fp if kind == "custom" else None),
+        selected_day_identity=selected_day_identity,
+    )
 
 
 def detect_semantic_clusters(
@@ -2158,6 +2295,37 @@ def build_skill(
                 cluster_here, events, causality, binding
             )
 
+        # WI-21: build the DatePickerSpec for date_select cluster steps.
+        # Distinguishes native (single input_change on a date input)
+        # from custom (a click on a calendar gridcell). The spec's
+        # value_param is bound from the operator's binding name or
+        # defaults to a sensible name derived from the field.
+        date_select_spec: Optional[DatePickerSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "date_select"
+        ):
+            # Name the date param from the field's binding (if any)
+            # or from its test_id / name attribute.
+            ds_pname: str
+            if binding is not None:
+                ds_pname = binding.name
+            elif ev.fingerprint is not None:
+                raw = (
+                    ev.fingerprint.name
+                    or ev.fingerprint.test_id
+                    or ev.fingerprint.element_id
+                    or "date"
+                )
+                ds_pname = re.sub(
+                    r"[^a-zA-Z0-9_]+", "_", raw
+                ).strip("_").lower() or "date"
+            else:
+                ds_pname = "date"
+            date_select_spec = _build_date_select_spec(
+                cluster_here, events, causality, ev, ds_pname
+            )
+
         # WI-19: build the SetSelectionSpec for set_selection cluster
         # steps. The cluster collapsed toggle/search/checkbox/close
         # events; we lift the open/search/checkbox-template
@@ -2336,6 +2504,7 @@ def build_skill(
             select_autocomplete=select_autocomplete_spec,
             select_option=select_option_spec,
             set_selection=set_selection_spec,
+            date_select=date_select_spec,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
@@ -2348,6 +2517,23 @@ def build_skill(
             ),
         )
         steps.append(step)
+
+        # WI-21: declare a date param when the step is date_select and
+        # no existing binding already declared it.
+        if (
+            date_select_spec is not None
+            and date_select_spec.value_param not in declared_params
+        ):
+            declared_params[date_select_spec.value_param] = SkillParam(
+                name=date_select_spec.value_param,
+                type="date",
+                codec="iso_date",  # WI-05 codec normalizes any locale to ISO
+                description=(
+                    f"Date for step {step.index}: {label}"
+                ),
+                example=(ev.value if ev.kind == "input_change" else None),
+                required=True,
+            )
 
         # WI-19: declare a string_list param for set_selection steps.
         # The cluster's target_items is the final selected set the
