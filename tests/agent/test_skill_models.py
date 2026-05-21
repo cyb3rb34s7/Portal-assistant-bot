@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pilot.skill_models import ElementFingerprint, TraceEvent
+import pytest
+from pydantic import ValidationError
+
+from pilot.skill_models import (
+    ElementFingerprint,
+    NetworkExpectation,
+    ParamProvenance,
+    ReplayPolicy,
+    TraceEvent,
+)
 
 
 def test_option_snapshot_roundtrips_bool_fields() -> None:
@@ -124,6 +133,53 @@ def test_trace_event_network_request_roundtrip() -> None:
     assert resp_r.kind == "network_response"
     assert resp_r.status == 200
     assert resp_r.finished_at == 12350.2
+
+
+def test_replay_policy_normalizes_optional_true_to_on_failure_optional() -> None:
+    """F-09a: optional=True with the default on_failure='abort' is
+    contradictory. Normalize so the two fields can't disagree at
+    runtime."""
+    policy = ReplayPolicy(optional=True)  # default on_failure="abort"
+    assert policy.optional is True
+    assert policy.on_failure == "optional"
+
+
+def test_replay_policy_preserves_explicit_on_failure_continue() -> None:
+    """F-09a: when optional=True is paired with a non-abort on_failure
+    that is itself non-conflicting, leave it alone."""
+    policy = ReplayPolicy(optional=True, on_failure="continue")
+    assert policy.on_failure == "continue"
+
+
+def test_replay_policy_default_is_abort_not_optional() -> None:
+    """Default fail-fast policy from WI-07 still holds."""
+    policy = ReplayPolicy()
+    assert policy.optional is False
+    assert policy.on_failure == "abort"
+
+
+def test_param_provenance_confidence_range_enforced() -> None:
+    """F-09b: confidence must be in [0.0, 1.0]."""
+    ParamProvenance(source="operator_input", confidence=0.0)
+    ParamProvenance(source="operator_input", confidence=1.0)
+    ParamProvenance(source="operator_input", confidence=0.5)
+    ParamProvenance(source="operator_input", confidence=None)
+    with pytest.raises(ValidationError):
+        ParamProvenance(source="operator_input", confidence=1.5)
+    with pytest.raises(ValidationError):
+        ParamProvenance(source="operator_input", confidence=-0.1)
+
+
+def test_network_expectation_started_after_event_field_present() -> None:
+    """F-09d / F-07: schema slot for action-scoped baseline."""
+    ne = NetworkExpectation(
+        url_pattern="/api/x",
+        started_after_event="evt-click-1",
+    )
+    assert ne.started_after_event == "evt-click-1"
+    # Default is None -- legacy skills don't carry the field.
+    ne2 = NetworkExpectation(url_pattern="/api/x")
+    assert ne2.started_after_event is None
 
 
 def test_trace_event_dom_mutation_roundtrip() -> None:

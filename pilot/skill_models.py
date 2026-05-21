@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ActionType = Literal[
@@ -262,7 +262,9 @@ class NetworkExpectation(BaseModel):
     status: Optional[int] = None
     """Expected status code. If set, the call only counts as 'completed
     correctly' when this status is observed. None means require any
-    2xx (F-09)."""
+    2xx -- the runner predicate enforces ``200 <= status < 300``
+    (F-09c), matching this docstring; older runner behavior of
+    accepting any status was a bug."""
     max_ms: int = 5000
     """F-08c: 5000 is a legacy fallback. New annotations should set
     this explicitly from PortalContext.wait_policy.network_max_ms."""
@@ -489,6 +491,23 @@ class ReplayPolicy(BaseModel):
     """Marks the step as observational. Failures don't propagate as
     skill failure. Convenience flag; equivalent to on_failure="optional"."""
 
+    @model_validator(mode="after")
+    def _normalize_optional(self) -> "ReplayPolicy":
+        """F-09: ``optional=True`` and ``on_failure="abort"`` are
+        contradictory -- one says 'don't fail the skill', the other
+        says 'stop the skill on failure'. Normalize to
+        on_failure="optional" when the convenience flag is set so the
+        two fields can't disagree.
+
+        Rejected the alternative of raising ValidationError because
+        existing legacy skills may have ``optional=True`` alongside
+        the default abort and we'd rather silently widen than break
+        load. The normalization is conservative: optional=True wins
+        because it's the more explicit operator intent."""
+        if self.optional and self.on_failure == "abort":
+            self.on_failure = "optional"
+        return self
+
 
 # ---------------------------------------------------------------------------
 # WI-01: Provenance
@@ -521,10 +540,10 @@ class ParamProvenance(BaseModel):
     source_attribute: Optional[str] = None
     """Attribute / field name on the source. E.g. for source_step=4
     being a row click, source_attribute might be ``data-row-key``."""
-    confidence: Optional[float] = None
-    """Annotator's confidence in this provenance (0.0-1.0). LLM-derived
-    provenance carries lower confidence than deterministic; operator
-    review can boost to 1.0."""
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    """F-09: annotator's confidence in this provenance (0.0-1.0).
+    Pydantic enforces the range; LLM-derived provenance carries lower
+    confidence than deterministic, operator review can boost to 1.0."""
 
 
 class StepProvenance(BaseModel):

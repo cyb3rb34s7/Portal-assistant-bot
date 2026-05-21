@@ -144,6 +144,14 @@ class SkillRunner:
         # pausing again. Set externally by the executor reading the
         # skill's .hints.json sidecar.
         self.disambiguation_hints: dict[int, dict[str, Any]] = {}
+        # F-09d: baseline timestamps for expected_signals.started_after_event.
+        # Populated at the start of each step with that step's
+        # started-at ms; expected_signals on later steps that reference
+        # an earlier step's event_id (the step.provenance.raw_event_ids
+        # entry) resolve to that recorded ts. None means "no scoping"
+        # and the baseline check is a no-op (preserves legacy behavior
+        # for skills that don't declare started_after_event).
+        self._event_baseline_ts: dict[str, int] = {}
         # Set by _resolve_locator when L1 finds >1 match for a templated
         # locator. Action methods read it to emit ambiguous_target
         # instead of falling through to generic L4 takeover. Cleared on
@@ -263,6 +271,17 @@ class SkillRunner:
         # Reset per-step state -- ambiguity flag from a previous step
         # must never leak into the current one.
         self._pending_ambiguity = None
+
+        # F-09d: record this step's start time against each of its
+        # raw_event_ids so expected_signals.started_after_event on a
+        # LATER step can scope its match to "started after this
+        # step." int(time.time()*1000) keeps the units identical to
+        # the page-side __cp_request_log started_ts values.
+        step_start_ms = int(time.time() * 1000)
+        if step.provenance and step.provenance.raw_event_ids:
+            for raw_id in step.provenance.raw_event_ids:
+                if raw_id:
+                    self._event_baseline_ts[raw_id] = step_start_ms
 
         # Set the idempotency context for any destructive API calls
         # this step triggers. Retries of the same step within the run
@@ -1805,6 +1824,21 @@ class SkillRunner:
                 ),
             )
 
+    def _resolve_baseline_ts(self, baseline_event_id: Optional[str]) -> int:
+        """F-09d: look up the recorded started-at ms for a baseline
+        event id, or 0 if the id is unset / unknown (which the wait
+        predicate treats as 'no baseline scoping').
+
+        The registry is populated by ``_execute_step`` at the start of
+        each step: every raw_event_id in the step's provenance maps to
+        the step's start-time epoch ms. expected_signals on later
+        steps can reference those ids via started_after_event so a
+        stale request from before that step cannot satisfy a later
+        wait."""
+        if not baseline_event_id:
+            return 0
+        return int(self._event_baseline_ts.get(baseline_event_id, 0))
+
     def _drain_idempotency_diagnostics(self, page: Page, step: SkillStep) -> None:
         """F-08e: pull the page-side shim's diagnostic queue and emit
         any entries as audit warnings. Called after each step so the
@@ -1964,16 +1998,31 @@ class SkillRunner:
             pattern = ne.url_pattern.lower()
             timeout_ms = min(ne.max_ms, max_ms)
             try:
+                # F-09c: when status is None, the schema docstring
+                # documents "any 2xx" -- enforce that in the runner
+                # predicate rather than accepting any status.
+                # F-09d: when ne.started_after_event is set, the
+                # matched request must have started_ts strictly
+                # greater than the baseline timestamp. The runner
+                # resolves baseline event_id -> ts via the per-step
+                # baseline registry on self (_event_baseline_ts);
+                # entries are populated when a step that produces a
+                # baseline event runs. None => no baseline scoping
+                # (legacy behavior).
+                baseline_ts = self._resolve_baseline_ts(
+                    ne.started_after_event
+                )
                 page.wait_for_function(
-                    "([pat, method, statusFilter]) => {"
+                    "([pat, method, statusFilter, baselineTs]) => {"
                     " const log = window.__cp_request_log || [];"
                     " return log.some(r =>"
                     "   (r.url || '').toLowerCase().includes(pat) &&"
                     "   (!method || (r.method || 'GET').toUpperCase() === method.toUpperCase()) &&"
-                    "   (statusFilter === null || r.status === statusFilter) &&"
-                    "   r.finished_ts > 0"
+                    "   (statusFilter === null ? (r.status >= 200 && r.status < 300) : r.status === statusFilter) &&"
+                    "   r.finished_ts > 0 &&"
+                    "   (baselineTs === 0 || (r.started_ts || 0) > baselineTs)"
                     " ); }",
-                    arg=[pattern, ne.method, ne.status],
+                    arg=[pattern, ne.method, ne.status, baseline_ts],
                     timeout=timeout_ms,
                 )
                 self.audit.log(
