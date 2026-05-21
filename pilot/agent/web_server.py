@@ -853,6 +853,12 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 idempotency_capability=(
                     portal_ctx.idempotency if portal_ctx else None
                 ),
+                # WI-09: per-portal wait policy. The runner reads
+                # request_log_cap from here for the page-side ring
+                # buffer. None lets the runner default to 200.
+                wait_policy=(
+                    portal_ctx.wait_policy if portal_ctx else None
+                ),
             )
         )
 

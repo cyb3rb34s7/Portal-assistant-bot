@@ -83,6 +83,15 @@ class WaitPolicy(BaseModel):
     suggests a search step instead of treating the snapshot as
     exhaustive. The grabber reads this via window.__cp_opts_cap."""
 
+    request_log_cap: int = 200
+    """WI-09: cap on the in-page request log ring buffer used by the
+    runner's expected_signals network wait. Default 200 -- larger than
+    the legacy hardcoded LOG_CAP=50 because dashboards routinely fire
+    >50 telemetry/API calls per page load and the target request
+    could be evicted before the wait predicate runs. Tune upward for
+    portals with heavy telemetry; downward for memory-constrained
+    embedded browsers."""
+
 
 class IdempotencyCapability(BaseModel):
     """How the portal's backend handles idempotency keys.

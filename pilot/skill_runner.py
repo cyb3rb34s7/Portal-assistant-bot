@@ -167,6 +167,21 @@ class SkillRunner:
         # the replay event stream.
         self.diagnostics: list[Diagnostic] = []
 
+        # WI-09: per-portal wait policy. Set by the executor from
+        # PortalContext.wait_policy at construction; defaults to the
+        # WaitPolicy schema's class-level defaults when None. The
+        # runner reads request_log_cap from here when installing the
+        # page-side watcher and uses the implicit step-start baseline
+        # (self._step_started_ms) for action-scoped network waits.
+        self.wait_policy: Optional[Any] = None
+        self._step_started_ms: int = 0
+        """WI-09: timestamp (ms epoch) of the current step's start.
+        Set in _execute_step at the moment _set_step_idem_context runs.
+        Network expected_signals that don't carry an explicit
+        started_after_event baseline scope to this timestamp -- a
+        request that FINISHED before the step started cannot satisfy
+        the wait. Closes the BLOCKER-4 stale-request hole."""
+
     # ---- WI-06: diagnostics --------------------------------------------
 
     def _diagnostic(
@@ -330,12 +345,18 @@ class SkillRunner:
         # must never leak into the current one.
         self._pending_ambiguity = None
 
-        # F-09d: record this step's start time against each of its
-        # raw_event_ids so expected_signals.started_after_event on a
-        # LATER step can scope its match to "started after this
+        # F-09d + WI-09: record this step's start time against each of
+        # its raw_event_ids so expected_signals.started_after_event on
+        # a LATER step can scope its match to "started after this
         # step." int(time.time()*1000) keeps the units identical to
         # the page-side __cp_request_log started_ts values.
+        # WI-09 also stores the timestamp on self._step_started_ms as
+        # the IMPLICIT baseline -- network waits whose
+        # NetworkExpectation.started_after_event is None still scope
+        # to the action's start, so a request that FINISHED before
+        # the step kicked off cannot accidentally satisfy the wait.
         step_start_ms = int(time.time() * 1000)
+        self._step_started_ms = step_start_ms
         if step.provenance and step.provenance.raw_event_ids:
             for raw_id in step.provenance.raw_event_ids:
                 if raw_id:
@@ -1761,7 +1782,14 @@ class SkillRunner:
       window.__cp_inflight = 0;
       window.__cp_last_request_at = 0;
       window.__cp_request_log = [];
-      const LOG_CAP = 50;
+      // WI-09: configurable cap. ``window.__cp_request_log_cap`` is set
+      // by _set_step_idem_context (or _ensure_watchers fallback) from
+      // PortalContext.wait_policy.request_log_cap. The hardcoded 50
+      // that the audit flagged is now only a last-resort fallback when
+      // no per-portal cap is wired.
+      const LOG_CAP = (typeof window.__cp_request_log_cap === 'number'
+        && window.__cp_request_log_cap > 0)
+        ? window.__cp_request_log_cap : 200;
       function _logRequest(entry) {
         const log = window.__cp_request_log;
         log.push(entry);
@@ -1850,6 +1878,24 @@ class SkillRunner:
         idempotency keys (most don't have the middleware) gets no
         injection -- the previous global-injection behavior assumed
         backend semantics."""
+        # WI-09: push the request_log_cap to the page BEFORE installing
+        # the watcher so the LOG_CAP read in _WATCHER_INSTALL_JS sees
+        # the per-portal value. Default 200 (vs the legacy hardcoded
+        # 50) is sufficient for most enterprise dashboards; the
+        # PortalContext.wait_policy.request_log_cap field lets the
+        # operator tune it.
+        cap = 200
+        if self.wait_policy is not None:
+            cap = int(getattr(self.wait_policy, "request_log_cap", 200) or 200)
+        try:
+            page.evaluate(
+                "(c) => { window.__cp_request_log_cap = c; }", cap
+            )
+        except Exception:
+            # The cap defaults to 200 inside the watcher if we couldn't
+            # push it, so this isn't fatal. Diagnostic surfaces if
+            # something deeper is wrong with the page.
+            pass
         try:
             page.evaluate(self._WATCHER_INSTALL_JS)
             if self._idempotency_enabled():
@@ -2188,19 +2234,28 @@ class SkillRunner:
             )
 
     def _resolve_baseline_ts(self, baseline_event_id: Optional[str]) -> int:
-        """F-09d: look up the recorded started-at ms for a baseline
-        event id, or 0 if the id is unset / unknown (which the wait
-        predicate treats as 'no baseline scoping').
+        """F-09d + WI-09: look up the baseline timestamp for a network
+        expectation.
 
-        The registry is populated by ``_execute_step`` at the start of
-        each step: every raw_event_id in the step's provenance maps to
-        the step's start-time epoch ms. expected_signals on later
-        steps can reference those ids via started_after_event so a
-        stale request from before that step cannot satisfy a later
-        wait."""
-        if not baseline_event_id:
-            return 0
-        return int(self._event_baseline_ts.get(baseline_event_id, 0))
+        Two sources, in order:
+          1. Explicit ``baseline_event_id``: the recorded started-at ms
+             of that event, populated when its step ran.
+          2. Implicit step-start baseline (WI-09): when no
+             baseline_event_id was supplied, use self._step_started_ms
+             -- the moment the current step's _execute_step started.
+             This closes the BLOCKER-4 stale-request hole: a request
+             that finished before THIS step's action ran cannot
+             satisfy this step's expected_signal.
+
+        Returns 0 only when neither baseline is available (legacy
+        skill, no recorded step start). 0 disables the started_ts
+        comparison and reproduces pre-F-09 behavior."""
+        if baseline_event_id:
+            recorded = self._event_baseline_ts.get(baseline_event_id, 0)
+            if recorded:
+                return int(recorded)
+        # WI-09 implicit: action-scoped baseline.
+        return int(getattr(self, "_step_started_ms", 0) or 0)
 
     def _drain_idempotency_diagnostics(self, page: Page, step: SkillStep) -> None:
         """F-08e: pull the page-side shim's diagnostic queue and emit

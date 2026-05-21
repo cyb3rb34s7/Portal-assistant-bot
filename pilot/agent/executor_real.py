@@ -108,6 +108,13 @@ class RealExecutorConfig:
     safe behavior for portals whose backend hasn't declared support.
     Sourced from PortalContext.idempotency by the orchestrator."""
 
+    wait_policy: Any = None
+    """WI-09: PortalContext.wait_policy passthrough. The runner reads
+    ``request_log_cap`` from here when installing the page-side
+    request-log ring buffer (the legacy hardcoded 50 is the last-
+    resort fallback). None means "use schema-level defaults"
+    (WaitPolicy() factory)."""
+
 
 class RealExecutor(StepExecutor):
     """Bridges the agent's PlanStep onto a full SkillRunner invocation."""
@@ -495,6 +502,9 @@ class RealExecutor(StepExecutor):
             )
             runner.network_quiet_ms = int(self.config.network_quiet_ms)
             runner.idempotency_capability = self.config.idempotency_capability
+            # WI-09: per-portal wait policy. Used by _ensure_watchers
+            # to push the request_log_cap to the page-side ring buffer.
+            runner.wait_policy = self.config.wait_policy
             results = runner.run()
             # WI-06: forward runner diagnostics (watcher_install,
             # set_selection swallows, ambiguity_scan, screenshot
