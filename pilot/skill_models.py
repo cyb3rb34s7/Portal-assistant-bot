@@ -849,6 +849,168 @@ class SkillParam(BaseModel):
     ElementFingerprint.options_snapshot."""
 
 
+# ---------------------------------------------------------------------------
+# WI-08 migration: legacy click + navigate -> click with navigation effect
+#
+# Existing skills recorded BEFORE WI-08 emit two separate steps when the
+# operator clicked something that triggered a SPA route change: one
+# click step + one navigate step with the literal URL. The runner then
+# called page.goto() with that URL on replay, which (per BLOCKER 1)
+# reloaded the SPA at the recorded asset id instead of the current one
+# -- the wrong-asset bug.
+#
+# This upgrader scans a list of step dicts (raw JSON) for consecutive
+# click->navigate pairs whose timestamps are close together and lifts
+# the navigate's URL into the click's effects.navigation.url. The
+# standalone navigate step is dropped. Idempotent: runs as part of
+# Skill.model_validate() so existing skills load with the upgrade
+# applied; new skills (already structured by the annotator) pass
+# through unchanged.
+#
+# Choice documented in WI-08 spec: we upgrade at load time silently
+# rather than requiring re-recording. The rationale is that the legacy
+# behavior is structurally wrong (the audit's release blocker) and the
+# new behavior is strictly safer (click + assert vs click + goto). An
+# operator who wants the legacy path back can declare
+# replay_policy.reload_allowed=True on the upgraded step.
+# ---------------------------------------------------------------------------
+
+
+def _derive_legacy_url_template(
+    nav_url: str,
+    prior_steps: list[dict[str, Any]],
+) -> Optional[str]:
+    """Walk prior steps' click fingerprint templates / value bindings
+    to find a (param_name, recorded_value) pair whose value appears in
+    nav_url. Substitute the longest matching value to produce a
+    template like ``/asset/{content_id}``.
+
+    Returns None when no substitution applies -- the literal URL stays
+    as the assert target. Conservative threshold: ignore values < 3
+    chars to avoid accidental matches (``A-`` matching anywhere).
+    """
+    pairs: list[tuple[str, str]] = []
+    for s in prior_steps:
+        if not isinstance(s, dict):
+            continue
+        binding = s.get("param_binding") or {}
+        name = binding.get("name") if isinstance(binding, dict) else None
+        if not name:
+            continue
+        val = s.get("value") or s.get("file_path") or ""
+        if not val or len(str(val)) < 3:
+            continue
+        pairs.append((name, str(val)))
+        # Also harvest fingerprint templates (substring matches on test_id /
+        # etc.) -- those expose the param values without needing the
+        # operator to have filled a separate input first.
+        fp = s.get("fingerprint") or {}
+        templates = fp.get("templates") or {}
+        for field, tmpl in templates.items():
+            literal = fp.get(field)
+            if not literal or not isinstance(tmpl, str):
+                continue
+            # The recorded literal contains the value we want; extract
+            # by reversing the template substitution. ``{name}`` ->
+            # value (single param assumption).
+            placeholder = "{" + name + "}"
+            if placeholder in tmpl:
+                head_tail = tmpl.split(placeholder, 1)
+                if (
+                    len(head_tail) == 2
+                    and literal.startswith(head_tail[0])
+                    and literal.endswith(head_tail[1])
+                ):
+                    extracted = literal[
+                        len(head_tail[0]) : len(literal) - len(head_tail[1])
+                        if head_tail[1]
+                        else len(literal)
+                    ]
+                    if extracted and len(extracted) >= 3:
+                        pairs.append((name, extracted))
+    if not pairs:
+        return None
+    # WI-08 conservative templater: only substitute when the recorded
+    # value is the WHOLE final URL path segment. This rejects the
+    # substring-luck pattern (search query 'A-90' becoming part of
+    # '/asset/A-9001' as '/asset/{q}01'). True provenance-based
+    # templating (route param + selected row key + request body) ships
+    # in WI-11; until then we'd rather leave the URL literal than
+    # produce a wrong template.
+    try:
+        # Extract final path segment, stripping query/hash.
+        path = nav_url.split("?", 1)[0].split("#", 1)[0]
+        last_seg = path.rstrip("/").rsplit("/", 1)[-1]
+    except Exception:
+        return None
+    if not last_seg or len(last_seg) < 3:
+        return None
+    # Find a recorded value that EXACTLY equals the last segment.
+    for name, value in pairs:
+        if value == last_seg:
+            return nav_url.replace(last_seg, "{" + name + "}", 1)
+    return None
+
+
+def _upgrade_legacy_click_nav_pairs(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse adjacent click + navigate pairs into click + navigation
+    effect. Operates on raw step dicts (pre-model_validate) so it can
+    run during Skill validation without recursive model construction.
+    """
+    if not steps or len(steps) < 2:
+        return steps
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < len(steps):
+        s = steps[i]
+        next_s = steps[i + 1] if i + 1 < len(steps) else None
+        if (
+            isinstance(s, dict)
+            and isinstance(next_s, dict)
+            and s.get("action") == "click"
+            and next_s.get("action") == "navigate"
+            and not (s.get("effects") or {}).get("navigation")
+            and next_s.get("url")
+        ):
+            nav_url = str(next_s.get("url") or "")
+            # WI-08: try to template the URL by walking prior steps for
+            # bound param values that appear as substrings.
+            url_template = _derive_legacy_url_template(nav_url, out + [s])
+            # Build the navigation effect inline. ``reload_allowed`` is
+            # False so the runner doesn't fall back to page.goto -- the
+            # whole point of WI-08 is to remove the second goto.
+            click_with_eff = dict(s)
+            effects = dict(s.get("effects") or {})
+            effects["navigation"] = {
+                "kind": "spa_route",
+                "url": nav_url,
+                "url_template": url_template,
+                "source": "legacy_upgrade",
+                "reload_allowed": False,
+                "assert_url": url_template or nav_url,
+            }
+            click_with_eff["effects"] = effects
+            # Carry both raw event ids forward in provenance.
+            prov = dict(click_with_eff.get("provenance") or {})
+            raw_ids = list(prov.get("raw_event_ids") or [])
+            next_prov = next_s.get("provenance") or {}
+            for nid in next_prov.get("raw_event_ids") or []:
+                if nid not in raw_ids:
+                    raw_ids.append(nid)
+            if raw_ids:
+                prov["raw_event_ids"] = raw_ids
+                prov["cluster_kind"] = "click_with_navigation"
+                prov["detection_method"] = "migration"
+                click_with_eff["provenance"] = prov
+            out.append(click_with_eff)
+            # Skip the standalone navigate step entirely.
+            i += 2
+            continue
+        out.append(s)
+        i += 1
+    return out
+
+
 class Skill(BaseModel):
     """A learned, parameterized, replayable skill."""
 
@@ -873,6 +1035,44 @@ class Skill(BaseModel):
 
     # Provenance
     source_session_id: Optional[str] = None
+
+    # WI-08: track whether the loaded skill was upgraded from a legacy
+    # click+navigate pair so the audit log + tests can verify the
+    # migration fired. Not persisted -- ``model_validator(mode='before')``
+    # mutates the input dict in place, the audit reads this attribute
+    # off the constructed Skill.
+    legacy_nav_upgrade_count: int = 0
+    """WI-08 migration counter. Non-zero means the loaded JSON had
+    consecutive click + standalone navigate steps that were collapsed
+    into click + effects.navigation at validate time. The runner /
+    audit log can surface this to the operator."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wi08_upgrade(cls, data: Any) -> Any:
+        """WI-08: silently upgrade legacy click + navigate pairs at
+        load time. Operates on the raw input dict so the produced
+        Skill carries the new shape uniformly.
+
+        Idempotent: a skill that already has effects.navigation on its
+        clicks passes through unchanged."""
+        if not isinstance(data, dict):
+            return data
+        raw_steps = data.get("steps")
+        if not isinstance(raw_steps, list):
+            return data
+        before = len(raw_steps)
+        upgraded = _upgrade_legacy_click_nav_pairs(raw_steps)
+        if len(upgraded) != before:
+            # Re-index the surviving steps so SkillStep.index stays
+            # sequential 0..N-1. Removing the standalone navigate
+            # leaves a hole otherwise.
+            for new_idx, s in enumerate(upgraded):
+                if isinstance(s, dict):
+                    s["index"] = new_idx
+            data["steps"] = upgraded
+            data["legacy_nav_upgrade_count"] = before - len(upgraded)
+        return data
 
     def to_puppeteer_replay(self) -> dict[str, Any]:
         """Down-convert to vanilla Puppeteer Replay JSON format."""

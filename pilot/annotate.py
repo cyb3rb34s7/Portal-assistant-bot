@@ -26,10 +26,12 @@ from rich.table import Table
 from .param_codecs import infer_param_type_and_codec
 from .skill_models import (
     ActionType,
+    NavigationEffect,
     ParamBinding,
     Skill,
     SkillParam,
     SkillStep,
+    StepEffect,
     StepProvenance,
     TraceEvent,
 )
@@ -273,6 +275,85 @@ def infer_gate(label: str, ev: TraceEvent) -> bool:
     return False
 
 
+# ---- WI-08: click + caused navigate collapsing -----------------------------
+
+
+_SPA_NAV_SOURCES: tuple[str, ...] = (
+    "history.pushState",
+    "history.replaceState",
+    "popstate",
+    "hashchange",
+)
+
+
+def _nav_kind_from_source(source: Optional[str]) -> str:
+    """Map the grabber's navigate raw_event_kind / source to the
+    NavigationEffect.kind Literal. Defaults to ``spa_route`` when the
+    source is one of the History API entries; ``full_document`` for
+    initial_load + anything we don't recognize."""
+    s = (source or "").lower()
+    if "pushstate" in s or "popstate" in s:
+        return "spa_route"
+    if "replacestate" in s:
+        return "history_replace"
+    if "hashchange" in s:
+        return "hash"
+    if s == "manual":
+        return "manual"
+    return "full_document"
+
+
+def _index_caused_navigates(
+    events: list[TraceEvent],
+    causality: dict,
+) -> dict[str, TraceEvent]:
+    """Return a mapping from a user-action event_id to the latest
+    navigate event causally attributed to it.
+
+    The grabber attaches ``caused_by`` to each navigate event when the
+    History API call fired inside a user handler. Multiple navigates
+    can chain off one click (router redirect chain), in which case we
+    pick the LAST one (the URL the user ended up on)."""
+    out: dict[str, TraceEvent] = {}
+    for ev in events:
+        if ev.kind != "navigate":
+            continue
+        if not ev.caused_by:
+            continue
+        out[ev.caused_by] = ev  # last write wins (router chain)
+    return out
+
+
+def _derive_url_template(
+    nav_url: Optional[str],
+    params_seen: list[tuple[str, str]],
+) -> Optional[str]:
+    """Derive a ``url_template`` for a click's navigation effect.
+
+    Conservative rule: only template when a recorded param value is
+    the WHOLE final URL path segment. This rejects the substring-luck
+    pattern that the audit flagged (search query 'A-90' becoming part
+    of '/asset/A-9001' as '/asset/{q}01'). True provenance-based
+    templating ships in WI-11; until then a literal URL is safer than
+    a wrong template.
+
+    Returns the templated string, or None if no substitution applied
+    (we keep the literal URL in that case)."""
+    if not nav_url:
+        return None
+    try:
+        path = nav_url.split("?", 1)[0].split("#", 1)[0]
+        last_seg = path.rstrip("/").rsplit("/", 1)[-1]
+    except Exception:
+        return None
+    if not last_seg or len(last_seg) < 3:
+        return None
+    for name, value in params_seen:
+        if value == last_seg:
+            return nav_url.replace(last_seg, "{" + name + "}", 1)
+    return None
+
+
 # ---- Build Skill ----------------------------------------------------------
 
 
@@ -294,17 +375,42 @@ def build_skill(
     events = _assign_synthetic_ids(list(events))
     # Causality graph is computed here so future WIs (WI-08 click+nav
     # collapsing, WI-12 semantic clustering) can read it without
-    # re-walking the event list. Stored on the function locals for
-    # now -- a future refactor will pass it through to per-step
-    # provenance population.
-    _causality = build_causality_graph(events)
-    _ = _causality  # reserved -- consumed by WI-08+
+    # re-walking the event list.
+    causality = build_causality_graph(events)
+
+    # WI-08: index navigate events by the user action that caused them.
+    # A click whose event_id matches a caused-navigate's caused_by gets
+    # the navigate folded into its ``effects.navigation`` instead of
+    # producing a separate standalone navigate step. The standalone
+    # navigate step then disappears from the skill -- replay calls
+    # click() and asserts the URL matched, NEVER calls page.goto() to
+    # force the URL. That removes the BLOCKER-1 wrong-asset bug.
+    caused_navs = _index_caused_navigates(events, causality)
+    # IDs of navigate events that are caused by a user action and
+    # therefore should NOT produce their own standalone step.
+    folded_nav_ids: set[str] = {
+        nav.event_id  # type: ignore[misc]
+        for nav in caused_navs.values()
+        if nav.event_id
+    }
 
     steps: list[SkillStep] = []
     declared_params: dict[str, SkillParam] = {}
     skipped = 0
+    # Track params-seen so navigation URL templates can substitute
+    # values that appear in the URL (WI-08 + foundation for WI-11).
+    params_seen: list[tuple[str, str]] = []
 
     for idx, ev in enumerate(events):
+        # WI-08: skip caused-navigate events. They get folded into
+        # their causing click below.
+        if (
+            ev.kind == "navigate"
+            and ev.event_id
+            and ev.event_id in folded_nav_ids
+        ):
+            continue
+
         label = auto_label(ev)
         action = action_for_kind(ev.kind)
         binding = infer_param_binding(ev, label)
@@ -320,6 +426,28 @@ def build_skill(
             skipped += 1
             continue
 
+        # WI-08: when this is a click that CAUSED a navigation, fold
+        # the navigate event into the click step's effects.navigation.
+        effects: Optional[StepEffect] = None
+        folded_nav: Optional[TraceEvent] = None
+        if ev.kind == "click" and ev.event_id and ev.event_id in caused_navs:
+            folded_nav = caused_navs[ev.event_id]
+            nav_url = folded_nav.url
+            nav_kind = _nav_kind_from_source(folded_nav.source)
+            url_template = _derive_url_template(nav_url, params_seen)
+            # Derive a route-only assert from the URL template / url.
+            assert_url = url_template if url_template else None
+            effects = StepEffect(
+                navigation=NavigationEffect(
+                    kind=nav_kind,  # type: ignore[arg-type]
+                    url=nav_url,
+                    url_template=url_template,
+                    source=folded_nav.source or folded_nav.raw_event_kind,
+                    reload_allowed=False,
+                    assert_url=assert_url,
+                )
+            )
+
         step = SkillStep(
             index=len(steps),
             action=action,
@@ -332,17 +460,35 @@ def build_skill(
             requires_gate=gate,
             captured_at=ev.ts,
             screenshot_path=ev.screenshot_path,
-            # WI-02: link the step back to its source raw event. Once
-            # WI-08 (click+nav collapse) and WI-12 (semantic clusters)
-            # ship, multiple raw event ids will populate this list for
-            # the collapsed step.
+            effects=effects,
+            # WI-02 + WI-08: link the step back to its source raw event.
+            # When a navigate is folded, BOTH the click and the navigate
+            # event ids become raw_event_ids so the audit trail shows
+            # which raw events the semantic step came from.
             provenance=StepProvenance(
-                raw_event_ids=[ev.event_id] if ev.event_id else [],
-                cluster_kind="single_event",
+                raw_event_ids=(
+                    [ev.event_id, folded_nav.event_id]  # type: ignore[list-item]
+                    if ev.event_id and folded_nav and folded_nav.event_id
+                    else ([ev.event_id] if ev.event_id else [])
+                ),
+                cluster_kind=(
+                    "click_with_navigation"
+                    if folded_nav is not None
+                    else "single_event"
+                ),
                 detection_method="deterministic",
             ),
         )
         steps.append(step)
+
+        # WI-08: track every (param_name, recorded_value) pair so later
+        # click steps can template their navigation URL. First-seen
+        # wins to keep the template stable when the same param shows
+        # up in multiple steps' values.
+        if binding and (ev.value or ev.file_name):
+            v = str(ev.value or ev.file_name or "")
+            if v and not any(name == binding.name for name, _ in params_seen):
+                params_seen.append((binding.name, v))
 
         if binding and binding.name not in declared_params:
             example = ev.value or ev.file_name or ""

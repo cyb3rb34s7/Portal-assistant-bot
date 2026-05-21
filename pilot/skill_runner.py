@@ -481,17 +481,36 @@ class SkillRunner:
                 ),
                 0,
             )
-        # Navigate with networkidle: waits for both DOMContentLoaded
-        # and a 500ms quiet network window. SPAs that fetch data after
-        # initial load (most enterprise portals) need this signal —
-        # plain domcontentloaded fires before the data is rendered, so
-        # the next step's locator misses.
+        # WI-08: standalone navigate steps are reserved for explicit
+        # operator intent (manual address-bar nav + initial_load). For
+        # those: one navigation attempt. Don't fall back to a SECOND
+        # goto with domcontentloaded on timeout -- that was the audit's
+        # "page.goto(...networkidle...), then second goto" bug: the
+        # second goto reloaded the SPA and re-fired initial fetches,
+        # which could race with the previous step's mutation.
+        #
+        # The right behavior on timeout is to wait for the current load
+        # state (whatever's available) and continue, rather than
+        # repeating the navigation. networkidle's 500ms-quiet window is
+        # usually enough for SPAs, and a long-polling portal that never
+        # reaches networkidle still needs us NOT to bounce twice.
         try:
             self.session.page.goto(url, wait_until="networkidle", timeout=15000)
         except PWTimeoutError:
-            # Fall back to domcontentloaded if the page never reaches
-            # networkidle (some portals keep long-poll connections open).
-            self.session.page.goto(url, wait_until="domcontentloaded")
+            try:
+                self.session.page.wait_for_load_state(
+                    "domcontentloaded", timeout=5000
+                )
+            except Exception:
+                # Even DOM content load timed out -- surface but don't
+                # re-goto. The next step's locator wait will fail
+                # explicitly if the page truly isn't ready.
+                self._diagnostic(
+                    "runner.navigate_load_state_timeout",
+                    level="warn",
+                    recoverable=True,
+                    url=url,
+                )
         shot = self._screenshot(f"step_{step.index}_navigate")
         return (
             ToolResult(
@@ -510,18 +529,161 @@ class SkillRunner:
                 return self._build_ambiguous_result(step, ambig, "click")
             return self._fallback_human(step, "could not locate click target")
         page = self.session.page
+        # WI-08: capture URL before the click so we can verify the
+        # navigation effect (if declared) without relying on the page
+        # already being at the right place.
+        url_before = ""
+        try:
+            url_before = page.url or ""
+        except Exception:
+            pass
         verified = self._execute_with_heal_check(
             page, level, heal, lambda: locator.click(timeout=4000)
         )
+        # WI-08: when the recording captured a navigation effect for
+        # this click, wait for the URL to settle to the templated value
+        # and assert the route. NEVER call page.goto() -- the click is
+        # what produces the navigation, and forcing a goto would
+        # accidentally reload the SPA at the wrong asset (the audit's
+        # BLOCKER-1 wrong-asset bug).
+        nav_result_ok = True
+        nav_error: Optional[str] = None
+        if (
+            verified
+            and step.effects is not None
+            and step.effects.navigation is not None
+        ):
+            nav_result_ok, nav_error = self._assert_nav_effect(
+                page, step, url_before
+            )
+            if not nav_result_ok:
+                self._diagnostic(
+                    "runner.click_nav_effect_unmet",
+                    level="warn",
+                    recoverable=True,
+                    error=nav_error,
+                    url_before=url_before,
+                )
         shot = self._screenshot(f"step_{step.index}_click")
-        return self._build_action_result(
-            success=verified,
+        result, ret_level = self._build_action_result(
+            success=verified and nav_result_ok,
             level=level,
             heal=heal,
             action_taken=f"clicked {step.semantic_label} [{LEVEL_LABELS[level]}]",
             screenshot_path=shot,
             unverified_error="L3 heal: page state did not change after click",
         )
+        if verified and not nav_result_ok and result.success is False:
+            # Tag with a specific error_kind so the operator sees
+            # "navigation effect missed" instead of generic step
+            # failure.
+            result = ToolResult(
+                success=False,
+                action_taken=result.action_taken,
+                error=nav_error or "navigation effect not satisfied",
+                error_kind="navigation_effect_unmet",
+                error_details={"url_before": url_before},
+                screenshot_path=result.screenshot_path,
+                healed=result.healed,
+            )
+        return result, ret_level
+
+    def _assert_nav_effect(
+        self,
+        page: Page,
+        step: SkillStep,
+        url_before: str,
+    ) -> tuple[bool, Optional[str]]:
+        """WI-08: verify a click's declared navigation effect.
+
+        Sequence:
+          1. Wait briefly for the URL to differ from url_before (the
+             click produced a route change). 3s is enough for SPA
+             routers; the WaitPolicy will widen this in a follow-up WI.
+          2. If a url_template / assert_url is declared, render it
+             through self.params and assert a substring match (or
+             fall back to checking the literal url).
+          3. Honor effects.navigation.timeout_ms when present.
+
+        Returns (ok, error_message). ``error_message`` is None on
+        success and a structured short string on failure.
+        """
+        eff = step.effects.navigation  # type: ignore[union-attr]
+        assert eff is not None
+        timeout_ms = eff.timeout_ms or 5000
+
+        # 1) Wait for URL to change away from url_before. If the
+        # template / literal url already matched url_before (e.g. a
+        # popstate to a different URL that round-trips), we proceed.
+        # Prefer the template when available -- it survives different
+        # param values at replay. A literal URL (no template) is the
+        # legacy migration case: we treat it as a "URL changed" hint
+        # rather than a hard equality assert, because the literal
+        # recorded URL is by definition wrong at replay (the whole
+        # point of WI-08 is that the click produces the right URL,
+        # not the recorded one).
+        target_template = eff.assert_url or eff.url_template or ""
+        use_template_match = bool(eff.url_template) or (
+            target_template and "{" in target_template
+        )
+        # Render template with current params for the assertion. If
+        # rendering fails (missing param), fall back to the literal.
+        rendered_target = target_template
+        try:
+            if "{" in target_template and "}" in target_template:
+                rendered_target = target_template.format(**self.params)
+        except (KeyError, IndexError):
+            rendered_target = target_template
+        # If no template was usable, treat as URL-changed assertion
+        # only (don't try to match the literal URL).
+        if not use_template_match:
+            rendered_target = ""
+
+        def _url_satisfies(url: str) -> bool:
+            if not url:
+                return False
+            if rendered_target:
+                # Strip protocol+host so comparisons are route-only:
+                # the recording's url is typically http://localhost:port/
+                # while replay may be on a different host.
+                def _route(u: str) -> str:
+                    if "://" in u:
+                        u = u.split("://", 1)[1]
+                    if "/" in u:
+                        u = u[u.find("/"):]
+                    return u
+                if _route(rendered_target) in _route(url):
+                    return True
+                return False
+            # No template -- just require the URL changed.
+            return url != url_before
+
+        try:
+            page.wait_for_function(
+                "([before, target]) => {"
+                " const u = location.href;"
+                " if (!u) return false;"
+                " function route(s) {"
+                "  if (s.indexOf('://') >= 0) s = s.split('://')[1];"
+                "  const slash = s.indexOf('/');"
+                "  return slash >= 0 ? s.slice(slash) : s;"
+                " }"
+                " if (target) return route(u).includes(route(target));"
+                " return u !== before; }",
+                arg=[url_before, rendered_target],
+                timeout=timeout_ms,
+            )
+        except Exception:
+            current = ""
+            try:
+                current = page.url or ""
+            except Exception:
+                pass
+            return False, (
+                f"URL did not match expected route {rendered_target!r} "
+                f"within {timeout_ms}ms (current={current!r})"
+            )
+        return True, None
 
     def _do_change(
         self, step: SkillStep, value: Optional[str]
