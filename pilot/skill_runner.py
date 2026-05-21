@@ -1513,16 +1513,187 @@ class SkillRunner:
     def _do_select_option(
         self, step: SkillStep, value: Optional[str]
     ) -> tuple[ToolResult, int]:
-        """WI-17: native single-select with declared aliases. NO fuzzy
-        fallback. Implementation in WI-17."""
-        return (
-            ToolResult(
-                success=False,
-                action_taken="select_option",
-                error="WI-17 not yet implemented",
-                error_kind="action_not_implemented",
+        """WI-17: native single-select with declared-or-fail semantics.
+
+        Match priority:
+          1. exact ``value`` match against rendered option.value,
+          2. exact ``label`` match against rendered option.text,
+          3. declared aliases (operator-set) -- look up the resolved
+             value as a key in spec.aliases and try each alternative
+             label/value,
+          4. current_options mode: pick by recorded_index from the
+             currently-rendered options,
+          5. fail with error_kind=option_not_available listing what
+             IS available.
+
+        Replaces the legacy ``_select_option_with_fuzzy_fallback`` for
+        select_option-clustered steps. The legacy code path is kept
+        intact for back-compat with non-clustered ``change`` events on
+        <select> elements (legacy skills).
+        """
+        spec = step.select_option
+        if spec is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option",
+                    error="select_option step has no spec",
+                    error_kind="bad_step",
+                ),
+                0,
+            )
+
+        locator, level, heal = self._resolve_locator(step)
+        if locator is None:
+            ambig = self._consume_ambiguity()
+            if ambig is not None:
+                return self._build_ambiguous_result(step, ambig, "select_option")
+            return self._fallback_human(step, "could not locate select target")
+
+        # Operator-resolved value via the param binding (or step.value).
+        resolved = value if value is not None else (spec.recorded_value or "")
+
+        # Read the current options to validate against. The recording's
+        # options_snapshot is the at-record-time view; at replay the
+        # rendered set may differ for state-dependent dropdowns. We
+        # ALWAYS read current options so failure messages list what's
+        # actually available now.
+        try:
+            current_options = locator.evaluate(
+                "el => Array.from(el.options).map(o => "
+                "({ value: o.value, text: (o.textContent || '').trim() }))"
+            )
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option",
+                    error=(
+                        f"could not read current options: "
+                        f"{type(e).__name__}: {e}"
+                    ),
+                    error_kind="select_option_read_failed",
+                ),
+                0,
+            )
+        if not current_options:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option",
+                    error="select has no options at replay",
+                    error_kind="option_not_available",
+                    error_details={"available": []},
+                ),
+                0,
+            )
+
+        current_values = {o.get("value", "") for o in current_options}
+        current_labels = {
+            (o.get("text") or "").strip() for o in current_options
+        }
+        target_value: Optional[str] = None
+
+        # current_options mode: pick by index.
+        if spec.match_mode == "current_options":
+            idx = spec.recorded_index
+            if idx is None or idx < 0 or idx >= len(current_options):
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option",
+                        error=(
+                            f"current_options mode requires recorded_index "
+                            f"in range; got {idx}, options={len(current_options)}"
+                        ),
+                        error_kind="option_not_available",
+                        error_details={
+                            "available": [o.get("value") for o in current_options],
+                        },
+                    ),
+                    0,
+                )
+            target_value = current_options[idx].get("value")
+        else:
+            # 1. exact value
+            if resolved in current_values:
+                target_value = resolved
+            # 2. exact label
+            elif spec.match_mode in ("label", "alias") or resolved in current_labels:
+                for o in current_options:
+                    if (o.get("text") or "").strip() == resolved:
+                        target_value = o.get("value")
+                        break
+            # 3. declared aliases
+            if (
+                target_value is None
+                and spec.match_mode == "alias"
+                and spec.aliases
+            ):
+                alts = spec.aliases.get(resolved, [])
+                for alt in alts:
+                    if alt in current_values:
+                        target_value = alt
+                        break
+                    for o in current_options:
+                        if (o.get("text") or "").strip() == alt:
+                            target_value = o.get("value")
+                            break
+                    if target_value is not None:
+                        break
+
+        if target_value is None:
+            available_labels = ", ".join(
+                f"{o.get('value')!r}({(o.get('text') or '').strip()!r})"
+                for o in current_options[:12]
+            )
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option",
+                    error=(
+                        f"option_not_available: requested {resolved!r} not in "
+                        f"current options. Available: [{available_labels}]"
+                    ),
+                    error_kind="option_not_available",
+                    error_details={
+                        "requested": resolved,
+                        "match_mode": spec.match_mode,
+                        "available": [
+                            {"value": o.get("value"), "text": o.get("text")}
+                            for o in current_options
+                        ],
+                    },
+                ),
+                0,
+            )
+
+        # Apply the selection.
+        try:
+            locator.select_option(value=target_value, timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken=f"select_option apply failed: {e}",
+                    error=str(e),
+                    error_kind="select_option_apply_failed",
+                    healed=heal,
+                ),
+                level,
+            )
+
+        shot = self._screenshot(f"step_{step.index}_select_option")
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=(
+                f"select_option({step.semantic_label}={target_value!r}) "
+                f"[{LEVEL_LABELS[level]}]"
             ),
-            0,
+            screenshot_path=shot,
+            unverified_error="select_option: post-action verify failed",
         )
 
     def _do_date_select(self, step: SkillStep) -> tuple[ToolResult, int]:

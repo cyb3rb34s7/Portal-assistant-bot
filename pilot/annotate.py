@@ -1229,8 +1229,88 @@ def _detect_select_option_clusters(
     causality: dict[str, Any],
     consumed: set[str],
 ) -> list[SemanticCluster]:
-    """WI-17 detector stub. Implementation in the WI-17 commit."""
-    return []
+    """WI-17: detect a native <select> change with options_snapshot
+    captured at record time -> ONE select_option cluster.
+
+    The grabber's WI-03 control_kind ``select_single`` + the
+    options_snapshot on the fingerprint give us everything we need.
+    The detector matches input_change events whose fingerprint declares
+    ``select_single`` (a single-select native control) AND carries a
+    non-empty options_snapshot.
+
+    Cascading parent select (WI-18) is detected separately because it
+    needs the child-options-refresh-after-request causal pattern.
+    Plain native selects with no causal-network signal land here.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    for ev in events:
+        if ev.event_id is None or ev.event_id in consumed:
+            continue
+        if ev.kind != "input_change" or ev.event_id not in user_actions:
+            continue
+        fp = ev.fingerprint
+        if fp is None:
+            continue
+        # Only fold when the recording marked it a native single-select
+        # AND captured an option snapshot. select_multiple goes through
+        # the set_selection detector (WI-19).
+        if fp.control_kind != "select_single":
+            continue
+        if not fp.options_snapshot:
+            continue
+        # Consume the single event into the cluster.
+        consumed.add(ev.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=[ev.event_id],
+                cluster_kind="select_option",
+                primary_target_event_id=ev.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+    return clusters
+
+
+def _build_select_option_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    ev: TraceEvent,
+) -> SelectOptionSpec:
+    """WI-17: derive a SelectOptionSpec from the captured event.
+
+    Picks the matched option from the recording's options_snapshot:
+      - recorded_value: the option whose value == ev.value
+      - recorded_label: the matching option's label
+
+    match_mode defaults to ``value`` (the safe default -- no fuzzy
+    fallback). The annotator does NOT auto-populate aliases; aliases
+    are operator-declared.
+    """
+    _ = cluster
+    _ = events
+    _ = causality
+    fp = ev.fingerprint
+    recorded_value = ev.value or ""
+    recorded_label: Optional[str] = None
+    options_snapshot: Optional[list[OptionSnapshot]] = None
+    if fp and fp.options_snapshot:
+        options_snapshot = list(fp.options_snapshot)
+        for opt in options_snapshot:
+            if opt.value == recorded_value:
+                recorded_label = opt.label
+                break
+    return SelectOptionSpec(
+        recorded_value=recorded_value,
+        recorded_label=recorded_label,
+        options_snapshot=options_snapshot,
+        match_mode="value",
+        aliases={},
+    )
 
 
 def _detect_set_selection_clusters(
@@ -1641,6 +1721,20 @@ def build_skill(
                 cluster_here, events, causality, binding
             )
 
+        # WI-17: build the SelectOptionSpec for select_option cluster
+        # steps. The recording's options_snapshot is captured on the
+        # fingerprint; we lift it into the spec so the runner has
+        # access to the option set for fail-listing without re-reading
+        # the DOM. NO fuzzy fallback: match_mode defaults to "value".
+        select_option_spec: Optional[SelectOptionSpec] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "select_option"
+        ):
+            select_option_spec = _build_select_option_spec(
+                cluster_here, events, causality, ev
+            )
+
         # WI-16: build the AutocompleteSpec for select_autocomplete
         # cluster steps. The primary_target is the CLICK on the result;
         # the spec carries the separated query / selected_item params,
@@ -1682,6 +1776,7 @@ def build_skill(
             effect_signature=effect_signature,
             fill_submit=fill_submit_spec,
             select_autocomplete=select_autocomplete_spec,
+            select_option=select_option_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
             # the complete list including folded observed children;
