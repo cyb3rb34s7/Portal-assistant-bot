@@ -1386,13 +1386,260 @@ def _build_select_option_spec(
     )
 
 
+_MULTISELECT_TOGGLE_RE = re.compile(r"-toggle$")
+_MULTISELECT_SEARCH_RE = re.compile(r"-search$")
+_MULTISELECT_CHECKBOX_RE = re.compile(r"-checkbox-(.+)$")
+_MULTISELECT_ITEM_RE = re.compile(r"-item-(.+)$")
+_MULTISELECT_CHIP_RE = re.compile(r"-chip-(?!.*-remove$)(.+)$")
+
+
+def _multiselect_prefix(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Return the multiselect testId prefix from a fingerprint, or None.
+
+    Recognizes the MultiSelect.jsx test_id family:
+      {prefix}-toggle, -search, -checkbox-X, -item-X, -chip-X, -popover.
+    The prefix is the testid with the recognized suffix stripped.
+    """
+    if fp is None or not fp.test_id:
+        return None
+    tid = fp.test_id
+    for suffix_re in (
+        _MULTISELECT_TOGGLE_RE,
+        _MULTISELECT_SEARCH_RE,
+    ):
+        m = suffix_re.search(tid)
+        if m:
+            return tid[: m.start()]
+    # checkbox / item / chip / chip-remove all carry a -{id} segment.
+    for suffix_re in (
+        _MULTISELECT_CHECKBOX_RE,
+        _MULTISELECT_ITEM_RE,
+    ):
+        m = suffix_re.search(tid)
+        if m:
+            return tid[: m.start()]
+    # chip-X (but not chip-X-remove which is the remove sub-button)
+    m = re.search(r"-chip-([^-]+)$", tid)
+    if m:
+        return tid[: m.start()]
+    return None
+
+
+def _multiselect_role(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Classify which part of the multiselect a fingerprint is. Returns
+    'toggle' / 'search' / 'checkbox' / 'item' / 'chip' / None."""
+    if fp is None or not fp.test_id:
+        return None
+    tid = fp.test_id
+    if _MULTISELECT_TOGGLE_RE.search(tid):
+        return "toggle"
+    if _MULTISELECT_SEARCH_RE.search(tid):
+        return "search"
+    if _MULTISELECT_CHECKBOX_RE.search(tid):
+        return "checkbox"
+    if _MULTISELECT_ITEM_RE.search(tid):
+        return "item"
+    if re.search(r"-chip-[^-]+$", tid):
+        return "chip"
+    return None
+
+
+def _multiselect_item_id(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Extract the item id from a checkbox/item/chip testid."""
+    if fp is None or not fp.test_id:
+        return None
+    tid = fp.test_id
+    for rx in (
+        _MULTISELECT_CHECKBOX_RE,
+        _MULTISELECT_ITEM_RE,
+        re.compile(r"-chip-([^-]+)$"),
+    ):
+        m = rx.search(tid)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _detect_set_selection_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
     consumed: set[str],
 ) -> list[SemanticCluster]:
-    """WI-19 detector stub. Implementation in the WI-19 commit."""
-    return []
+    """WI-19: detect a custom multi-select widget interaction and
+    collapse all toggle/search/check/check/close events into ONE
+    ``set_selection`` cluster.
+
+    Pattern (anchored on the toggle-open click):
+      click on {prefix}-toggle (open the picker)
+      then any combination of:
+        - input_change on {prefix}-search,
+        - click on {prefix}-checkbox-X (check/uncheck items),
+        - click on {prefix}-item-X (alternative click target),
+      followed by a final click (commit) -- this can be the toggle
+      again (close), an outside click, or just end-of-recording.
+
+    Collapses to ONE cluster carrying ALL the toggle/search/checkbox
+    events. primary_target = the LAST checkbox click (the spec
+    consumer reads the final selected set from the recording's
+    state).
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    user_actions: set[str] = set(causality.get("user_actions") or [])
+    clusters: list[SemanticCluster] = []
+
+    i = 0
+    n = len(events)
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+        # Anchor on a toggle-open click.
+        if ev.kind != "click" or _multiselect_role(ev.fingerprint) != "toggle":
+            i += 1
+            continue
+        prefix = _multiselect_prefix(ev.fingerprint)
+        if prefix is None:
+            i += 1
+            continue
+
+        # Scan forward; consume events whose testid starts with the same
+        # prefix until we hit either:
+        #   - a toggle on the same prefix (close), OR
+        #   - an event NOT in the multiselect family on a DIFFERENT
+        #     prefix (commits elsewhere).
+        cluster_events: list[TraceEvent] = [ev]
+        last_checkbox_event_id: Optional[str] = ev.event_id
+        j = i + 1
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                cluster_events.append(ne)
+                j += 1
+                continue
+            ne_prefix = _multiselect_prefix(ne.fingerprint)
+            if ne_prefix == prefix:
+                cluster_events.append(ne)
+                role = _multiselect_role(ne.fingerprint)
+                if role in ("checkbox", "item"):
+                    last_checkbox_event_id = ne.event_id
+                if role == "toggle" and ne.kind == "click":
+                    # Close click -- include and stop.
+                    j += 1
+                    break
+                j += 1
+                continue
+            # Event NOT in the multiselect prefix. Stop.
+            break
+
+        # A cluster of just the toggle-open (no checks) is not a
+        # meaningful set_selection -- the operator may have just
+        # peeked. Skip.
+        if len(cluster_events) <= 1:
+            i += 1
+            continue
+
+        # Collect raw event ids in order.
+        raw_ids: list[str] = []
+        for e in cluster_events:
+            if e.event_id and e.event_id not in raw_ids:
+                raw_ids.append(e.event_id)
+                consumed.add(e.event_id)
+
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="set_selection",
+                primary_target_event_id=(
+                    last_checkbox_event_id or ev.event_id
+                ),
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+        i = j
+    return clusters
+
+
+def _build_set_selection_spec(
+    cluster: SemanticCluster,
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    ev: TraceEvent,
+) -> tuple[SetSelectionSpec, list[str], str]:
+    """WI-19: derive a SetSelectionSpec from a set_selection cluster.
+
+    Returns (spec, target_items, param_name).
+
+    The target_items list is the final-selected items the operator
+    checked (gleaned from the checkbox/item click events in the
+    cluster). param_name is the inferred name for the list param
+    (from the prefix's last segment: 'multiselect-categories' ->
+    'categories').
+    """
+    _ = events
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    prefix = _multiselect_prefix(ev.fingerprint)
+    # Compute the param name from the prefix: drop a 'multiselect-'
+    # head if present; replace '-' with '_'.
+    pname_base = prefix or "items"
+    pname_base = re.sub(r"^multiselect[-_]?", "", pname_base, flags=re.I)
+    pname = re.sub(r"[^a-zA-Z0-9_]+", "_", pname_base).strip("_").lower() or "items"
+
+    open_fp: Optional[ElementFingerprint] = None
+    search_fp: Optional[ElementFingerprint] = None
+    checkbox_template_fp: Optional[ElementFingerprint] = None
+    target_items: list[str] = []
+
+    for eid in cluster.raw_event_ids:
+        e = by_id.get(eid)
+        if e is None:
+            continue
+        role = _multiselect_role(e.fingerprint)
+        if role == "toggle" and e.kind == "click" and open_fp is None:
+            open_fp = e.fingerprint
+        elif role == "search" and search_fp is None:
+            search_fp = e.fingerprint
+        elif role in ("checkbox", "item") and e.kind == "click":
+            item_id = _multiselect_item_id(e.fingerprint)
+            if item_id is not None:
+                # Add OR toggle-remove. If the operator clicked twice
+                # the second click un-toggles; we model the FINAL state
+                # by tracking xor presence.
+                if item_id in target_items:
+                    target_items.remove(item_id)
+                else:
+                    target_items.append(item_id)
+                # Build a template fingerprint from this event (first
+                # one wins, the {item} placeholder is derived by WI-11
+                # template pass).
+                if checkbox_template_fp is None:
+                    checkbox_template_fp = e.fingerprint
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param=pname,
+        open_picker_fp=open_fp,
+        search_fp=search_fp,
+        checkbox_template_fp=checkbox_template_fp,
+        commit_fp=None,  # toggle close uses same open_fp
+        current_items_selector=(
+            f"[data-testid^='{prefix}-chip-']" if prefix else None
+        ),
+        current_items_id_attr="data-testid",
+        current_items_id_prefix=(
+            f"{prefix}-chip-" if prefix else None
+        ),
+        final_equality_assertion=True,  # WI-19 safe default
+    )
+    return spec, target_items, pname
 
 
 def _detect_date_select_clusters(
@@ -1818,6 +2065,26 @@ def build_skill(
                 cluster_here, events, causality, binding
             )
 
+        # WI-19: build the SetSelectionSpec for set_selection cluster
+        # steps. The cluster collapsed toggle/search/checkbox/close
+        # events; we lift the open/search/checkbox-template
+        # fingerprints into the spec and stamp the recording's target
+        # items list into self.params for the runner to consume.
+        set_selection_spec: Optional[SetSelectionSpec] = None
+        set_selection_target_items: list[str] = []
+        set_selection_param_name: Optional[str] = None
+        if (
+            cluster_here is not None
+            and cluster_here.cluster_kind == "set_selection"
+        ):
+            (
+                set_selection_spec,
+                set_selection_target_items,
+                set_selection_param_name,
+            ) = _build_set_selection_spec(
+                cluster_here, events, causality, ev
+            )
+
         # WI-17: build the SelectOptionSpec for select_option cluster
         # steps. The recording's options_snapshot is captured on the
         # fingerprint; we lift it into the spec so the runner has
@@ -1935,6 +2202,7 @@ def build_skill(
             fill_submit=fill_submit_spec,
             select_autocomplete=select_autocomplete_spec,
             select_option=select_option_spec,
+            set_selection=set_selection_spec,
             dependency_chain=dependency_chain_spec,
             # WI-02 + WI-08 + WI-12: link the step back to its source
             # raw events. The cluster pipeline (semantic mode) supplies
@@ -1947,6 +2215,26 @@ def build_skill(
             ),
         )
         steps.append(step)
+
+        # WI-19: declare a string_list param for set_selection steps.
+        # The cluster's target_items is the final selected set the
+        # operator built; we store it as the param's example so the
+        # runner / replay UI sees what was originally picked.
+        if (
+            set_selection_spec is not None
+            and set_selection_param_name
+            and set_selection_param_name not in declared_params
+        ):
+            declared_params[set_selection_param_name] = SkillParam(
+                name=set_selection_param_name,
+                type="string_list",
+                codec="raw",
+                description=(
+                    f"Multi-select items for step {step.index}: {label}"
+                ),
+                example=", ".join(set_selection_target_items) or None,
+                required=True,
+            )
 
         # WI-16: declare separate skill params for autocomplete steps.
         # The cluster's primary_target is the CLICK; ``binding`` here

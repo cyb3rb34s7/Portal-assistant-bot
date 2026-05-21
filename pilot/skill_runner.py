@@ -1193,6 +1193,74 @@ class SkillRunner:
                     exc_msg=str(e)[:200],
                 )
 
+        # WI-19: final equality assertion. After reconciliation, read
+        # the chip set again and verify it equals the target set
+        # EXACTLY. Catches the silent set_selection_remove_failed +
+        # set_selection_commit_failed bugs WI-06 surfaced as warnings
+        # but did NOT fail-stop on. Default True per WI-19; operator
+        # can opt out by declaring final_equality_assertion=False.
+        if spec.final_equality_assertion and spec.current_items_selector:
+            try:
+                attr = spec.current_items_id_attr or "data-testid"
+                prefix = spec.current_items_id_prefix or ""
+                final_ids = page.evaluate(
+                    "([sel, attr, prefix]) => {"
+                    " const out = [];"
+                    " document.querySelectorAll(sel).forEach(el => {"
+                    "  const v = el.getAttribute(attr) || '';"
+                    "  out.push(prefix ? v.replace(prefix, '') : v);"
+                    " });"
+                    " return out; }",
+                    [spec.current_items_selector, attr, prefix],
+                )
+                final_set = set(final_ids or [])
+                # mode-specific expected final state:
+                if spec.mode == "replace":
+                    expected = target_set
+                elif spec.mode == "add":
+                    expected = current_set | target_set
+                elif spec.mode == "remove":
+                    expected = current_set - target_set
+                elif spec.mode == "preserve":
+                    expected = (
+                        current_set
+                        if (current_set & target_set)
+                        else (current_set | target_set)
+                    )
+                else:
+                    expected = target_set
+                if final_set != expected:
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=(
+                                f"set_selection({spec.mode}, {spec.param}) "
+                                f"final equality assertion failed"
+                            ),
+                            error=(
+                                f"set_selection_equality_failed: expected "
+                                f"{sorted(expected)!r}, got "
+                                f"{sorted(final_set)!r}"
+                            ),
+                            error_kind="set_selection_equality_failed",
+                            error_details={
+                                "expected": sorted(expected),
+                                "actual": sorted(final_set),
+                                "to_add": sorted(to_add),
+                                "to_remove": sorted(to_remove),
+                            },
+                        ),
+                        0,
+                    )
+            except Exception as e:
+                self._diagnostic(
+                    "runner.set_selection_equality_read_failed",
+                    level="warn",
+                    recoverable=True,
+                    exc_type=type(e).__name__,
+                    exc_msg=str(e)[:200],
+                )
+
         return (
             ToolResult(
                 success=True,
