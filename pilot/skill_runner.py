@@ -5100,8 +5100,15 @@ class SkillRunner:
             to (None, 4, None) so the runner escalates to operator
             takeover rather than executing a probably-wrong click.
 
-        Score bands stay as a tiebreaker for the AUDIT log but are no
-        longer the gate -- the structural policy is.
+        Followup #4: the L3 score bands at locator_repair.py:189-191
+        are NOT redundant with RepairPolicy. They layer underneath it:
+          - Below _DET_REFUSE_BELOW (0.55): refused here (line below)
+            before the structural gate even runs. This IS a safety
+            floor.
+          - Above _DET_REFUSE_BELOW: the structural policy decides,
+            with the band (high/medium) feeding into medium_confidence_
+            pauses behavior.
+        See locator_repair.py module docstring for the full status.
         """
         repair = self._get_repair()
         result = repair.heal(page, fp, semantic_label)

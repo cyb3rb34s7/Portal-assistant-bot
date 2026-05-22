@@ -110,13 +110,19 @@ Source: heuristic table in
 | Generic settle numbers (250ms / 2s / 4s / 1.5s) | Slow enterprise APIs race | WI-09 action-scoped baselines + WI-10 readiness signals; defaults remain as documented fallbacks in `PortalContext.wait_policy` per F-08c | CLOSED |
 | Spinner selector list is convention-based | Portals use arbitrary loading markup | WI-10 observed-readiness signals; spinner selector remains legacy fallback only | CLOSED |
 | Request log cap `50` | Dashboards >50 calls evict target | WI-09 action-scoped request registry + configurable cap; default surfaced in `PortalContext.wait_policy` | CLOSED |
-| L3 repair thresholds `0.85/0.65/0.55` | Repeated similar buttons drift | WI-26 `RepairPolicy` (uniqueness scope + required postcondition + required features) | CLOSED |
+| L3 repair thresholds `0.85/0.65/0.55` | Repeated similar buttons drift | WI-26 `RepairPolicy` (uniqueness scope + required postcondition + required features) layered on top of the bands; the 0.55 floor remains as a safety threshold that refuses below-floor candidates before the structural gate runs. The 0.85/0.65 high/medium split feeds into `medium_confidence_pauses` behavior. See `pilot/agent/locator_repair.py` module docstring (followup #4) for the documented status. | PARTIALLY CLOSED -- structural gate added by WI-26 is the deciding factor; the bands remain as a safety floor + ranking metadata, documented in code. |
 | L3 verification uses URL/text length/interactable count | Spinner change passes wrong click | WI-27 `StepAssertion` action-specific kinds (`url_matches_template`, `field_value_equals`, `selection_equals`, `toast_visible`, `request_completed`, `download_started`, `validation_field`) | CLOSED |
 | `page.goto(...networkidle...)`, second `goto` on timeout | Long-polling portal reloads twice | WI-08: caused navigation never calls `page.goto`; standalone nav uses one attempt | CLOSED |
 | Idempotency key strips query/hash only | Same endpoint + different body dedupes | WI-04 + F-02 + F-03 + F-04: capability data, configurable header, body hash fields, fetch+XHR seeded correctly | CLOSED |
 
-All seventeen hardcoded-heuristic rows are CLOSED. Each replacement
-is cited above with the WI commit + test file.
+Sixteen of seventeen hardcoded-heuristic rows are CLOSED outright.
+The seventeenth (L3 repair thresholds) is PARTIALLY CLOSED: the
+structural gate (WI-26) is the deciding factor for in-range
+candidates, but the 0.55 score floor remains as a hard refuse
+threshold underneath. Followup #4 documents this honestly in code
+(`pilot/agent/locator_repair.py` module docstring) rather than
+claiming the bands are gone. Each replacement is cited above with
+the WI commit + test file.
 
 ## 17-interaction matrix coverage
 
