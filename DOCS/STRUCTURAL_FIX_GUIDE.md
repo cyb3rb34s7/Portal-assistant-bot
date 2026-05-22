@@ -163,9 +163,15 @@ re-executing a separate "open dialog" step.
 WI-11 replaced "substring template luck" with declared sources.
 
 - `ParamProvenance` at `pilot/skill_models.py:1007`. `source` Literal
-  is `operator_input | row_key | route_param | request_query |
-  request_body | selected_option | file_metadata`. Carries
-  `source_step_index`, `source_attribute`, `confidence`.
+  is `operator_input | csv_row | csv_column | trace_recorded |
+  route_param | request_param | selected_option | file_metadata |
+  row_key | ancestor_attribute`. Carries `source_step`,
+  `source_attribute`, `confidence`. `request_param` covers both
+  query-string and body-derived templates; the producer
+  (`_derive_provenance_templates`) does not currently distinguish
+  the two sub-sources, so they share one Literal value. If a future
+  WI needs to differentiate query vs body for replay reasoning,
+  split the Literal and update the producer + tests in lockstep.
 - `TemplatePart` at `pilot/skill_models.py:310`. A list of these
   composes a parameterized string (selector / URL). Replaces the
   raw-string substring-replace pass.
@@ -284,7 +290,7 @@ load-bearing:
      download_click, popup_open, scroll_until).
    - **Bind params + provenance** -- map operator-typed values onto
      `SkillParam` declarations; mark each binding's source
-     (`row_key` / `route_param` / `request_body` / `selected_option`
+     (`row_key` / `route_param` / `request_param` / `selected_option`
      / `operator_input`).
    - **Materialize each cluster as a SkillStep** with provenance,
      effects (folded consequences), and expected_signals.
