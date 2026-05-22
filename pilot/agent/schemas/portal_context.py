@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 PORTAL_CONTEXT_SCHEMA_VERSION = 1
@@ -104,6 +104,12 @@ class IdempotencyCapability(BaseModel):
     False (the default) and the runner won't inject the header.
     The runner still tracks per-step idempotency-context internally
     for retry safety -- it just doesn't send it on the wire."""
+
+    # Followup #1: audit-critical schema -- idempotency drives
+    # destructive request dedupe; a typo'd YAML key silently dropped
+    # could land the runner in fail-open mode. extra="forbid" makes
+    # YAML drift fail at portal-context load.
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     """Master switch. False -> runner does not inject the header. The

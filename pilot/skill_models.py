@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ActionType = Literal[
@@ -57,6 +57,13 @@ ActionType = Literal[
 
 class OptionSnapshot(BaseModel):
     """One option captured from a select/listbox at record time."""
+
+    # Followup #1: audit-critical schema -- producer (grabber) and consumer
+    # (runner/annotator) must agree on the exact shape. extra="forbid" so
+    # any silent kwarg drift (e.g. an old key the JS still writes) fails
+    # at construction instead of being silently dropped, which is exactly
+    # how F-01 went undetected for so long.
+    model_config = ConfigDict(extra="forbid")
 
     value: str
     label: str
@@ -324,6 +331,12 @@ class TemplatePart(BaseModel):
     are written together so old consumers keep working unchanged.
     """
 
+    # Followup #1: audit-critical schema. The matrix test silently passed
+    # for weeks with ``TemplatePart(kind="literal", value="btn-open-")``
+    # because Pydantic dropped ``value`` and ``text`` stayed None. With
+    # extra="forbid", the same drift fails loud at construction.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["literal", "placeholder"]
     text: Optional[str] = None
     """For kind=literal: the verbatim text segment. None for placeholders."""
@@ -449,6 +462,12 @@ class NetworkExpectation(BaseModel):
     "wait if it appears within max_ms, but don't fail if it doesn't" --
     used for stale GET requests that may be cached at replay.
     """
+
+    # Followup #1: audit-critical schema -- the matrix test passed for
+    # weeks with ``NetworkExpectation(match_mode="started_after", ...)``
+    # because Pydantic dropped ``match_mode`` silently. extra="forbid"
+    # blocks the next silent drift at construction.
+    model_config = ConfigDict(extra="forbid")
 
     url_pattern: str
     method: Literal["GET", "POST", "PATCH", "PUT", "DELETE"] = "GET"
@@ -908,6 +927,12 @@ class StepEffect(BaseModel):
 
 
 class ReplayPolicy(BaseModel):
+    # Followup #1: audit-critical schema -- ReplayPolicy decides whether
+    # the runner aborts or continues; an unknown kwarg silently dropped
+    # could produce the opposite of the operator's intent. extra="forbid"
+    # makes that drift class impossible.
+    model_config = ConfigDict(extra="forbid")
+
     on_failure: Literal["abort", "continue", "optional", "recover"] = "abort"
     """``abort`` (default): runner stops the skill on this step's
     failure; orchestrator pause flow takes over. ``continue``:
@@ -1005,6 +1030,13 @@ class AuthPrecondition(BaseModel):
 
 
 class ParamProvenance(BaseModel):
+    # Followup #1: audit-critical schema -- the matrix test passed for
+    # weeks with ``ParamProvenance(source_step_index=2, ...)`` because
+    # Pydantic dropped ``source_step_index`` silently while the real
+    # field is ``source_step``. extra="forbid" surfaces the drift at
+    # construction.
+    model_config = ConfigDict(extra="forbid")
+
     source: Literal[
         "operator_input",      # provided directly by the operator at replay
         "csv_row",             # parsed from a CSV row at intake

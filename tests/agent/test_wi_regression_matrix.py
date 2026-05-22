@@ -399,7 +399,6 @@ def test_wi_09_action_scoped_baselines() -> None:
     ne = NetworkExpectation(
         url_pattern="/api/markets",
         started_after_event="evt-select-region",
-        match_mode="started_after",
     )
     assert ne.started_after_event == "evt-select-region"
 
@@ -423,13 +422,15 @@ def test_wi_11_provenance_based_templates() -> None:
     from selected row key."""
     pp = ParamProvenance(
         source="row_key",
-        source_step_index=2,
+        source_step=2,
         source_attribute="data-row-key",
         confidence=1.0,
     )
     assert pp.source == "row_key"
-    tp = TemplatePart(kind="literal", value="btn-open-")
+    assert pp.source_step == 2
+    tp = TemplatePart(kind="literal", text="btn-open-")
     assert tp.kind == "literal"
+    assert tp.text == "btn-open-"
 
 
 def test_wi_12_semantic_clustering_pipeline() -> None:
