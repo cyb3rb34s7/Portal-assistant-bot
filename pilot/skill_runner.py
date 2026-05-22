@@ -5499,17 +5499,70 @@ class SkillRunner:
         # 50) is sufficient for most enterprise dashboards; the
         # PortalContext.wait_policy.request_log_cap field lets the
         # operator tune it.
+        #
+        # Followup #3: push the four additional grabber heuristics
+        # surfaced through wait_policy (input_debounce_ms,
+        # dom_mutation_burst_ms, attribution_fallback_window_ms,
+        # hover_submenu_search_cap, page_snapshot_option_cap) plus
+        # options_snapshot_max which was already in wait_policy but
+        # never actually pushed. Grabber.js reads each global with its
+        # literal as last-resort fallback so legacy code paths still
+        # work when wait_policy is unset.
         cap = 200
+        opts_cap = 500
+        input_debounce_ms = 400
+        dom_mutation_burst_ms = 200
+        attribution_fallback_ms = 50
+        hover_submenu_cap = 200
+        page_snapshot_opt_cap = 40
         if self.wait_policy is not None:
             cap = int(getattr(self.wait_policy, "request_log_cap", 200) or 200)
+            opts_cap = int(
+                getattr(self.wait_policy, "options_snapshot_max", 500) or 500
+            )
+            input_debounce_ms = int(
+                getattr(self.wait_policy, "input_debounce_ms", 400) or 400
+            )
+            dom_mutation_burst_ms = int(
+                getattr(self.wait_policy, "dom_mutation_burst_ms", 200) or 200
+            )
+            # attribution_fallback may legitimately be 0 (means "no
+            # fallback at all, fail attribution rather than guess"), so
+            # accept >=0 here. The grabber's read also accepts >=0.
+            attribution_fallback_ms = int(
+                getattr(self.wait_policy, "attribution_fallback_window_ms", 50) or 0
+            )
+            hover_submenu_cap = int(
+                getattr(self.wait_policy, "hover_submenu_search_cap", 200) or 200
+            )
+            page_snapshot_opt_cap = int(
+                getattr(self.wait_policy, "page_snapshot_option_cap", 40) or 40
+            )
         try:
             page.evaluate(
-                "(c) => { window.__cp_request_log_cap = c; }", cap
+                """(p) => {
+                    window.__cp_request_log_cap = p.cap;
+                    window.__cp_opts_cap = p.opts_cap;
+                    window.__cp_input_debounce_ms = p.input_debounce_ms;
+                    window.__cp_dom_mutation_burst_ms = p.dom_mutation_burst_ms;
+                    window.__cp_attribution_fallback_ms = p.attribution_fallback_ms;
+                    window.__cp_hover_submenu_search_cap = p.hover_submenu_cap;
+                    window.__cp_page_snapshot_option_cap = p.page_snapshot_opt_cap;
+                }""",
+                {
+                    "cap": cap,
+                    "opts_cap": opts_cap,
+                    "input_debounce_ms": input_debounce_ms,
+                    "dom_mutation_burst_ms": dom_mutation_burst_ms,
+                    "attribution_fallback_ms": attribution_fallback_ms,
+                    "hover_submenu_cap": hover_submenu_cap,
+                    "page_snapshot_opt_cap": page_snapshot_opt_cap,
+                },
             )
         except Exception:
-            # The cap defaults to 200 inside the watcher if we couldn't
-            # push it, so this isn't fatal. Diagnostic surfaces if
-            # something deeper is wrong with the page.
+            # The grabber falls back to its literal defaults inside each
+            # read when we can't push, so this isn't fatal. Diagnostic
+            # surfaces if something deeper is wrong with the page.
             pass
         try:
             page.evaluate(self._WATCHER_INSTALL_JS)

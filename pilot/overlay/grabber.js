@@ -20,7 +20,14 @@
   window.__cp_grab_installed = true;
 
   var DEBUG = !!window.__cp_debug;
-  var INPUT_DEBOUNCE_MS = 400;
+  // Followup #3: text-input debounce surfaced through
+  // PortalContext.wait_policy.input_debounce_ms. Pushed by the runner
+  // (and optionally by teach) onto window.__cp_input_debounce_ms.
+  // Literal 400 remains as last-resort fallback so legacy code paths
+  // still work when the global isn't set.
+  var INPUT_DEBOUNCE_MS = (typeof window.__cp_input_debounce_ms === "number"
+    && window.__cp_input_debounce_ms > 0)
+    ? window.__cp_input_debounce_ms : 400;
 
   // ---- WI-02: causality + identity + ordering ---------------------------
   //
@@ -66,7 +73,14 @@
   // dropped purely because of our own wrapper's setTimeout(0); it is
   // not a 3-second guess. Remove once History wrappers post events
   // directly without setTimeout.
-  var FALLBACK_WINDOW_MS = 50;
+  // Followup #3: surface through PortalContext.wait_policy
+  // .attribution_fallback_window_ms. Pushed by the runner onto
+  // window.__cp_attribution_fallback_ms. Literal 50 remains as last-
+  // resort fallback (one event-loop tick budget); the docstring on
+  // wait_policy explains why this exists even after F-08a.
+  var FALLBACK_WINDOW_MS = (typeof window.__cp_attribution_fallback_ms === "number"
+    && window.__cp_attribution_fallback_ms >= 0)
+    ? window.__cp_attribution_fallback_ms : 50;
   var activeInteraction = null;
   var _seq = 0;
 
@@ -290,7 +304,13 @@
     // without scanning every individual MutationRecord.
     var _mutBurst = null;
     var _mutBurstTimer = null;
-    var DOM_MUTATION_BURST_MS = 200;
+    // Followup #3: surface through PortalContext.wait_policy
+    // .dom_mutation_burst_ms. Pushed by the runner onto
+    // window.__cp_dom_mutation_burst_ms. Literal 200 remains as last-
+    // resort fallback.
+    var DOM_MUTATION_BURST_MS = (typeof window.__cp_dom_mutation_burst_ms === "number"
+      && window.__cp_dom_mutation_burst_ms > 0)
+      ? window.__cp_dom_mutation_burst_ms : 200;
 
     function _flushMutationBurst() {
       if (!_mutBurst) return;
@@ -1257,10 +1277,18 @@
       // Walk up to find the menu's container (typically the trigger's
       // parent or grandparent), then find a child of the container
       // that's now visible but wasn't in the pre-hover snapshot.
+      //
+      // Followup #3: surface the loop cap through PortalContext.wait_policy
+      // .hover_submenu_search_cap. Pushed by the runner onto
+      // window.__cp_hover_submenu_search_cap. Literal 200 remains as
+      // last-resort fallback (covers typical mega-menu depths).
+      var SEARCH_CAP = (typeof window.__cp_hover_submenu_search_cap === "number"
+        && window.__cp_hover_submenu_search_cap > 0)
+        ? window.__cp_hover_submenu_search_cap : 200;
       try {
         var scope = trigger.parentElement || trigger;
         var nodes = scope.querySelectorAll("*");
-        for (var i = 0; i < nodes.length && i < 200; i++) {
+        for (var i = 0; i < nodes.length && i < SEARCH_CAP; i++) {
           var n = nodes[i];
           if (n.nodeType !== 1) continue;
           if (n === trigger) continue;
@@ -1275,7 +1303,7 @@
           }
         }
         // Fallback: first newly-visible element
-        for (var j = 0; j < nodes.length && j < 200; j++) {
+        for (var j = 0; j < nodes.length && j < SEARCH_CAP; j++) {
           var m = nodes[j];
           if (m.nodeType !== 1 || m === trigger) continue;
           if (preVisibleSet.has(m)) continue;
@@ -2830,11 +2858,21 @@
       });
     }
 
+    // Followup #3: surface the per-<select> option cap through
+    // PortalContext.wait_policy.page_snapshot_option_cap. NOT the same
+    // as options_snapshot_max (which bounds the fingerprint snapshot for
+    // ONE interacted-with select); this bounds the catalog snapshot of
+    // every select on the page. Pushed by the runner onto
+    // window.__cp_page_snapshot_option_cap. Literal 40 remains as last-
+    // resort fallback (keeps catalog payloads small).
+    var SNAPSHOT_OPT_CAP = (typeof window.__cp_page_snapshot_option_cap === "number"
+      && window.__cp_page_snapshot_option_cap > 0)
+      ? window.__cp_page_snapshot_option_cap : 40;
     var sels = document.querySelectorAll("select");
     for (var k = 0; k < sels.length && selects.length < 40; k++) {
       var se = sels[k];
       var opts = [];
-      for (var m = 0; m < se.options.length && opts.length < 40; m++) {
+      for (var m = 0; m < se.options.length && opts.length < SNAPSHOT_OPT_CAP; m++) {
         var o = se.options[m];
         opts.push({ value: o.value, text: _trim(o.textContent, 80) });
       }

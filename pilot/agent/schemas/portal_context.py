@@ -92,6 +92,70 @@ class WaitPolicy(BaseModel):
     portals with heavy telemetry; downward for memory-constrained
     embedded browsers."""
 
+    # ------------------------------------------------------------------
+    # Followup #3: surface grabber.js hardcoded heuristics. Same pattern
+    # as request_log_cap and options_snapshot_max -- the value is pushed
+    # to a window.__cp_* global at watcher install; the grabber reads
+    # the global with the literal as last-resort fallback.
+    # ------------------------------------------------------------------
+
+    input_debounce_ms: int = 400
+    """Text-input debounce window inside the grabber. The grabber waits
+    this long after the last keystroke before emitting one synthesized
+    ``input_change`` event with the final value. Default 400 matches
+    typical portal autocomplete debounce. Tune downward (e.g. 200) on
+    snappy portals; upward (e.g. 700) on portals with heavy per-keystroke
+    re-render so the grabber doesn't emit mid-typing intermediate values.
+    Grabber reads via window.__cp_input_debounce_ms."""
+
+    dom_mutation_burst_ms: int = 200
+    """Debounce window for ``dom_mutation`` TraceEvent emission. The
+    grabber's MutationObserver batches DOM changes that arrive within
+    this window into one summary event so WI-09 / WI-10 can wait on
+    "this action caused real DOM activity" without scanning every
+    MutationRecord. Default 200. Increase on portals whose animations
+    run >200ms (the burst summary will then capture the full animation
+    rather than mid-animation noise). Grabber reads via
+    window.__cp_dom_mutation_burst_ms."""
+
+    attribution_fallback_window_ms: int = 50
+    """History API attribution fallback budget (F-08a context). The
+    synchronous attribution path uses an explicit ``activeInteraction``
+    token thread-local to the current handler -- not a time window --
+    so a pushState fired inside a click handler attributes correctly
+    without any timing.
+
+    This small window exists ONLY to cover the path where the History
+    API wrapper itself uses ``setTimeout(0)`` to post the event: in that
+    case the synchronous handler has already returned and the explicit
+    token has been cleared by the microtask. The fallback keeps
+    attribution alive for one event-loop tick so the wrapper's own
+    setTimeout(0) can still attribute. This is NOT a 3-second guess like
+    the original ATTRIBUTION_WINDOW_MS the audit flagged -- it's a
+    single-tick budget that exists because of our own wrapper's
+    setTimeout(0). Drop to 0 once History wrappers post directly.
+    Grabber reads via window.__cp_attribution_fallback_ms."""
+
+    hover_submenu_search_cap: int = 200
+    """WI-40 hover-reveal submenu search cap. When the grabber detects
+    a hover that revealed a submenu/mega-menu, it walks the trigger's
+    parent subtree looking for the newly-visible container. This caps
+    the number of nodes scanned so a deeply-nested portal layout
+    doesn't stall the grabber. Default 200 covers typical menu depths;
+    raise if a portal's mega-menu has a deep DOM subtree (>200 children
+    in the trigger's container). Grabber reads via
+    window.__cp_hover_submenu_search_cap."""
+
+    page_snapshot_option_cap: int = 40
+    """Per-``<select>`` option cap inside the page-catalog snapshot
+    (the passive ``page_snapshot`` event the grabber emits after each
+    navigation). NOT the same as ``options_snapshot_max`` -- this one
+    bounds the JSON size of the catalog of every select on the page,
+    whereas ``options_snapshot_max`` bounds the fingerprint snapshot
+    for ONE interacted-with select. Default 40 keeps catalog payloads
+    small. Raise if a portal's catalog needs richer per-select inventory
+    for the planner. Grabber reads via window.__cp_page_snapshot_option_cap."""
+
 
 class IdempotencyCapability(BaseModel):
     """How the portal's backend handles idempotency keys.
