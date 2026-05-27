@@ -2097,28 +2097,10 @@ class SkillRunner:
                     0,
                 )
 
-        # For each item to add: search (if search_fp recorded) then click checkbox.
+        # For each item to add: reach the checkbox (search-to-narrow OR
+        # scroll-into-view) then click it. Reaching is replay-time logic
+        # (real-portal cases A/B), not replayed keystrokes.
         for item in sorted(to_add):
-            if spec.search_fp:
-                try:
-                    search_loc = self._locate_via_template(spec.search_fp, {})
-                    if search_loc:
-                        search_loc.fill(item)
-                        # Wait for the filter to apply; the list re-renders.
-                        page.wait_for_timeout(150)
-                except Exception as e:
-                    # WI-06: search is a convenience; we still proceed
-                    # to the checkbox locator. But surface the failure
-                    # so the operator can see when the picker's search
-                    # field stopped matching.
-                    self._diagnostic(
-                        "runner.set_selection_search_failed",
-                        level="warn",
-                        recoverable=True,
-                        exc_type=type(e).__name__,
-                        exc_msg=str(e)[:200],
-                        item=item,
-                    )
             if spec.checkbox_template_fp is None:
                 return (
                     ToolResult(
@@ -2128,61 +2110,22 @@ class SkillRunner:
                     ),
                     0,
                 )
-            try:
-                loc = self._locate_via_template(
-                    spec.checkbox_template_fp, {"item": item}
-                )
-                if loc is None:
-                    return (
-                        ToolResult(
-                            success=False,
-                            action_taken=(
-                                f"set_selection: no checkbox match for "
-                                f"item={item!r}"
-                            ),
-                            error_kind="set_selection_item_not_found",
-                            error_details={"item": item},
-                        ),
-                        0,
-                    )
-                loc.click(timeout=3000)
-            except Exception as e:
-                return (
-                    ToolResult(
-                        success=False,
-                        action_taken=(
-                            f"set_selection: click failed for item={item!r}: {e}"
-                        ),
-                        error_kind="set_selection_click_failed",
-                        error_details={"item": item},
-                    ),
-                    0,
-                )
+            err = self._reach_and_click_option(spec, item)
+            if err is not None:
+                return (err, 0)
 
-        # For each item to remove: same checkbox click (toggle semantics).
+        # For each item to remove: surface the checkbox via the same
+        # reach logic (search to narrow / scroll into view) then click it
+        # to toggle off. Removal failures stay soft (a chip that's already
+        # gone is fine) but the reach is identical so an off-viewport
+        # chip-to-remove is still reachable.
         for item in sorted(to_remove):
             if spec.checkbox_template_fp is None:
                 break
-            try:
-                loc = self._locate_via_template(
-                    spec.checkbox_template_fp, {"item": item}
-                )
-                if loc is not None:
-                    loc.click(timeout=3000)
-            except Exception as e:
-                # WI-06: Removal failures are softer -- if we can't
-                # find a chip to remove it may already be gone. But
-                # surface the diagnostic so the operator notices when
-                # this is repeatedly failing instead of believing the
-                # set-selection succeeded.
-                self._diagnostic(
-                    "runner.set_selection_remove_failed",
-                    level="warn",
-                    recoverable=True,
-                    exc_type=type(e).__name__,
-                    exc_msg=str(e)[:200],
-                    item=item,
-                )
+            err = self._reach_and_click_option(spec, item, soft=True)
+            if err is not None:
+                # soft=True only ever returns a diagnostic-style marker;
+                # the helper already logged it. Continue to the next item.
                 continue
 
         # Commit (close picker) if recorded.
@@ -2282,6 +2225,201 @@ class SkillRunner:
             ),
             1,
         )
+
+    def _set_selection_dom_timeout_ms(self) -> int:
+        """Bound for waiting on a materialized checkbox to become
+        visible. Reads PortalContext.wait_policy.dom_timeout_ms when a
+        policy is wired in; falls back to the schema's 5000ms default.
+        Waiting on VISIBILITY (not a fixed sleep) naturally rides out a
+        server-side search spinner -- the checkbox doesn't materialize
+        until the filtered response renders."""
+        if self.wait_policy is not None:
+            return int(getattr(self.wait_policy, "dom_timeout_ms", 5000) or 5000)
+        return 5000
+
+    def _reach_and_click_option(
+        self,
+        spec: "SetSelectionSpec",
+        item: str,
+        *,
+        soft: bool = False,
+    ) -> Optional[ToolResult]:
+        """Reach a single option's checkbox and click it.
+
+        Reaching is replay-time logic chosen for robustness, independent
+        of how the operator originally reached the option:
+
+          - ``select_strategy='search'`` + ``search_fp``: fill the search
+            box with the item's LABEL (item_labels.get(item, item) -- the
+            id is the fallback), then WAIT for the materialized checkbox
+            to become visible (bounded, NOT a fixed sleep -- this rides
+            out a server-side spinner). Click it, then clear the search
+            for the next item.
+
+          - otherwise (``scroll``/``direct``, or no search_fp): resolve
+            the checkbox via the template, ``scroll_into_view_if_needed``,
+            click. If the checkbox can't be found AND ``search_fp``
+            exists, fall back to the search path (real-portal case A:
+            an off-viewport target with a search box still available).
+
+        Returns None on success. On hard failure returns a ToolResult
+        with a structured error_kind. When ``soft=True`` (removals), a
+        failure is logged as a diagnostic and a non-None sentinel
+        ToolResult is returned so the caller can `continue`; the caller
+        does not propagate it as a step failure.
+        """
+        page = self.session.page
+        label = spec.item_labels.get(item, item)
+        use_search = spec.select_strategy == "search" and spec.search_fp is not None
+
+        def _fail(error_kind: str, msg: str) -> Optional[ToolResult]:
+            if soft:
+                self._diagnostic(
+                    f"runner.{error_kind}",
+                    level="warn",
+                    recoverable=True,
+                    item=item,
+                    detail=msg[:200],
+                )
+                return ToolResult(success=False, action_taken=msg,
+                                  error_kind=error_kind)
+            return ToolResult(
+                success=False,
+                action_taken=msg,
+                error_kind=error_kind,
+                error_details={"item": item, "label": label},
+            )
+
+        # ---- search-to-narrow path ----
+        if use_search:
+            clicked = self._search_then_click_option(spec, item, label)
+            if clicked is True:
+                return None
+            # Search path failed to surface/click. If we got here with a
+            # hard error and no fallback, report it. But try the
+            # scroll/direct path as a fallback before failing (the
+            # checkbox may already be visible without search).
+            self._diagnostic(
+                "runner.set_selection_search_reach_fallback",
+                level="warn",
+                recoverable=True,
+                item=item,
+                label=label,
+            )
+
+        # ---- scroll / direct path (also the search fallback) ----
+        try:
+            loc = self._locate_via_template(
+                spec.checkbox_template_fp, {"item": item}
+            )
+            if loc is None:
+                # Direct couldn't find it. If a search box exists and we
+                # have NOT already tried search, do it now (real-portal
+                # case A: off-viewport target reachable via search).
+                if not use_search and spec.search_fp is not None:
+                    clicked = self._search_then_click_option(spec, item, label)
+                    if clicked is True:
+                        return None
+                return _fail(
+                    "set_selection_item_not_found",
+                    f"set_selection: no checkbox match for item={item!r}",
+                )
+            try:
+                loc.scroll_into_view_if_needed(timeout=2000)
+            except Exception:
+                # scroll_into_view is best-effort; click still attempts
+                # actionability on its own.
+                pass
+            loc.click(timeout=3000)
+            return None
+        except Exception as e:
+            return _fail(
+                "set_selection_click_failed",
+                f"set_selection: click failed for item={item!r}: {e}",
+            )
+
+    def _search_then_click_option(
+        self,
+        spec: "SetSelectionSpec",
+        item: str,
+        label: str,
+    ) -> bool:
+        """Fill the search box with ``label``, wait for the target
+        checkbox to become visible (bounded by wait_policy), click it,
+        then clear the search. Returns True on a successful click,
+        False if the search field or checkbox could not be resolved /
+        surfaced (the caller then tries the scroll/direct fallback).
+
+        The visibility wait is the primary signal for the server-side
+        search: the option's checkbox does not render until the filtered
+        response comes back, so waiting on it rides out the spinner with
+        no fixed sleep. An optional declared ``search_result_signal`` is
+        honored as an ADDITIONAL network wait when present, but the
+        visibility-of-target is the required gate."""
+        page = self.session.page
+        try:
+            search_loc = self._locate_via_template(spec.search_fp, {})
+            if search_loc is None:
+                return False
+            search_loc.fill(label)
+        except Exception as e:
+            self._diagnostic(
+                "runner.set_selection_search_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                item=item,
+                label=label,
+            )
+            return False
+
+        # Optional declared per-keystroke network signal (additive; the
+        # visibility wait below is the required gate).
+        if spec.search_result_signal:
+            try:
+                from .skill_models import (
+                    ExpectedSignals as _ES,
+                    NetworkExpectation as _NE,
+                )
+                self._wait_for_page_settle(
+                    expected=_ES(network=[
+                        _NE(url_pattern=spec.search_result_signal, optional=True)
+                    ])
+                )
+            except Exception:
+                pass
+
+        # Resolve the target checkbox, then WAIT for it to be visible.
+        try:
+            loc = self._locate_via_template(
+                spec.checkbox_template_fp, {"item": item}
+            )
+            if loc is None:
+                return False
+            loc.wait_for(
+                state="visible",
+                timeout=self._set_selection_dom_timeout_ms(),
+            )
+            loc.click(timeout=3000)
+        except Exception as e:
+            self._diagnostic(
+                "runner.set_selection_search_target_not_visible",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                item=item,
+                label=label,
+            )
+            return False
+        finally:
+            # Clear the search for the next item, regardless of outcome.
+            try:
+                search_loc.fill("")
+            except Exception:
+                pass
+        return True
 
     def _do_fill_submit(
         self, step: SkillStep, value: Optional[str]

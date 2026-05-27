@@ -2385,6 +2385,52 @@ class SetSelectionSpec(BaseModel):
     filtering. Runner waits for this signal after typing into the
     search field, before clicking the per-item checkbox."""
 
+    # Real-portal cases A/B: reaching an option is replay-time logic, not
+    # replayed keystrokes. The structural fact is "picker's selected set
+    # == target list"; HOW each option is reached is chosen at replay for
+    # robustness. These three fields carry the reach mechanism.
+    item_labels: dict[str, str] = Field(default_factory=dict)
+    """Map of item id -> display label. The runner types the LABEL (not
+    the id) into the search box, because portal search matches on the
+    visible option text. Root-cause bug fix (real-portal case B): the
+    runner used to fill the search with the item id, which never matched
+    a label-indexed server search. Empty map => the runner falls back to
+    typing the raw item id (legacy behavior, preserved for skills
+    recorded before this field existed). Populated by the annotator from
+    each checkbox/item click's accessible_name / text / aria_label."""
+
+    select_strategy: Literal["search", "scroll", "direct"] = "direct"
+    """Replay-time reach mechanism for each option to add/remove:
+      - ``search``: type the item's label into ``search_fp`` to narrow
+        the list, wait for the materialized checkbox to become VISIBLE
+        (bounded by wait_policy.dom_timeout_ms -- NOT a fixed sleep,
+        which naturally rides out a server-side search spinner), click
+        it, then clear the search for the next item. The annotator sets
+        this whenever the picker exposes a search box.
+      - ``scroll`` / ``direct``: resolve the checkbox via
+        ``checkbox_template_fp`` then ``scroll_into_view_if_needed()``
+        before clicking. Used for off-viewport targets in pickers
+        without a search box (real-portal case A). The portal's lists
+        are non-virtualized, so a locator + scroll is sufficient; no
+        scroll-until-render loop is needed.
+    Default ``direct`` preserves legacy behavior for skills recorded
+    before this field existed. When ``select_strategy='search'`` but no
+    ``search_fp`` is present, the runner falls back to scroll/direct;
+    when ``direct``/``scroll`` can't find the checkbox AND ``search_fp``
+    exists, the runner falls back to the search path."""
+
+    option_list_selector: Optional[str] = None
+    """CSS selector for the popover / listbox container. Two uses:
+      1. Visibility scope -- the runner waits for a target checkbox to
+         become visible (search strategy) and may scope the wait to this
+         container so a stale duplicate elsewhere on the page can't
+         satisfy it.
+      2. Scroll fallback container -- the scroll-into-view target.
+    Derived by the annotator from the picker prefix
+    (``[data-testid='{prefix}-popover']``) or a scoped ``[role='listbox']``.
+    None for legacy skills (the runner falls back to page-wide
+    visibility + the locator's own scroll_into_view_if_needed)."""
+
     hierarchy_path: list[str] = Field(default_factory=list)
     """WI-20: for hierarchical pickers (e.g. category > subcategory >
     leaf), the path from root to this picker. Audit-only -- describes
