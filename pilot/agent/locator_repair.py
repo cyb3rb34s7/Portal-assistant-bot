@@ -182,16 +182,72 @@ def _similarity(fp: ElementFingerprint, cand: dict[str, Any]) -> float:
     return score / weights_total
 
 
-# Score thresholds for the deterministic backend's confidence mapping.
-# These are tuned by inspection: 0.85+ is near-identical (likely just a
-# class change), 0.65+ is a recognizable sibling (label match + role
-# match), below 0.55 is too uncertain to risk.
+# ---------------------------------------------------------------------------
+# Followup #4: L3 score bands -- documented status
+#
+# These three thresholds map a deterministic similarity score to one of
+# the three Confidence values the runner reads. They were flagged in the
+# audit as "still magic numbers" and the completion summary previously
+# claimed they were CLOSED via WI-26 RepairPolicy. The honest picture:
+#
+# - WI-26 RepairPolicy is the STRUCTURAL gate. It rejects high-score
+#   candidates that miss required features (test_id_required,
+#   role_match_required, landmark_match_required, required_postcondition)
+#   regardless of similarity score. See _policy_reject_reason in
+#   pilot/skill_runner.py.
+#
+# - These bands remain the CONFIDENCE FLOOR that runs BEFORE the
+#   structural gate. _heal_deterministic returns the band; the runner
+#   then:
+#     * confidence == "low" (score < _DET_REFUSE_BELOW)  -> refuse to
+#       execute, escalate to L4 takeover (skill_runner.py around the
+#       result.confidence == "low" check). Below this floor we don't
+#       even let the structural policy weigh in -- the candidate is
+#       too uncertain to risk.
+#     * confidence == "medium" (_DET_MEDIUM <= score < _DET_HIGH) ->
+#       structural policy decides; for destructive actions the default
+#       policy pauses for operator confirmation.
+#     * confidence == "high" (score >= _DET_HIGH) -> structural policy
+#       still has to pass; if it does, the alternate is persisted.
+#
+# So the bands are BOTH a safety floor (the "low" cutoff at 0.55) AND
+# audit-only ranking metadata (the high/medium split that feeds into
+# the structural policy's decision). They are NOT redundant with WI-26;
+# WI-26 layers on top of them.
+#
+# These constants are deliberately kept as module-level literals rather
+# than moved to PortalContext because they encode an INVARIANT of the
+# deterministic similarity scorer's weighting (which is also hardcoded
+# in _similarity above). Tuning the bands without tuning the scorer's
+# weights would create silent drift; both belong together at this layer.
+# A future WI that makes the scorer pluggable should also surface these.
+# ---------------------------------------------------------------------------
+
 _DET_HIGH = 0.85
+"""Score at/above which a candidate is "near-identical" -- typically a
+class-name change or a parent-tag swap with all stable attributes
+preserved. Runs through the WI-26 structural gate; passes default for
+non-destructive actions, requires gate-pass for destructive ones."""
+
 _DET_MEDIUM = 0.65
+"""Score at/above which a candidate is a "recognizable sibling" --
+label match + role match but other attributes drifted. The structural
+gate (WI-26) is the deciding factor for medium-score candidates;
+destructive actions' default policy pauses for operator confirmation."""
+
 _DET_REFUSE_BELOW = 0.55
+"""Safety floor. Scores below this never reach the WI-26 structural
+gate -- the runner refuses to execute and escalates to L4 human
+takeover. This is the ONLY band that acts as a hard safety gate on
+its own; the high/medium split is audit-only metadata."""
 
 
 def _confidence_from_score(score: float) -> Confidence | None:
+    """Followup #4: map similarity to confidence band.
+
+    The three return cases correspond to the three documented roles
+    above. ``None`` indicates score < _DET_REFUSE_BELOW; the caller
+    must treat this as refuse-to-execute (same as "low" externally)."""
     if score >= _DET_HIGH:
         return "high"
     if score >= _DET_MEDIUM:

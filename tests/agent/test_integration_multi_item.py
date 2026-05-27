@@ -121,7 +121,18 @@ async def test_multi_item_with_failure_and_retry(workspace: Path) -> None:
             super().__init__()
             self._failed_once = False
 
-        async def execute(self, step, skill, emit_progress):  # type: ignore[override]
+        async def execute(  # type: ignore[override]
+            self,
+            step,
+            skill,
+            emit_progress,
+            sub_step_overrides=None,
+        ):
+            # F-10: orchestrator.retry passes sub_step_overrides since the
+            # use_alternate work landed; the stub needs to accept it so the
+            # retry signature matches. We don't use overrides here -- the
+            # FakeExecutor parent doesn't honor them either, but the signature
+            # contract must match what retry calls.
             if step.idx == 2 and not self._failed_once:
                 self._failed_once = True
                 from pilot.agent.orchestrator import StepResult
@@ -131,7 +142,9 @@ async def test_multi_item_with_failure_and_retry(workspace: Path) -> None:
                     error_kind="locator_exhausted",
                     error_message="(test) configured to fail once",
                 )
-            return await super().execute(step, skill, emit_progress)
+            return await super().execute(
+                step, skill, emit_progress, sub_step_overrides=sub_step_overrides
+            )
 
     config = OrchestratorConfig(
         sessions_dir=workspace / "sessions",

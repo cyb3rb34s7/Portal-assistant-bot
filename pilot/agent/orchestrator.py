@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pilot.agent.ai_client import AIClient
 from pilot.agent.clarify import ClarifyAnswer, ClarifyState
@@ -47,6 +47,7 @@ from pilot.agent.schemas.protocol import (
     ClarifyAnswer as ClarifyAnswerCmd,
     ClarifyAsk,
     ClarifyOption,
+    DiagnosticEvent,
     HostCommand,
     IntakeExtracted,
     PauseResolve,
@@ -72,6 +73,26 @@ from pilot.agent.schemas.skill import SkillFile
 # ---------------------------------------------------------------------------
 # Pluggable executor
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class PreflightResult:
+    """Outcome of the pre-flight phase that runs before intake.
+
+    The orchestrator uses this to decide whether to proceed, ask the
+    operator to launch a portal browser, or pause for authentication.
+    """
+
+    cdp_reachable: bool
+    """Could we connect to Chrome's DevTools Protocol?"""
+    matching_tab_url: str | None = None
+    """URL of the open tab that matches the portal's base_url, if any."""
+    auth_status: Literal["ok", "missing", "unknown"] = "unknown"
+    """``ok``: positive signal found OR negative signal not found.
+    ``missing``: the negative signal (login form, etc.) was present.
+    ``unknown``: portal context didn't declare an auth_signal."""
+    diagnostic: str = ""
+    """Operator-readable summary for the agent.log event."""
 
 
 @dataclass
@@ -102,12 +123,43 @@ class StepExecutor:
     smoke tests and CLI dry-runs without a live browser.
     """
 
+    async def preflight(
+        self,
+        base_url: str | None,
+        auth_signal: Any | None = None,
+    ) -> PreflightResult:
+        """Pre-flight probe before intake runs.
+
+        Default impl returns a "looks fine" result so executors that
+        don't drive a real browser (FakeExecutor) don't block the task.
+        Real executors override to actually probe CDP + tab + auth.
+        """
+        _ = base_url, auth_signal
+        return PreflightResult(
+            cdp_reachable=True,
+            matching_tab_url=base_url,
+            auth_status="unknown",
+            diagnostic="preflight skipped (default executor)",
+        )
+
     async def execute(
         self,
         step: PlanStep,
         skill: SkillFile,
         emit_progress: "callable[[str, dict[str, Any]], None]",
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
+        """Run a plan step.
+
+        ``sub_step_overrides`` lets the orchestrator force a specific
+        sub-step inside the skill to target a specific element instead
+        of resolving via its templated fingerprint. Used when the
+        operator resolves an ``ambiguous_target`` failure by picking a
+        candidate -- the orchestrator forwards
+        ``{sub_step_index: {test_id: <picked>}}`` to the executor,
+        which threads it into the runner so the next attempt clicks
+        the right one. Empty/None means no override (default behavior).
+        """
         raise NotImplementedError
 
 
@@ -123,7 +175,9 @@ class FakeExecutor(StepExecutor):
         step: PlanStep,
         skill: SkillFile,
         emit_progress,
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
+        _ = sub_step_overrides  # FakeExecutor doesn't honor overrides
         start = time.time()
         # Simulate a few sub-actions per step
         await asyncio.sleep(0.05)
@@ -201,6 +255,92 @@ class Orchestrator:
     async def _log(self, message: str, *, level: str = "info", **ctx: Any) -> None:
         await self._emit(AgentLog(level=level, message=message, context=ctx))  # type: ignore[arg-type]
 
+    async def _drain_executor_diagnostics(self, step_index: int | None = None) -> None:
+        """WI-06: surface structured diagnostics the executor /
+        skill_runner collected during the most recent execute(). Each
+        Diagnostic becomes one DiagnosticEvent on the stream so the
+        Replay UI can render them.
+
+        We probe the executor's drain method via getattr so a
+        FakeExecutor that doesn't implement diagnostics is silently
+        skipped -- consistent with the protocol §8 'log-and-ignore'
+        rule."""
+        drain = getattr(self.executor, "drain_diagnostics", None)
+        if not callable(drain):
+            return
+        try:
+            entries = drain()
+        except Exception as e:
+            await self._log(
+                f"diagnostic drain failed: {type(e).__name__}: {e}",
+                level="warn",
+                source="orchestrator",
+            )
+            return
+        for d in entries or []:
+            try:
+                await self._emit_diagnostic(
+                    d.code,
+                    level=getattr(d, "level", "warn") or "warn",
+                    recoverable=getattr(d, "recoverable", True),
+                    step_index=step_index,
+                    **(d.context or {}),
+                )
+            except Exception:
+                # Surfacing a diagnostic shouldn't itself crash the run.
+                continue
+
+    async def _emit_diagnostic(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        step_index: int | None = None,
+        **context: Any,
+    ) -> None:
+        """WI-06: emit a structured diagnostic for previously-silent
+        failure sites (bad payload, screenshot fail, persistence fail).
+
+        Drains a runner-side or executor-side diagnostic queue and
+        publishes each entry through the event stream so the Replay UI
+        surfaces it. ``recoverable=True`` (default) signals the calling
+        code continued; ``recoverable=False`` means the failure also
+        bubbled up as a hard error -- the diagnostic explains WHY for
+        the audit trail."""
+        await self._emit(
+            DiagnosticEvent(  # type: ignore[call-arg]
+                task_id=self.task_id,  # type: ignore[arg-type]
+                code=code,
+                level=level,  # type: ignore[arg-type]
+                recoverable=recoverable,
+                context=context,
+                step_index=step_index,
+            )
+        )
+
+    async def _audit_external_llm(
+        self, stage: str, model: str | None = None
+    ) -> None:
+        """Emit an audit-trail log entry for every cloud-LLM call.
+
+        Lightweight visibility -- not redaction. Future enterprise mode
+        will gate this by allow_external_llm and run a redaction pass
+        on the payload before send. Today's job is just to make every
+        external call discoverable in the session log so an operator
+        (or auditor) can count them.
+        """
+        portal = self.config.portal_context
+        await self._log(
+            f"external LLM call: stage={stage} model={model or 'default'}",
+            level="info",
+            source="external_llm_call",
+            stage=stage,
+            model=model or self.client.default_model,
+            client=self.client.name,
+            portal_id=portal.portal_id if portal else None,
+        )
+
     # ---- Command intake (for clarify / approve / pause) ----------------
 
     async def _next_command_for_task(self) -> HostCommand:
@@ -260,6 +400,107 @@ class Orchestrator:
         except Exception:
             return ""
 
+    # ---- Pre-flight ---------------------------------------------------
+
+    async def _preflight_phase(self, submit: TaskSubmit) -> bool:
+        """Run executor.preflight; if auth is missing, pause and let
+        the operator log in, then re-probe. Returns True if the task
+        should proceed, False if it was cancelled / failed.
+
+        Bounded by a single retry: if auth is *still* missing after the
+        operator clicks Resume, we emit task.failed rather than looping.
+        Operators who want to abort can use the modal's Abort button.
+        """
+        portal = self.config.portal_context
+        base_url = portal.base_url if portal else None
+        auth_signal = portal.auth_signal if portal else None
+
+        for attempt in (1, 2):
+            try:
+                pf = await self.executor.preflight(base_url, auth_signal)
+            except Exception as e:  # noqa: BLE001
+                await self._emit(
+                    TaskFailed(
+                        task_id=self.task_id,  # type: ignore[arg-type]
+                        error_kind="preflight_crashed",
+                        error_message=f"{type(e).__name__}: {e}",
+                    )
+                )
+                return False
+
+            await self._log(
+                f"preflight: {pf.diagnostic}",
+                level="info",
+                source="preflight",
+                cdp_reachable=pf.cdp_reachable,
+                matching_tab_url=pf.matching_tab_url,
+                auth_status=pf.auth_status,
+            )
+
+            if not pf.cdp_reachable:
+                await self._emit(
+                    TaskFailed(
+                        task_id=self.task_id,  # type: ignore[arg-type]
+                        error_kind="cdp_unreachable",
+                        error_message=(
+                            "Chrome with --remote-debugging-port=9222 is not "
+                            "running. Launch the portal browser from the UI's "
+                            "Home tab and resubmit. " + pf.diagnostic
+                        ),
+                    )
+                )
+                return False
+
+            if pf.auth_status != "missing":
+                return True  # ok or unknown -> proceed
+
+            # auth_status == "missing": pause and let operator log in.
+            if attempt == 2:
+                await self._emit(
+                    TaskFailed(
+                        task_id=self.task_id,  # type: ignore[arg-type]
+                        error_kind="auth_required",
+                        error_message=(
+                            "Portal still appears unauthenticated after "
+                            "Resume. Sign in to the portal tab and try again."
+                        ),
+                    )
+                )
+                return False
+
+            pause_id = f"pause-auth-{uuid.uuid4().hex[:6]}"
+            await self._emit(
+                Paused(
+                    task_id=self.task_id,  # type: ignore[arg-type]
+                    pause_id=pause_id,
+                    reason="auth_required",
+                    context={
+                        "diagnostic": pf.diagnostic,
+                        "matching_tab_url": pf.matching_tab_url,
+                    },
+                )
+            )
+            cmd = await self._next_command_for_task()
+            if isinstance(cmd, TaskCancel):
+                await self._cancel_task()
+                return False
+            if not isinstance(cmd, PauseResolve):
+                await self._log(
+                    f"unexpected cmd during auth pause: {cmd.type}", level="warn"
+                )
+                continue  # try again; conservative
+            if cmd.action == "abort":
+                await self._emit(
+                    TaskFailed(
+                        task_id=self.task_id,  # type: ignore[arg-type]
+                        error_kind="auth_required",
+                        error_message="operator aborted at auth pause",
+                    )
+                )
+                return False
+            # retry / skip / use_alternate -> re-probe on the next loop turn
+        return False
+
     # ---- Run a task ----------------------------------------------------
 
     async def run_task(self, submit: TaskSubmit) -> None:
@@ -289,7 +530,39 @@ class Orchestrator:
 
     async def _run_task_inner(self, submit: TaskSubmit) -> None:
         try:
+            # ---- External-LLM kill switch ----
+            # If the portal's context.yaml has external_llm_enabled: false,
+            # the orchestrator can't call cloud models for intake/plan/
+            # report. Fail fast with a clear message; we don't try to
+            # silently fall back to deterministic-only mode because most
+            # operators would expect the goal to still be parsed.
+            portal = self.config.portal_context
+            if portal is not None and not portal.external_llm_enabled:
+                await self._emit(
+                    TaskFailed(
+                        task_id=self.task_id,  # type: ignore[arg-type]
+                        error_kind="external_llm_disabled",
+                        error_message=(
+                            f"Portal {portal.portal_id} has "
+                            "external_llm_enabled=false in context.yaml; "
+                            "cloud LLM calls refused. Flip the toggle or "
+                            "use a different portal."
+                        ),
+                    )
+                )
+                return
+
+            # ---- Pre-flight ----
+            # Probe CDP + tab + auth BEFORE we burn LLM tokens on
+            # intake/planning. If Chrome isn't up, or the operator is
+            # logged out, fail fast with an operator-actionable message
+            # instead of crashing mid-step five minutes from now.
+            if not await self._preflight_phase(submit):
+                return
+
             # ---- Intake ----
+            # Audit emitted AFTER the call returns so failures don't show
+            # phantom external-LLM calls that never actually happened.
             entities = await run_intake(
                 client=self.client,
                 goal=submit.goal,
@@ -298,6 +571,8 @@ class Orchestrator:
                 model=self.config.intake_model,
                 portal=self.config.portal_context,
             )
+            if self.config.intake_use_llm:
+                await self._audit_external_llm("intake", self.config.intake_model)
             await self._emit(
                 IntakeExtracted(
                     task_id=self.task_id,
@@ -324,6 +599,15 @@ class Orchestrator:
                     model=self.config.planner_model,
                     catalog_block=catalog_block,
                 )
+                # Only audit when the planner actually called the LLM.
+                # The empty-skills early return (planner.py) emits a
+                # canned clarify question without invoking the model;
+                # auditing it would produce a phantom external-LLM
+                # entry in the session log.
+                if getattr(planner_out, "notes", None) != "empty_skill_library":
+                    await self._audit_external_llm(
+                        "planner", self.config.planner_model
+                    )
 
                 if planner_out.plan is not None:
                     plan = planner_out.plan
@@ -486,6 +770,16 @@ class Orchestrator:
 
                 emit_progress = _make_progress_emitter(step.idx)
                 result = await self.executor.execute(step, skill, emit_progress)
+                # WI-06: drain any structured diagnostics the executor /
+                # runner recorded during this step (previously-silent
+                # failure sites: hint persistence, alternate persistence,
+                # watcher install, set_selection swallows, screenshot
+                # failures). Each becomes a DiagnosticEvent on the
+                # stream so the UI's PausedModal / LogPane can render
+                # them. recoverable=True ones surface as warn; the
+                # error-level ones are also surfaced as warn here (the
+                # step-level event already carries success/fail).
+                await self._drain_executor_diagnostics(step.idx)
 
                 # Emit one StepHealed per heal that happened during this
                 # plan step, BEFORE succeeded/failed so the UI can show
@@ -544,6 +838,23 @@ class Orchestrator:
             await self._cancel_task()
             raise
         except Exception as e:  # noqa: BLE001 - surfaced as task.failed
+            # Print the full traceback to stderr so the FastAPI terminal
+            # actually shows what failed. Without this, the operator sees
+            # only the short "APIConnectionError: Connection error." in
+            # the UI and has to guess where it came from.
+            import sys
+            import traceback as _tb
+            _tb.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
+            sys.stderr.flush()
+            # Also surface the traceback's last frame in the event so the
+            # UI shows WHERE it failed, not just WHAT.
+            tb_str = "".join(_tb.format_exception(type(e), e, e.__traceback__))
+            await self._log(
+                f"agent task crashed: {type(e).__name__}: {e}",
+                level="error",
+                source="orchestrator",
+                traceback=tb_str,
+            )
             await self._emit(
                 TaskFailed(
                     task_id=self.task_id,
@@ -626,11 +937,54 @@ class Orchestrator:
         if cmd.action == "skip":
             await self._record_step(step, status="skipped", duration_ms=0)
             return
-        # retry / use_alternate (use_alternate is treated as retry in v1)
-        retry = await self.executor.execute(step, skill, emit_progress)
+
+        # use_alternate: operator picked a specific candidate from the
+        # ambiguous_target row picker. Build a sub_step_override so the
+        # next run targets that exact element instead of the templated
+        # fingerprint that caused the ambiguity in the first place.
+        overrides: dict[int, dict[str, Any]] | None = None
+        if cmd.action == "use_alternate" and cmd.payload:
+            candidate = cmd.payload.get("candidate") or {}
+            sub_step_index = (
+                cmd.payload.get("sub_step_index")
+                or (result.error_details or {}).get("sub_step_index")
+            )
+            override_fields: dict[str, Any] = {}
+            if candidate.get("test_id"):
+                override_fields["test_id"] = candidate["test_id"]
+            elif candidate.get("id"):
+                override_fields["id"] = candidate["id"]
+            if isinstance(sub_step_index, int) and override_fields:
+                overrides = {sub_step_index: override_fields}
+                await self._log(
+                    f"using operator-picked alternate for sub-step {sub_step_index}",
+                    level="info",
+                    source="use_alternate",
+                    override=override_fields,
+                )
+
+        retry = await self.executor.execute(
+            step, skill, emit_progress, sub_step_overrides=overrides
+        )
+        # WI-06: drain diagnostics from the retry attempt too. Hint
+        # persistence happens on retry success below; if THAT
+        # persistence silently fails, we now see it on the stream.
+        await self._drain_executor_diagnostics(step.idx)
         status = "succeeded" if retry.succeeded else "failed"
         await self._record_step(step, status=status, duration_ms=retry.duration_ms)
         if retry.succeeded:
+            # Learning loop: persist the operator's pick as a
+            # disambiguation hint on the skill's sidecar so future runs
+            # can auto-resolve the same ambiguity. Only fires on
+            # use_alternate (when overrides is set) AND retry success;
+            # other retries (plain re-execute) don't carry candidate
+            # info to persist.
+            if (
+                overrides
+                and cmd.action == "use_alternate"
+                and cmd.payload
+            ):
+                await self._persist_disambiguation_hint(skill, cmd, result)
             await self._emit(
                 StepSucceededEvent(
                     task_id=self.task_id,  # type: ignore[arg-type]
@@ -647,6 +1001,69 @@ class Orchestrator:
                     error_message=retry.error_message or "retry failed",
                 )
             )
+
+    async def _persist_disambiguation_hint(
+        self,
+        skill: SkillFile,
+        cmd: Any,  # PauseResolve
+        original_result: StepResult,
+    ) -> None:
+        """Write the operator's pick to the skill's hints sidecar.
+
+        The chosen candidate + the rejected candidates from the original
+        failure become the persistent record. Best-effort -- if the
+        sidecar write fails, we just log it; the immediate retry already
+        succeeded, so the operator's experience is unaffected.
+        """
+        payload = cmd.payload or {}
+        candidate = payload.get("candidate") or {}
+        sub_step_index = (
+            payload.get("sub_step_index")
+            or (original_result.error_details or {}).get("sub_step_index")
+        )
+        if not isinstance(sub_step_index, int):
+            return
+        # Without a candidate index there's no reliable way to compute
+        # negative candidates -- skip persistence instead of guessing.
+        # The runtime hint scoring still works on test_id/text alone,
+        # so a future operator-resolution that DOES carry an index
+        # will overwrite this skip.
+        chosen_index = candidate.get("index")
+        if chosen_index is None:
+            return
+        all_candidates = (
+            (original_result.error_details or {}).get("candidates") or []
+        )
+        negative = [
+            c
+            for c in all_candidates
+            if c.get("index") != chosen_index
+        ]
+        hint = {
+            "chosen_text": candidate.get("text"),
+            "chosen_test_id": candidate.get("test_id"),
+            "chosen_neighbors": [],  # populated by future enrichment step
+            "chosen_section": None,
+            "negative_candidates": negative,
+        }
+        persist = getattr(self.executor, "persist_disambiguation_hint", None)
+        if not callable(persist):
+            return
+        try:
+            ok = persist(skill.id, sub_step_index, hint)
+        except Exception:
+            ok = False
+        await self._log(
+            (
+                "persisted disambiguation hint"
+                if ok
+                else "failed to persist disambiguation hint (continuing)"
+            ),
+            level="info" if ok else "warn",
+            source="disambiguation_hint",
+            skill_id=skill.id,
+            sub_step_index=sub_step_index,
+        )
 
     async def _record_step(self, step: PlanStep, *, status: str, duration_ms: int) -> None:
         self._step_records.append(
@@ -669,7 +1086,7 @@ class Orchestrator:
 
     async def _build_report(self, plan: Plan) -> Path:
         assert self.session_dir is not None
-        return await write_report(
+        result = await write_report(
             session_dir=self.session_dir,
             session_id=self.session_id or "?",
             summary=self._compose_summary(plan),
@@ -678,6 +1095,10 @@ class Orchestrator:
             client=self.client,
             model=self.config.reporter_model,
         )
+        # Audit AFTER the call returns so a reporter exception
+        # doesn't show up as a "called the LLM but it didn't" entry.
+        await self._audit_external_llm("reporter", self.config.reporter_model)
+        return result
 
     async def _cancel_task(self) -> None:
         await self._emit(TaskCancelled(task_id=self.task_id or "?"))

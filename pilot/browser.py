@@ -7,7 +7,7 @@ have started Chrome with --remote-debugging-port=9222 (see scripts/).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from playwright.sync_api import (
@@ -33,6 +33,15 @@ class BrowserSession:
     browser: Browser
     context: BrowserContext
     page: Page
+    # WI-35: popup / new-window page registry. Keyed by the operator's
+    # binding_key (declared in PopupEffect.page_binding_key); maps to a
+    # Playwright Page. The runner registers a new page on a click that
+    # has effects.popup, and reads back the registered page when a
+    # subsequent step's flow declares a popup binding. The original
+    # page is always retrievable as ``self.page`` so steps that don't
+    # bind to a popup stay on the operator's tab. Default empty so
+    # legacy callers (no popups) get sensible behavior.
+    popup_pages: dict = field(default_factory=dict)
 
     def close(self) -> None:
         # We deliberately do NOT close the browser or the context —

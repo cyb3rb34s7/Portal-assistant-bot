@@ -9,6 +9,212 @@
 
 ---
 
+## 2026-05-21
+
+### Structural fix sprint: WI-01..WI-50 + F-01..F-10 foundation drifts
+
+**Commits:** `2ba2503` (F-01) through `45e6adb` (WI-50 regression matrix)
+on `feat/enterprise-portal-and-additive-sprint`.
+
+Complete teach/annotate/replay rebuild. The prior additive sprint
+("Day-1") shipped per-step enrichments against the existing schema;
+this sprint goes deeper -- it moves semantics to the right layer
+(grabber captures raw transitions, annotator decides intent, runner
+just executes), introduces typed effects + provenance + replay policy,
+and removes the audit's seventeen hardcoded heuristics.
+
+- **Foundation drift fixes (F-01..F-10).** OptionSnapshot typed model
+  unblocks select recordings; sample portal retry key is now
+  runner-owned; XHR + fetch idempotency shims read configurable
+  header name and seed from `Request.headers`; annotator's causality
+  graph now runs BEFORE `filter_events`; grabber populates
+  `page_state_before/after`; observed network + DOM events emit as
+  first-class `TraceEvent`s with request_id + initiator_event_id;
+  hardcoded attribution-window / opts-cap / wait-defaults / fail-open
+  patterns removed; `ReplayPolicy` normalizes `optional=True`+`abort`
+  contradiction; `ParamProvenance.confidence` constrained 0..1;
+  `TraceEvent.kind` Literal expanded; pre-existing
+  `OneTimeFailExecutor` signature mismatch fixed.
+
+- **Schema (WI-01).** New action types: `fill_submit`, `select_option`,
+  `select_autocomplete`, `set_selection`, `date_select`, `slider_set`,
+  `drag_drop`, `toggle_state`, `modal`, `popup`, `download`,
+  `scroll_until`, `rich_text_set`, `shortcut`, `canvas_gesture`.
+  Effects family (Navigation, Popup, Download, Modal, Hover, Toast,
+  StateChange) folds consequences onto the causing step. Provenance
+  + ReplayPolicy + structural sub-specs on every step.
+
+- **Causality + observed events (WI-02 + F-07).** Every TraceEvent
+  carries `event_id` / `interaction_id` / `caused_by` / `sequence` /
+  `source` / `monotonic_ts`. Network requests, DOM mutations,
+  popups, downloads, visibility changes all emit as TraceEvents so
+  expected_signals can declare action-scoped baselines.
+
+- **Click + navigation collapse (WI-08).** Click that causes SPA
+  navigation is one step with `effects.navigation`. Runner never
+  calls `page.goto` for caused nav. Legacy click+navigate pairs
+  auto-upgrade at load time. Eliminates the "open A-9003 but goto
+  A-9001" bug.
+
+- **Action-scoped waits (WI-09 / WI-10 / WI-43 / WI-47).** Network /
+  DOM / push expectations match against `started_after_event`
+  baselines so stale requests can't satisfy new steps. WI-10
+  observed readiness signals (aria-busy, field_enabled, text
+  transition) replace spinner-by-convention. WI-43 disabled->enabled
+  is a first-class wait. WI-47 WebSocket/SSE channels are first-class.
+
+- **Annotator semantic clustering (WI-12 + WI-15..WI-21 + WI-28..WI-30
+  + WI-33..WI-35 + WI-37..WI-42).** One semantic cluster per widget
+  interaction. `fill_submit` (Enter or submit), `select_autocomplete`
+  (query + result), `select_option` (no fuzzy unless declared),
+  `cascading select` (depends_on), `set_selection` (multiselect with
+  final-equality assertion), `date_select` (native + custom), slider,
+  drag/drop, accordion as desired state, modal open/close folded
+  onto cause, popup binding key for cross-tab, virtualized table as
+  `scroll_until` with declared signal, rich-text editor as one step
+  (paste-strategy aware), hover-reveal menus, global keyboard
+  shortcuts, toast undo/conflict.
+
+- **Locator safety (WI-22..WI-27).** Ambiguity detection at every
+  locator level. `LocatorProbeResult` replaces exception-masking
+  boolean helper. Safe selector escaping. Declared aliases replace
+  automatic fuzzy. `RepairPolicy` (uniqueness + features +
+  postcondition) replaces score-band L3 thresholds. Action-specific
+  postconditions replace whole-page-signature verification.
+
+- **Provenance-based templates (WI-11).** `btn-open-A-9001` templates
+  to `btn-open-{asset_id}` only when asset_id provenance is declared
+  (row_key / route_param / selected_option / request_param). Substring
+  templating remains as legacy fallback only.
+
+- **Auth + cross-tab + locale (WI-36 / WI-46 / WI-48).** Auth
+  preconditions on destructive steps (no plaintext password capture).
+  `PageContext.page_binding_key` routes steps to popup pages.
+  Recording captures locale + timezone; codecs normalize
+  date/number; `strict_locale` flag fails replay on mismatch when
+  set.
+
+- **Canvas adapter registry (WI-49).** Separate registry next to the
+  legacy portal-adapter set. Built-in `noop_click` adapter proves
+  schema + dispatch path. Third-party portals register via
+  `pilot.adapters.register_canvas_adapter`.
+
+- **Skill upgrader + regression matrix (WI-50).** New module
+  `pilot/skill_upgrade.py` upgrades legacy v1 skills to v2
+  idempotently (preserves continue-on-failure so pre-WI-07 flows
+  don't start aborting). CLI: `python -m pilot upgrade-skill <path>`.
+  `tests/agent/test_wi_regression_matrix.py` carries one test per WI
+  + foundation drift, so any regression in the structural contract
+  shows up as a red row.
+
+Final test count: 499 passing (430 baseline + 9 upgrader tests + 60
+regression matrix tests). All 17 audit-flagged hardcoded heuristics
+are CLOSED; all 17 interaction matrix rows are COVERED. See
+[`reviews/2026-05-21_droid-completion-summary.md`](reviews/2026-05-21_droid-completion-summary.md)
+for the per-WI table with commit hashes and acceptance checks, and
+[`STRUCTURAL_FIX_GUIDE.md`](STRUCTURAL_FIX_GUIDE.md) for the engineering
+guide describing the new architecture.
+
+### Day-1 sprint: use_alternate fix + pre-flight + LLM audit + per-step diagnostics
+
+**Commit:** _(this commit)_
+
+Architecture pivot decision: stay on the additive path (no chunker / no
+cross-skill composition rewrite) and ship targeted enrichments against
+the existing skill JSON schema. Reviewed by GPT 5.5 via ``droid exec``;
+key feedback folded in. Spec at ``tmp/spec_for_review.md``, raw review
+at ``tmp/gpt55_review_raw.txt``.
+
+**Bug fix: ``use_alternate`` actually consumes the operator's pick**
+
+Before this commit the ``PausedModal`` row-picker shipped yesterday was
+a lie -- the orchestrator's ``pause.resolve { action: "use_alternate" }``
+branch fell through to a plain retry and the candidate payload was
+silently dropped. Now plumbed through:
+
+  - ``StepExecutor.execute`` (interface + Fake + Real) gains
+    ``sub_step_overrides: dict[int, dict[str, Any]] | None``.
+  - ``SkillRunner.__init__`` takes the same dict. On each step,
+    ``_resolve_locator`` pops the override matching ``step.index`` and
+    runs ``_apply_locator_override`` to wipe templated identifying
+    fields (test_id / element_id / name) and substitute the picked
+    candidate's identity. Ambiguity detection is skipped when an
+    override is in play -- the override IS the disambiguation.
+  - Orchestrator's ``_handle_step_failure`` builds the override from
+    ``cmd.payload.candidate`` + ``error_details.sub_step_index`` and
+    passes it to ``executor.execute``.
+
+Unit tests in ``tests/agent/test_use_alternate.py`` lock the override
+helper's behavior (test_id replacement clears stale element_id; id-only
+override clears stale test_id; overrides are single-use per step).
+
+**Pre-flight + auth gate (orchestrator phase before intake)**
+
+New ``_preflight_phase`` runs before intake spends LLM tokens:
+
+  - CDP doctor: can we attach to Chrome? If not, ``task.failed`` with
+    ``error_kind="cdp_unreachable"`` + an operator-actionable message.
+  - Tab probe: surface which open tab matches ``portal.base_url``.
+  - Auth probe: if ``portal.auth_signal`` is configured, run the
+    selectors. Positive signal (``logged_in_when_visible``) or absence
+    of negative signal (``logged_out_when_visible``) = ok. Negative
+    signal visible = ``paused { reason: "auth_required" }`` and wait
+    for operator to sign in, then re-probe ONCE. Second failure flips
+    to ``task.failed`` so we don't loop on a broken portal.
+
+Schema additions in ``pilot/agent/schemas/portal_context.py``:
+``AuthSignal`` model with ``logged_in_when_visible``,
+``logged_out_when_visible``, ``probe_timeout_ms``. Portals without an
+``auth_signal`` block (the current sample portal) get
+``auth_status="unknown"`` and the phase proceeds -- backwards-
+compatible by design.
+
+``RealExecutor.preflight`` runs the probe on the worker pool so
+sync_playwright thread affinity holds. ``FakeExecutor`` returns the
+default "looks fine" so CLI smoke tests don't need a live browser.
+
+**External-LLM audit log + per-portal toggle**
+
+``PortalContext.external_llm_enabled: bool = True`` (default true; this
+is single-tenant local product today). When false, the orchestrator
+emits ``task.failed { error_kind: "external_llm_disabled" }`` at the
+start of the task instead of silently calling cloud models.
+
+Every cloud-LLM call (intake, planner, reporter) is now preceded by
+``_audit_external_llm(stage, model)`` which emits
+``agent.log { source: "external_llm_call", stage, model, client,
+portal_id }``. Visibility-only -- no redaction yet, but every external
+call is discoverable in the session log so an auditor can count them.
+Future enterprise mode gates the call by ``allow_external_llm`` and
+runs a redaction pass on the payload.
+
+**Per-step diagnostics (the "I never see L2/L3 fire" hole)**
+
+The runner now collects a structured ``_diag`` dict per step:
+``levels_attempted`` (which of L1/L2/L3 were tried), ``final_level``,
+``ambiguity_candidate_count``, ``waits_ms`` (separate buckets for
+network / dom / spinner), ``post_condition_passed``, ``heal_backend``,
+``heal_confidence``, ``used_operator_override``, ``error_kind``,
+``success``. Persisted as ``audit.log("step_diagnostic", data=_diag)``
+to the session's ``audit.jsonl``.
+
+New endpoint ``GET /api/sessions/<id>/diagnostics`` reads the audit
+log, filters to ``step_diagnostic`` rows, and returns the structured
+records flat for the UI to render. The Sessions tab panel that
+consumes this is a follow-up commit -- the data layer + API is here.
+
+This is the single most important addition for measuring whether the
+deferred composition pivot ever earns its place: every failed replay
+now produces a classified diagnostic; you can grep ``audit.jsonl`` and
+see exactly which level resolved each step and where the waits land.
+
+**Tests**
+
+15/15 passing (12 prior + 3 new). New ``tests/agent/test_use_alternate.py``
+covers the override helper.
+
+---
+
 ## 2026-05-04 (evening)
 
 ### Replay UI + targeted waits + ambiguity detection + sample portal real lag

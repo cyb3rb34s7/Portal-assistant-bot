@@ -602,6 +602,48 @@ async def list_sessions() -> list[dict]:
     return out
 
 
+@app.get("/api/sessions/{session_id}/diagnostics")
+async def get_session_diagnostics(session_id: str) -> list[dict]:
+    """Return per-step diagnostic records for a finished session.
+
+    Reads ``sessions/<id>/audit.jsonl`` and filters for entries with
+    ``kind == "step_diagnostic"``. Each record has the structured shape
+    the skill_runner writes (levels_attempted, final_level, waits_ms,
+    heal info, ambiguity counts). The UI's Sessions tab renders this
+    as a per-step table so "L2/L3 never fire" is measurable instead of
+    a hunch.
+    """
+    # The SkillRunner's AuditLogger writes to ``audit_log.jsonl``; the
+    # orchestrator writes to ``audit.jsonl``. Read either, prefer the
+    # runner's path since the diagnostics it emits are the per-step
+    # ``step_diagnostic`` records we surface.
+    p = _sessions_dir() / session_id / "audit_log.jsonl"
+    if not p.exists():
+        p = _sessions_dir() / session_id / "audit.jsonl"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="audit log not found")
+    out: list[dict] = []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("kind") != "step_diagnostic":
+                    continue
+                # Flatten the structured payload onto the record so the
+                # UI doesn't have to dig into rec["data"]["data"].
+                data = rec.get("data") or {}
+                out.append({"ts": rec.get("timestamp"), **data})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"diagnostics read failed: {e}")
+    return out
+
+
 @app.get("/api/sessions/{session_id}/report")
 async def get_session_report(session_id: str) -> PlainTextResponse:
     p = _sessions_dir() / session_id / "report.md"
@@ -802,6 +844,29 @@ def _build_orchestrator_for_task(portal_id: str | None):
                 sessions_dir=_sessions_dir(),
                 cdp_endpoint=_launcher.state.cdp_url,
                 target_url_substring=target_substring,
+                portal_network_ignore=list(
+                    (portal_ctx.network_ignore or []) if portal_ctx else []
+                ),
+                network_quiet_ms=(
+                    portal_ctx.network_quiet_ms if portal_ctx else 250
+                ),
+                idempotency_capability=(
+                    portal_ctx.idempotency if portal_ctx else None
+                ),
+                # WI-09: per-portal wait policy. The runner reads
+                # request_log_cap from here for the page-side ring
+                # buffer. None lets the runner default to 200.
+                wait_policy=(
+                    portal_ctx.wait_policy if portal_ctx else None
+                ),
+                # WI-36: per-step auth_missing precondition check.
+                # Runner skips the check when auth_signal is None.
+                auth_signal=(
+                    portal_ctx.auth_signal if portal_ctx else None
+                ),
+                login_url=(
+                    portal_ctx.session.login_url if portal_ctx else None
+                ),
             )
         )
 

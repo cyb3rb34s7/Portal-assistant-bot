@@ -271,6 +271,43 @@ def run_skill(
         raise typer.Exit(code=1)
 
 
+@app.command("upgrade-skill")
+def upgrade_skill_cmd(
+    skill_path: Path = typer.Argument(
+        ...,
+        exists=True,
+        readable=True,
+        writable=True,
+        help="Path to a legacy skill JSON. Upgraded in place.",
+    ),
+) -> None:
+    """Upgrade a legacy v1 skill JSON to the current schema (v2).
+
+    Idempotent: re-running on an already-upgraded skill is a no-op
+    structurally but rewrites the file with the same content. Use this
+    once-per-skill to migrate pre-sprint recordings into a shape the
+    current SkillRunner consumes natively.
+    """
+    from .skill_upgrade import CURRENT_SCHEMA_VERSION, upgrade_skill_file
+
+    try:
+        upgraded = upgrade_skill_file(skill_path)
+    except Exception as e:
+        console.print(f"[red]Upgrade failed:[/red] {e}")
+        raise typer.Exit(code=2)
+    from_version = upgraded.get("upgraded_from")
+    if from_version is not None:
+        console.print(
+            f"[green]Upgraded[/green] {skill_path.name} "
+            f"v{from_version} -> v{CURRENT_SCHEMA_VERSION}."
+        )
+    else:
+        console.print(
+            f"[green]No-op[/green]: {skill_path.name} already at "
+            f"v{CURRENT_SCHEMA_VERSION}."
+        )
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", "--host"),

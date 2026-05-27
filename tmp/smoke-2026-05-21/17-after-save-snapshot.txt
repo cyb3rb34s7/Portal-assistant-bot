@@ -1,0 +1,105 @@
+- generic [ref=e1] clickable [onclick]
+  - complementary "Primary"
+    - StaticText "Sample Portal"
+    - navigation "Main menu" [ref=e2]
+      - list
+        - listitem [level=1]
+          - link "Catalog" [ref=e23]
+        - listitem [level=1]
+          - link "Upload" [ref=e24]
+        - listitem [level=1]
+          - link "Curation" [ref=e25]
+        - listitem [level=1]
+          - StaticText "File ▾"
+    - generic "Account"
+      - StaticText "smoke-operator"
+      - button "Sign out" [ref=e3]
+  - main
+    - generic
+      - sectionheader
+        - heading "Asset A-9003" [level=1, ref=e18]
+          - StaticText "Asset "
+          - code
+            - StaticText "A-9003"
+        - paragraph
+          - StaticText "Status:DRAFT"
+      - LabelText
+        - StaticText "Title"
+      - textbox "Title" [ref=e4]: Spring Cup Preview - Smoke 2026-05-22
+        - StaticText "Spring Cup Preview - Smoke 2026-05-22"
+      - generic
+        - LabelText
+          - StaticText "Categories"
+        - StaticText "Pick categories..."
+        - button "Choose..." [expanded=false, ref=e19]
+      - generic
+        - LabelText
+          - StaticText "Tags"
+        - StaticText "Pick tags..."
+        - button "Choose..." [expanded=false, ref=e20]
+      - LabelText
+        - StaticText "Region"
+      - combobox "Region" [expanded=false, ref=e5]: —
+        - MenuListPopup
+          - option "—" [selected, ref=e26]
+          - option "Americas" [ref=e27]
+          - option "Europe / Middle East / Africa" [ref=e28]
+          - option "Asia Pacific" [ref=e29]
+      - LabelText
+        - StaticText "Market"
+      - combobox "Market" [expanded=false, disabled, ref=e6]: (pick region first)
+        - MenuListPopup
+          - option "(pick region first)" [disabled, ref=e30]
+      - LabelText
+        - StaticText "Language"
+      - combobox "Language" [expanded=false, disabled, ref=e7]: (pick market first)
+        - MenuListPopup
+          - option "(pick market first)" [disabled, ref=e31]
+      - LabelText
+        - StaticText "Publish date"
+      - Date "Publish date"
+        - generic
+          - spinbutton "Day Day" [ref=e32]: 0
+            - StaticText "dd"
+          - StaticText "-"
+          - spinbutton "Month Month" [ref=e33]: 0
+            - StaticText "mm"
+          - StaticText "-"
+          - spinbutton "Year Year" [ref=e34]: 0
+            - StaticText "yyyy"
+        - button "Show date picker" [ref=e21]
+      - LabelText
+        - StaticText "Comment"
+      - textbox "Comment" [ref=e8]
+      - LabelText
+        - StaticText "Description"
+      - generic [ref=e9] editable [contenteditable]
+      - LabelText
+        - StaticText "Priority: 50"
+      - slider "Priority: 50" [ref=e10]: 50
+      - button "Show advanced settings" [expanded=false, ref=e22]
+        - StaticText "Show advanced settings"
+      - heading "Included" [level=4, ref=e11]
+      - list
+        - listitem [level=1]
+          - ListMarker "• "
+          - StaticText "promo-1"
+        - listitem [level=1]
+          - ListMarker "• "
+          - StaticText "promo-2"
+        - listitem [level=1]
+          - ListMarker "• "
+          - StaticText "promo-3"
+      - heading "Excluded" [level=4, ref=e12]
+      - list
+        - listitem [level=1]
+          - ListMarker "• "
+          - StaticText "promo-4"
+        - listitem [level=1]
+          - ListMarker "• "
+          - StaticText "promo-5"
+      - button "Save" [ref=e13]
+      - button "Submit for review" [ref=e14]
+      - button "Approve" [disabled, ref=e15]
+      - button "Reject" [disabled, ref=e16]
+      - button "Publish" [disabled, ref=e17]

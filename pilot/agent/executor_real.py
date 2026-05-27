@@ -37,9 +37,9 @@ import asyncio
 import concurrent.futures
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from pilot.audit import AuditLogger  # noqa: F401  (imported for type clarity)
 from pilot.browser import (
@@ -47,10 +47,11 @@ from pilot.browser import (
     DEFAULT_CDP_ENDPOINT,
     connect_to_chrome,
 )
+from pilot.models import Diagnostic
 from pilot.skill_models import Skill
 from pilot.skill_runner import SkillRunner
 
-from pilot.agent.orchestrator import StepExecutor, StepResult
+from pilot.agent.orchestrator import PreflightResult, StepExecutor, StepResult
 from pilot.agent.schemas.domain import PlanStep
 from pilot.agent.schemas.skill import SkillFile
 
@@ -92,6 +93,42 @@ class RealExecutorConfig:
     don't want a second confirmation per destructive sub-step inside
     one plan step."""
 
+    portal_network_ignore: list[str] = field(default_factory=list)
+    """URL substrings the runner's wait predicate should treat as noise
+    -- /api/notifications, SSE channels, websockets. Sourced from
+    PortalContext.network_ignore by the orchestrator at construction."""
+
+    network_quiet_ms: int = 250
+    """How long network has to be quiet before the wait predicate
+    returns. Sourced from PortalContext.network_quiet_ms."""
+
+    idempotency_capability: Any = None
+    """Portal idempotency capability (PortalContext.idempotency). None
+    means the runner does not inject idempotency keys -- the default
+    safe behavior for portals whose backend hasn't declared support.
+    Sourced from PortalContext.idempotency by the orchestrator."""
+
+    wait_policy: Any = None
+    """WI-09: PortalContext.wait_policy passthrough. The runner reads
+    ``request_log_cap`` from here when installing the page-side
+    request-log ring buffer (the legacy hardcoded 50 is the last-
+    resort fallback). None means "use schema-level defaults"
+    (WaitPolicy() factory)."""
+
+    auth_signal: Any = None
+    """WI-36: PortalContext.auth_signal passthrough. The runner uses
+    this for per-step auth precondition checks: when a step declares
+    auth_precondition AND this signal is configured, the runner probes
+    before the step touches the page and pauses with
+    error_kind=``auth_missing`` on negative match. None means the
+    runner skips the check (legacy behavior preserved)."""
+
+    login_url: Optional[str] = None
+    """WI-36: PortalContext.session.login_url passthrough. Surfaced in
+    the auth_missing error_details so the operator can navigate
+    directly to the login page from the orchestrator's pause UI.
+    None falls back to base_url."""
+
 
 class RealExecutor(StepExecutor):
     """Bridges the agent's PlanStep onto a full SkillRunner invocation."""
@@ -104,14 +141,159 @@ class RealExecutor(StepExecutor):
             max_workers=1, thread_name_prefix="real-executor"
         )
         self._session: BrowserSession | None = None
+        # WI-06: structured-diagnostic accumulator. Previously-silent
+        # persistence failures (hint sidecar write, alternate JSON
+        # write-back) push entries here so the orchestrator can drain
+        # them through the event stream after each execute().
+        self.diagnostics: list[Diagnostic] = []
+
+    def _record_diagnostic(
+        self,
+        code: str,
+        *,
+        level: str = "warn",
+        recoverable: bool = True,
+        **context: Any,
+    ) -> None:
+        """WI-06: record a structured diagnostic for a previously-silent
+        executor failure site. The list is drained by the caller (the
+        orchestrator) via ``drain_diagnostics`` after each execute().
+        """
+        self.diagnostics.append(
+            Diagnostic(
+                code=code,
+                context=context,
+                recoverable=recoverable,
+                level=level,  # type: ignore[arg-type]
+            )
+        )
+
+    def drain_diagnostics(self) -> list[Diagnostic]:
+        """Return + clear the accumulated diagnostics. Called by the
+        orchestrator after each step so they can be emitted onto the
+        event stream."""
+        out = list(self.diagnostics)
+        self.diagnostics.clear()
+        return out
 
     # ---- Public API ----------------------------------------------------
+
+    async def preflight(
+        self,
+        base_url: str | None,
+        auth_signal: Any | None = None,
+    ) -> PreflightResult:
+        """Probe CDP + tab + auth before the orchestrator runs intake.
+
+        Runs on the worker pool so sync_playwright stays on its thread.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._pool, self._preflight_sync, base_url, auth_signal
+        )
+
+    def _preflight_sync(
+        self,
+        base_url: str | None,
+        auth_signal: Any | None,
+    ) -> PreflightResult:
+        # 1) CDP probe.
+        try:
+            session = self._ensure_session(base_url)
+        except Exception as e:  # noqa: BLE001
+            self._session = None
+            return PreflightResult(
+                cdp_reachable=False,
+                diagnostic=(
+                    f"could not attach to Chrome at {self.config.cdp_endpoint}: "
+                    f"{type(e).__name__}: {e}"
+                ),
+            )
+
+        # 2) Tab probe. Find a page whose URL contains base_url (already
+        #    done inside connect_to_chrome, but we surface the URL here).
+        matching_url: str | None = None
+        try:
+            for page in session.context.pages:
+                if base_url and base_url in page.url:
+                    matching_url = page.url
+                    break
+            else:
+                # No matching tab; fall back to the active page so the
+                # caller at least sees what's open.
+                if session.context.pages:
+                    matching_url = session.context.pages[0].url
+        except Exception:
+            pass
+
+        # 3) Auth probe. Only fires when the portal context declared
+        #    auth_signal with at least one selector.
+        if auth_signal is None:
+            return PreflightResult(
+                cdp_reachable=True,
+                matching_tab_url=matching_url,
+                auth_status="unknown",
+                diagnostic="no auth_signal configured on portal context",
+            )
+
+        logged_in = list(getattr(auth_signal, "logged_in_when_visible", []) or [])
+        logged_out = list(getattr(auth_signal, "logged_out_when_visible", []) or [])
+        timeout = int(getattr(auth_signal, "probe_timeout_ms", 5000) or 5000)
+        if not logged_in and not logged_out:
+            return PreflightResult(
+                cdp_reachable=True,
+                matching_tab_url=matching_url,
+                auth_status="unknown",
+                diagnostic="auth_signal present but no selectors declared",
+            )
+
+        page = session.page
+        # Either positive OR negative signal is enough on its own.
+        if logged_in:
+            for sel in logged_in:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout):
+                        return PreflightResult(
+                            cdp_reachable=True,
+                            matching_tab_url=matching_url,
+                            auth_status="ok",
+                            diagnostic=f"auth ok: positive signal {sel!r} visible",
+                        )
+                except Exception:
+                    continue
+        if logged_out:
+            for sel in logged_out:
+                try:
+                    if page.locator(sel).first.is_visible(timeout=timeout):
+                        return PreflightResult(
+                            cdp_reachable=True,
+                            matching_tab_url=matching_url,
+                            auth_status="missing",
+                            diagnostic=f"auth missing: negative signal {sel!r} visible",
+                        )
+                except Exception:
+                    continue
+
+        # Neither matched -- treat as missing so the operator gets a
+        # chance to log in. Conservative: false-positive "missing" only
+        # costs a Resume click; false-positive "ok" runs against an
+        # unauthenticated portal and fails halfway through.
+        return PreflightResult(
+            cdp_reachable=True,
+            matching_tab_url=matching_url,
+            auth_status="missing",
+            diagnostic=(
+                "auth signals configured but none matched -- "
+                "treating as not authenticated"
+            ),
+        )
 
     async def execute(
         self,
         step: PlanStep,
         skill: SkillFile,
         emit_progress: Callable[[str, dict[str, Any]], None],
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
         skill_path = self._locate_skill_file(skill.id)
         if skill_path is None:
@@ -170,6 +352,7 @@ class RealExecutor(StepExecutor):
             runtime_params,
             skill.base_url,
             skill_path,
+            sub_step_overrides,
         )
 
     def close(self) -> None:
@@ -276,6 +459,7 @@ class RealExecutor(StepExecutor):
         params: dict[str, Any],
         default_base_url: str | None,
         skill_path: Path | None = None,
+        sub_step_overrides: dict[int, dict[str, Any]] | None = None,
     ) -> StepResult:
         start = time.time()
         try:
@@ -292,6 +476,7 @@ class RealExecutor(StepExecutor):
                 ),
             )
 
+        runner: SkillRunner | None = None
         try:
             runner = SkillRunner(
                 session=session,
@@ -303,10 +488,57 @@ class RealExecutor(StepExecutor):
                 if self.config.auto_approve_gates
                 else None,
                 takeover_fn=lambda _step: False,  # never block in agent flow
+                sub_step_overrides=sub_step_overrides,
             )
+            # Wire the persisted disambiguation hints from the skill's
+            # .hints.json sidecar. Failures here are non-fatal -- the
+            # runner just falls back to pausing on ambiguity.
+            if skill_path is not None:
+                try:
+                    runner.disambiguation_hints = self._load_hints_sidecar(
+                        skill_path
+                    )
+                except Exception as e:
+                    # WI-06: hint sidecar load failure used to silently
+                    # leave disambiguation off. Diagnostic surfaces so
+                    # the learning loop's no-op state is visible.
+                    self._record_diagnostic(
+                        "executor.hint_sidecar_runtime_load_failed",
+                        level="warn",
+                        recoverable=True,
+                        exc_type=type(e).__name__,
+                        exc_msg=str(e)[:200],
+                        skill_path=str(skill_path),
+                    )
+                    runner.disambiguation_hints = {}
+            runner.portal_network_ignore = list(
+                self.config.portal_network_ignore or []
+            )
+            runner.network_quiet_ms = int(self.config.network_quiet_ms)
+            runner.idempotency_capability = self.config.idempotency_capability
+            # WI-09: per-portal wait policy. Used by _ensure_watchers
+            # to push the request_log_cap to the page-side ring buffer.
+            runner.wait_policy = self.config.wait_policy
+            # WI-36: per-portal auth signal + login URL for per-step
+            # auth_missing pre-checks. None disables the check entirely.
+            runner.portal_auth_signal = self.config.auth_signal
+            runner.portal_login_url = self.config.login_url
             results = runner.run()
+            # WI-06: forward runner diagnostics (watcher_install,
+            # set_selection swallows, ambiguity_scan, screenshot
+            # failures) onto the executor's own queue so the
+            # orchestrator can surface them through DiagnosticEvent.
+            for d in getattr(runner, "diagnostics", []) or []:
+                self.diagnostics.append(d)
         except Exception as e:  # noqa: BLE001
             # Drop the session on a crash; the next step will re-attach.
+            # WI-06: forward any diagnostics the runner collected before
+            # crashing, so the operator can see what failed.
+            try:
+                for d in getattr(runner, "diagnostics", []) or []:
+                    self.diagnostics.append(d)
+            except Exception:
+                pass
             self._close_session_in_worker()
             return StepResult(
                 succeeded=False,
@@ -384,6 +616,107 @@ class RealExecutor(StepExecutor):
             heals=heals,
         )
 
+    # ---- Disambiguation hints (sidecar read + write) -------------------
+
+    @staticmethod
+    def _hints_sidecar_path(skill_path: Path) -> Path:
+        return skill_path.with_suffix(".hints.json")
+
+    def _load_hints_sidecar(self, skill_path: Path) -> dict[int, dict[str, Any]]:
+        """Read skills/<name>.hints.json, return a dict keyed by
+        sub-step index. Empty dict if the sidecar doesn't exist or is
+        malformed -- the system continues to work, it just won't
+        auto-resolve ambiguity."""
+        p = self._hints_sidecar_path(skill_path)
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            # WI-06: malformed sidecar used to silently return empty;
+            # now record the diagnostic so the operator sees the
+            # hints aren't being applied because the file is broken
+            # (vs because no hints have been learned yet).
+            self._record_diagnostic(
+                "executor.hint_sidecar_parse_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                sidecar_path=str(p),
+            )
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for k, v in (data or {}).items():
+            try:
+                out[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def persist_disambiguation_hint(
+        self,
+        skill_id: str,
+        sub_step_index: int,
+        hint: dict[str, Any],
+    ) -> bool:
+        """Merge a new disambiguation hint into the skill's sidecar.
+
+        Idempotent: writes-then-renames so an interrupted write can't
+        corrupt the sidecar. Returns True if persisted, False on any
+        failure (we never raise to callers -- learning is best-effort).
+        """
+        skill_path = self._locate_skill_file(skill_id)
+        if skill_path is None:
+            self._record_diagnostic(
+                "executor.hint_persist_skill_not_found",
+                level="warn",
+                recoverable=True,
+                skill_id=skill_id,
+            )
+            return False
+        try:
+            existing = self._load_hints_sidecar(skill_path)
+        except Exception as e:
+            self._record_diagnostic(
+                "executor.hint_persist_load_failed",
+                level="warn",
+                recoverable=True,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_id=skill_id,
+            )
+            existing = {}
+        existing[sub_step_index] = hint
+        sidecar = self._hints_sidecar_path(skill_path)
+        try:
+            sidecar.write_text(
+                json.dumps(
+                    {str(k): v for k, v in existing.items()},
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            return True
+        except Exception as e:
+            # WI-06: hint persistence used to silently return False --
+            # the next ambiguity pause would happen again with no hint
+            # to auto-resolve, and the operator had no visibility into
+            # why the "learning loop" wasn't learning. Surface so
+            # missing-permissions or disk-full failures are visible.
+            self._record_diagnostic(
+                "executor.hint_persist_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_id=skill_id,
+                sidecar_path=str(sidecar),
+                sub_step_index=sub_step_index,
+            )
+            return False
+
     # ---- Skill JSON write-back -----------------------------------------
 
     def _persist_alternates_to_skill(
@@ -398,10 +731,28 @@ class RealExecutor(StepExecutor):
         """
         try:
             data = json.loads(skill_path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            # WI-06: skill JSON parse failure used to return 0 silently
+            # -- a corrupted skill file would keep healing forever
+            # without persisting, with no operator-visible signal.
+            self._record_diagnostic(
+                "executor.alternate_persist_load_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_path=str(skill_path),
+            )
             return 0
         steps = data.get("steps")
         if not isinstance(steps, list):
+            self._record_diagnostic(
+                "executor.alternate_persist_bad_shape",
+                level="warn",
+                recoverable=True,
+                skill_path=str(skill_path),
+                steps_type=type(steps).__name__,
+            )
             return 0
 
         appended = 0
@@ -438,6 +789,15 @@ class RealExecutor(StepExecutor):
                 json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
+        except Exception as e:
+            self._record_diagnostic(
+                "executor.alternate_persist_failed",
+                level="error",
+                recoverable=False,
+                exc_type=type(e).__name__,
+                exc_msg=str(e)[:200],
+                skill_path=str(skill_path),
+                count=appended,
+            )
             return 0
         return appended

@@ -80,3 +80,97 @@ class AuditEvent(BaseModel):
     kind: str  # "task_start" / "task_end" / "gate" / "error" / "info"
     message: str
     data: Optional[dict[str, Any]] = None
+
+
+class LocatorProbeResult(BaseModel):
+    """WI-23: structured outcome of probing a Playwright locator.
+
+    Replaces the legacy ``_first_visible`` boolean helper that caught
+    every exception and degraded to ``count() > 0``. That mask hid hidden
+    / strict-mode / detached / timeout failures behind a "looks fine"
+    signal, so the runner would click on elements that weren't actually
+    interactable.
+
+    The runner branches on ``state`` instead of a truthy bool:
+      - ``visible_unique``: exactly one visible match -- proceed.
+      - ``zero_matches``: locator resolved to nothing -- caller falls
+                          through to the next level.
+      - ``multiple_matches``: more than one match visible -- WI-22
+                              ambiguity detection runs against the
+                              candidate list.
+      - ``hidden``: matches found but none is visible (display:none,
+                    visibility:hidden, opacity:0, offscreen).
+      - ``detached``: target element exists in the count but the
+                      handle is no longer attached -- typically a
+                      re-render race.
+      - ``strict_mode_error``: Playwright strict-mode rejected the
+                               selector (resolved to multiple).
+      - ``timeout``: the probe itself timed out -- the page is still
+                     mid-action; caller should wait + retry, not click.
+    """
+
+    state: Literal[
+        "visible_unique",
+        "zero_matches",
+        "multiple_matches",
+        "hidden",
+        "detached",
+        "strict_mode_error",
+        "timeout",
+    ]
+    count: int = 0
+    """Number of elements the locator resolved to. 0 for zero_matches /
+    timeout; >=1 otherwise."""
+    last_error: Optional[str] = None
+    """Short string describing the underlying Playwright error when
+    ``state`` is hidden / detached / strict_mode_error / timeout. None
+    on success states."""
+
+
+class Diagnostic(BaseModel):
+    """WI-06: structured diagnostic emitted when a previously-silent
+    failure site (bad payload, screenshot fail, watcher install fail,
+    persistence fail, ambiguity scan crash, set_selection swallow) is
+    converted from ``except: pass`` into a surfaced event.
+
+    The replay event stream (orchestrator) surfaces these at
+    ``level="warn"`` for non-fatal and ``level="error"`` for fatal.
+    The Replay UI's PausedModal / LogPane renders them.
+
+    Each diagnostic carries:
+      - ``code``: short stable identifier (snake_case). Used by tests +
+        UI to route to the right rendering. Examples:
+        ``teach.bad_payload_json``, ``teach.invalid_fingerprint``,
+        ``teach.screenshot_failed``, ``teach.snapshot_drop``,
+        ``runner.watcher_install_failed``,
+        ``runner.set_selection_search_failed``,
+        ``runner.ambiguity_scan_failed``,
+        ``executor.hint_persist_failed``,
+        ``executor.alternate_persist_failed``.
+      - ``context``: structured details. Whatever the call site can
+        capture without leaking secrets.
+      - ``recoverable``: True if the calling code is continuing (the
+        operator can ignore); False if the calling code is also
+        bubbling up a failure. Drives the UI's severity badge.
+    """
+
+    code: str
+    """Stable snake_case identifier for the diagnostic site. UI routes
+    on this; tests assert on it."""
+    context: dict[str, Any] = Field(default_factory=dict)
+    """Structured details: file paths, exception class + message,
+    relevant identifiers (step_index, session_id, payload size).
+    Should not contain secrets / passwords."""
+    recoverable: bool = True
+    """True: the calling code continued past the failure; the user
+    can ignore. False: the calling code also surfaced a hard failure;
+    this diagnostic explains WHY for the audit trail.
+
+    Defaults to True because the predominant audit pattern is
+    'we swallowed this exception and continued' -- WI-06 surfaces it
+    rather than changing the recoverability."""
+    level: Literal["warn", "error", "debug"] = "warn"
+    """warn = non-fatal, surfaces in the log pane.
+    error = fatal, also routed through StepFailed event when applicable.
+    debug = noisy, off by default in the UI."""
+    timestamp: datetime = Field(default_factory=datetime.utcnow)

@@ -1,0 +1,35 @@
+- generic [ref=e1] clickable [onclick]
+  - complementary "Primary"
+    - StaticText "Sample Portal"
+    - navigation "Main menu" [ref=e2]
+      - list
+        - listitem [level=1]
+          - link "Catalog" [ref=e8]
+        - listitem [level=1]
+          - link "Upload" [ref=e9]
+        - listitem [level=1]
+          - link "Curation" [ref=e10]
+        - listitem [level=1]
+          - StaticText "File ▾"
+    - generic "Account"
+      - StaticText "smoke-operator"
+      - button "Sign out" [ref=e3]
+  - main
+    - generic
+      - sectionheader
+        - heading "Catalog" [level=1, ref=e4]
+        - paragraph
+          - StaticText "Search for an asset to edit or schedule."
+      - textbox "Asset ID or title..." [ref=e5]
+      - combobox [expanded=false, ref=e6]: All categories
+        - MenuListPopup
+          - option "All categories" [selected, ref=e11]
+          - option "Sports" [ref=e12]
+          - option "News" [ref=e13]
+          - option "Entertainment" [ref=e14]
+          - option "Kids" [ref=e15]
+          - option "Documentary" [ref=e16]
+          - option "Drama" [ref=e17]
+          - option "Comedy" [ref=e18]
+          - option "Music" [ref=e19]
+      - button "Search" [ref=e7]
