@@ -1,0 +1,23 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+┌───────────────────────────────────────────────────────────────────────┐
+│ Replay skill country_pick_layerb                                      │
+│ Session: 756280e7ea6a                                                 │
+│ Steps:   2                                                            │
+│ Params:  {'country': 'zw', 'multiselect_country_checkbox_ar': 'true'} │
+└───────────────────────────────────────────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  set_selection  fill_multiselect_country_checkbox_ar
+                                Replay summary                                 
+┌───┬───────────────┬──────────────────┬──────────┬────────┬──────────────────┐
+│ # │ Action        │ Label            │ Level    │ Status │ Detail           │
+├───┼───────────────┼──────────────────┼──────────┼────────┼──────────────────┤
+│ 0 │ navigate      │ navigate         │ L1 exact │ ok     │ navigated to     │
+│   │               │                  │          │        │ http://localhost │
+│   │               │                  │          │        │ :5188/asset/A-10 │
+│   │               │                  │          │        │ 01               │
+│ 1 │ set_selection │ fill_multiselec… │          │ fail   │ set_selection:   │
+│   │               │                  │          │        │ no checkbox      │
+│   │               │                  │          │        │ match for        │
+│   │               │                  │          │        │ item='zw'        │
+└───┴───────────────┴──────────────────┴──────────┴────────┴──────────────────┘
+Audit log: sessions\756280e7ea6a\audit_log.jsonl
