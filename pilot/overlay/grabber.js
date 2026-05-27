@@ -2050,6 +2050,110 @@
     return s;
   }
 
+  // ---- multi-select option universe capture --------------------------
+  //
+  // Locked design decision (2026-05-28 id+label sprint): capture id+label
+  // for EVERY option row that renders during a custom multi-select
+  // interaction (the whole option universe seen, including server-search
+  // results as they come back), not just the clicked one. Emitted on the
+  // option/checkbox click AND the search input_change payloads as
+  // ``options_seen`` so the annotator can union them into the spec's
+  // known_options (feeds label->id resolution at replay, the LLM
+  // annotation, and planner clarifying questions).
+  //
+  // This does NOT touch the native <select> ``options_snapshot`` path --
+  // it only fires for the MultiSelect.jsx testid family
+  // ({prefix}-toggle / -search / -checkbox-X / -item-X / -chip-X /
+  // -popover) so the existing select option-snapshot code is untouched.
+  var _MS_PREFIX_SUFFIXES = [
+    /-toggle$/,
+    /-search$/,
+    /-popover$/,
+    /-chips$/,
+    /-checkbox-[^-].*$/,
+    /-item-[^-].*$/,
+    /-chip-[^-]+$/,
+  ];
+
+  // Given any element, walk up to find the multiselect container's testid
+  // prefix (the part before -toggle / -search / -popover / -checkbox-X /
+  // ...). Returns null when the element isn't part of a recognized
+  // MultiSelect widget.
+  function _multiselectPrefixFor(el) {
+    var cur = el;
+    var depth = 0;
+    while (cur && cur.nodeType === 1 && depth < 12) {
+      var tid = cur.getAttribute && cur.getAttribute("data-testid");
+      if (tid) {
+        for (var i = 0; i < _MS_PREFIX_SUFFIXES.length; i++) {
+          var m = tid.match(_MS_PREFIX_SUFFIXES[i]);
+          if (m) {
+            return tid.slice(0, tid.length - m[0].length);
+          }
+        }
+        // A bare ``{prefix}`` container (no suffix) -- MultiSelect.jsx
+        // renders the root div with data-testid={prefix}. If it has a
+        // descendant popover/toggle with the same prefix, treat it as the
+        // prefix directly.
+        if (
+          cur.querySelector &&
+          (cur.querySelector('[data-testid="' + cssEscape(tid) + '-popover"]') ||
+            cur.querySelector('[data-testid="' + cssEscape(tid) + '-toggle"]'))
+        ) {
+          return tid;
+        }
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    return null;
+  }
+
+  // Scan a multiselect's currently-rendered option rows and return
+  // [{value, label}] for each. id comes from the -checkbox-X / -item-X
+  // testid suffix; label is the option's accessible name / row text. The
+  // popover may not be in the DOM (closed picker) -- returns [] then.
+  function _collectMultiselectOptions(prefix) {
+    if (!prefix) return [];
+    var out = [];
+    var seen = {};
+    try {
+      var rowSel =
+        '[data-testid^="' + cssEscape(prefix) + '-checkbox-"],' +
+        '[data-testid^="' + cssEscape(prefix) + '-item-"]';
+      var rows = document.querySelectorAll(rowSel);
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var tid = row.getAttribute("data-testid") || "";
+        var id = null;
+        var cm = tid.match(/-checkbox-(.+)$/);
+        var im = tid.match(/-item-(.+)$/);
+        if (cm) id = cm[1];
+        else if (im) id = im[1];
+        if (id == null || seen[id]) continue;
+        // Label: prefer the row's accessible name, then the nearest
+        // label/li text, then trimmed text content. The checkbox
+        // <input> next to the <span>{name}</span> exposes the name as
+        // its accessible name; the row <li> carries the visible text.
+        var label = trim(getAccessibleName(row));
+        if (!label) {
+          // Climb to the row container (li / label) for the visible text.
+          var container = row.closest
+            ? row.closest('[data-testid^="' + cssEscape(prefix) + '-item-"]')
+            : null;
+          if (container) label = trim(container.textContent || "");
+          if (!label) label = trim(row.textContent || "");
+        }
+        if (!label) label = id;
+        seen[id] = 1;
+        out.push({ value: id, label: label });
+      }
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] _collectMultiselectOptions failed", e);
+    }
+    return out;
+  }
+
   document.addEventListener(
     "click",
     function (e) {
@@ -2181,6 +2285,17 @@
         if (DEBUG) console.warn("[cp] download intent emit failed", dlErr);
       }
 
+      // id+label sprint: when the click target is inside a custom
+      // multi-select, snapshot the whole rendered option universe so the
+      // annotator can collect known_options (id+label). Captures the
+      // currently-surfaced rows -- on a toggle-open click this is the
+      // initial list; on an option click it's whatever the last search
+      // surfaced. Combined with the search input_change capture below,
+      // this covers the universe the operator saw.
+      var clickMsPrefix = _multiselectPrefixFor(target);
+      var clickOptionsSeen = clickMsPrefix
+        ? _collectMultiselectOptions(clickMsPrefix)
+        : null;
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
@@ -2189,6 +2304,8 @@
         click_detail: clickDetail,
         pointer_type: pointerType,
         target_state_before: targetStateBefore,
+        options_seen: (clickOptionsSeen && clickOptionsSeen.length)
+          ? clickOptionsSeen : null,
       }, attr);
       // WI-14: schedule the after-state snapshot on the microtask the
       // same way _emitWithStateSnapshot defers page_state_after. The
@@ -2261,6 +2378,17 @@
     // submit/click/blur.
     var stateBefore = _pageState();
     var beforeValue = _consumeBeforeValue(el);
+    // id+label sprint: if this input is a multi-select search box, the
+    // debounce timer has elapsed AFTER the server-side search settled, so
+    // the filtered option rows are rendered now. Snapshot them as
+    // options_seen so the annotator captures the universe the operator
+    // surfaced via search (a row that only appears for q="Argentina"
+    // wouldn't be in the initial list). Fires only for the MultiSelect
+    // testid family; non-multiselect inputs get null.
+    var inputMsPrefix = _multiselectPrefixFor(el);
+    var inputOptionsSeen = inputMsPrefix
+      ? _collectMultiselectOptions(inputMsPrefix)
+      : null;
     var payload = _merge({
       kind: "input_change",
       fingerprint: fingerprint(el),
@@ -2268,6 +2396,8 @@
       value_before: beforeValue,
       page_url: location.href,
       raw_event_kind: "input",
+      options_seen: (inputOptionsSeen && inputOptionsSeen.length)
+        ? inputOptionsSeen : null,
     }, _attribution("user_input"));
     _emitWithStateSnapshot(payload, stateBefore);
   }

@@ -313,6 +313,10 @@ class TeachRecorder:
             status=raw.get("status"),
             initiator_event_id=raw.get("initiator_event_id"),
             mutation_summary=raw.get("mutation_summary"),
+            # id+label sprint: multi-select option universe captured by
+            # the grabber on option-click / search-input events. None on
+            # non-multiselect events and legacy traces.
+            options_seen=raw.get("options_seen"),
         )
 
         # Screenshot is safe here — we're on the main thread, outside

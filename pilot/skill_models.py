@@ -2312,7 +2312,36 @@ class SetSelectionSpec(BaseModel):
 
     mode: Literal["replace", "add", "remove", "preserve"]
     param: str
-    """Name of the list parameter. Resolved to ``list[str]`` at replay."""
+    """Name of the list parameter. Resolved to ``list[str]`` at replay.
+
+    id+label convention (2026-05-28): replay param VALUES are human
+    LABELS (e.g. ``country=Zimbabwe``), NOT opaque ids. The runner
+    resolves each label to its id via ``known_options`` (label->value,
+    case-insensitive) for the equality assertion + diagnostics, and
+    reaches the option by typing the LABEL into the search box and
+    clicking the surfaced row whose visible text matches -- the id
+    template is never required for the click. The operator never types
+    ids."""
+
+    known_options: list["OptionSnapshot"] = Field(default_factory=list)
+    """id+label sprint (2026-05-28): the full universe of options seen
+    at record time -- every option row that rendered during the
+    multi-select interaction (including server-search results), as
+    ``OptionSnapshot`` entries (value=id, label=label). Populated by the
+    annotator by unioning every contributing event's
+    ``TraceEvent.options_seen``. This is the SUPERSET; ``item_labels``
+    (below) is the subset the operator actually SELECTED.
+
+    Three consumers:
+      1. Replay -- the runner builds a label->id map (case-insensitive)
+         so a target LABEL resolves to its id for the equality
+         assertion; reach-by-label still works for labels NOT in this
+         set (unknown-label diagnostic + best-effort search).
+      2. LLM annotation -- the id+label pairs feed semantic inference
+         and alias generation.
+      3. Planner -- the v2 param surfaces these labels so a future
+         clarify step can offer the operator the seen options.
+    Empty for legacy skills recorded before the wider option capture."""
 
     open_picker_fp: Optional[ElementFingerprint] = None
     """Click target to open the dropdown. Optional -- some pickers stay
@@ -3394,6 +3423,20 @@ class TraceEvent(BaseModel):
     picked. None for legacy traces (which only captured ``file_name``);
     annotator falls back to a single FileMetadata derived from
     ``file_name`` in that case."""
+
+    options_seen: Optional[list[OptionSnapshot]] = None
+    """id+label sprint (2026-05-28): the full set of option rows
+    rendered inside a custom multi-select at the moment of this event.
+    Populated by the grabber on multiselect option ``click`` and
+    multiselect-search ``input_change`` events -- each entry is
+    ``{value=id, label=visible label}``. Distinct from the native
+    ``<select>`` ``options_snapshot`` (which lives on the fingerprint);
+    this is the custom-widget universe captured ACROSS events
+    (including server-search results as they surface). The annotator
+    unions every event's ``options_seen`` for a picker into the
+    SetSelectionSpec's ``known_options`` (label->id resolution at
+    replay, LLM annotation, planner clarify). None for non-multiselect
+    events and legacy traces."""
 
     drop_target_fp: Optional[ElementFingerprint] = None
     """WI-30: on ``drop`` events, the fingerprint of the target the
