@@ -1938,6 +1938,27 @@ def _detect_set_selection_clusters(
             i += 1
             continue
 
+        # A set_selection MUST involve at least one option selection
+        # (a checkbox/item click). A bare ``*-toggle`` click followed
+        # only by observed events (DOM mutations, network) is NOT a
+        # multi-select interaction -- e.g. an accordion disclosure
+        # button whose testid happens to end in ``-toggle`` and flips
+        # aria-expanded. Without this guard such a click is wrongly
+        # claimed here (producing a degenerate set_selection with no
+        # checkbox_template_fp + empty known_options) and pre-empts
+        # ``_detect_toggle_state_clusters``, which would correctly emit
+        # a toggle_state step. Require a real selection event before
+        # consuming the cluster; otherwise leave the events for the
+        # toggle_state / single-event detectors.
+        has_selection = any(
+            ce.kind not in _OBSERVED_EVENT_KINDS
+            and _multiselect_role(ce.fingerprint) in ("checkbox", "item")
+            for ce in cluster_events
+        )
+        if not has_selection:
+            i += 1
+            continue
+
         # Collect raw event ids in order.
         raw_ids: list[str] = []
         for e in cluster_events:
