@@ -561,6 +561,52 @@ def test_runner_direct_path_scrolls_before_click() -> None:
     assert log.index(("scroll", "checkbox-us")) < log.index(("click", "checkbox-us"))
 
 
+def test_runner_direct_path_reaches_client_side_option_by_label_row() -> None:
+    """Real bug #5 (e2e matrix 2026-05-28): a CLIENT-SIDE (direct
+    strategy, no search box) multi-select must retarget a DIFFERENT
+    option on replay. The recorded checkbox_template_fp has no usable
+    {item} placeholder and the recorded value isn't the item id, so the
+    id template can't materialise the new target. The fix: the direct
+    path reaches by the option's visible LABEL row FIRST (locked design
+    #3), exactly like the search path -- so 'Kids' is found and clicked
+    even though the recording only ever clicked 'Sports'."""
+    runner = _make_runner()
+    log: list = []
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="categories",
+        # The recorded template can't generalise to a new item; force it
+        # to miss so the test proves the label-row reach is what works.
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-categories-checkbox-sports"
+        ),
+        item_labels={"sports": "Sports"},
+        known_options=[
+            OptionSnapshot(value="sports", label="Sports"),
+            OptionSnapshot(value="kids", label="Kids"),
+        ],
+        select_strategy="direct",
+        option_list_selector="[data-testid='multiselect-categories-popover']",
+    )
+
+    # id template never resolves (the new target isn't the recorded one).
+    runner._locate_via_template = (  # type: ignore[assignment]
+        lambda fp, params: None
+    )
+    # Label-row reach resolves by the visible label it's asked to find.
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
+
+    err = runner._reach_and_click_option(spec, "kids", item_label="Kids")
+    assert err is None
+    # Reached + clicked the Kids ROW by label; the id template (stuck on
+    # 'sports') was never the click target.
+    assert ("click", "row[Kids]") in log
+    assert ("click", "checkbox-sports") not in log
+
+
 # ---- runner: _robust_click effect-gated dispatch_event fallback -----------
 
 

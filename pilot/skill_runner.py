@@ -2481,21 +2481,31 @@ class SkillRunner:
             )
 
         # ---- scroll / direct path (also the search fallback) ----
+        # Locked design #3: reach by the option's visible LABEL row first
+        # (works for client-side pickers where every option is present and
+        # the operator never searched -- real bug #5). Only fall back to
+        # the id-templated checkbox when the label row can't be matched
+        # (e.g. a picker whose rows don't expose the label as text), then
+        # to search.
         try:
-            loc = self._locate_via_template(
-                spec.checkbox_template_fp, {"item": item}
-            )
+            loc = self._locate_option_row_by_label(spec, label)
+            if loc is None and spec.checkbox_template_fp is not None:
+                loc = self._locate_via_template(
+                    spec.checkbox_template_fp, {"item": item}
+                )
             if loc is None:
-                # Direct couldn't find it. If a search box exists and we
-                # have NOT already tried search, do it now (real-portal
-                # case A: off-viewport target reachable via search).
+                # Neither label-row nor template matched. If a search box
+                # exists and we have NOT already tried search, do it now
+                # (real-portal case A: off-viewport target reachable via
+                # search).
                 if not use_search and spec.search_fp is not None:
                     clicked = self._search_then_click_option(spec, item, label)
                     if clicked is True:
                         return None
                 return _fail(
                     "set_selection_item_not_found",
-                    f"set_selection: no checkbox match for item={item!r}",
+                    f"set_selection: no row/checkbox match for "
+                    f"item={item!r} label={label!r}",
                 )
             try:
                 loc.scroll_into_view_if_needed(timeout=2000)
