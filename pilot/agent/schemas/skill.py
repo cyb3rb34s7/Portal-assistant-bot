@@ -42,6 +42,19 @@ class SkillParameter(BaseModel):
         "string", "number", "boolean", "date", "datetime",
         "file_path", "enum", "number_range", "string_list", "object",
     ] = "string"
+    label_options: list[str] | None = Field(
+        default=None,
+        description=(
+            "id+label sprint: for multi-select (string_list) params, the "
+            "human option LABELS seen at record time (from the "
+            "set_selection spec's known_options). Replay values are these "
+            "LABELS -- the runner resolves each label to its id "
+            "internally. A planner clarify step consumes this list to "
+            "offer the operator the seen options; the interactive UX is "
+            "not built here, only the data is surfaced. None for "
+            "non-multiselect params."
+        ),
+    )
 
 
 class SuccessAssertion(BaseModel):
