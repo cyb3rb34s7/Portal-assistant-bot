@@ -36,6 +36,7 @@ from pilot.annotate import (
 )
 from pilot.skill_models import (
     ElementFingerprint,
+    OptionSnapshot,
     SetSelectionSpec,
     Skill,
     SkillStep,
@@ -65,8 +66,19 @@ def _click(event_id, test_id, *, accessible_name=None, sequence=1):
     )
 
 
-def _search(event_id, test_id, value, sequence=1):
-    return TraceEvent(
+def _click_with_options(event_id, test_id, options_seen, *,
+                        accessible_name=None, sequence=1):
+    ev = _click(
+        event_id, test_id, accessible_name=accessible_name, sequence=sequence
+    )
+    ev.options_seen = [
+        OptionSnapshot(value=v, label=lbl) for (v, lbl) in options_seen
+    ]
+    return ev
+
+
+def _search(event_id, test_id, value, sequence=1, options_seen=None):
+    ev = TraceEvent(
         ts=datetime.utcnow(),
         kind="input_change",
         fingerprint=ElementFingerprint(test_id=test_id, tag="input"),
@@ -77,6 +89,11 @@ def _search(event_id, test_id, value, sequence=1):
         sequence=sequence,
         source="user_input",
     )
+    if options_seen is not None:
+        ev.options_seen = [
+            OptionSnapshot(value=v, label=lbl) for (v, lbl) in options_seen
+        ]
+    return ev
 
 
 # ---- schema ---------------------------------------------------------------
@@ -161,6 +178,93 @@ def test_annotator_no_search_box_is_direct_strategy() -> None:
     assert spec.item_labels.get("us") == "United States"
 
 
+# ---- annotator: id+label sprint (known_options + stray-param fix) --------
+
+
+def test_annotator_no_stray_param_for_set_selection() -> None:
+    """Finding 3a regression: a set_selection cluster must declare ONLY
+    its list param. The checkbox-click (the cluster's primary target)
+    must NOT also be bound as its own boolean param
+    (multiselect_country_checkbox_ar), and the step must be labeled as a
+    set_selection step (not fill_multiselect_country_checkbox_ar)."""
+    events = _assign_synthetic_ids([
+        _click("c1", "multiselect-country-toggle", sequence=1),
+        _search("i1", "multiselect-country-search", "Argentina", sequence=2),
+        _click(
+            "c2", "multiselect-country-checkbox-ar",
+            accessible_name="Argentina", sequence=3,
+        ),
+        _click("c3", "multiselect-country-toggle", sequence=4),
+    ])
+    skill = build_skill(skill_name="set_country", events=events, auto=True)
+
+    # Exactly one set_selection step.
+    ss_steps = [s for s in skill.steps if s.action == "set_selection"]
+    assert len(ss_steps) == 1
+    step = ss_steps[0]
+
+    # No stray boolean param, only the list param 'country'.
+    param_names = {p.name for p in skill.params}
+    assert "multiselect_country_checkbox_ar" not in param_names
+    assert param_names == {"country"}
+    country = next(p for p in skill.params if p.name == "country")
+    assert country.type == "string_list"
+
+    # The step carries no stray binding and a clean label.
+    assert step.param_binding is None
+    assert "checkbox" not in (step.semantic_label or "")
+    assert step.semantic_label == "set_selection_multiselect_country"
+
+
+def test_annotator_populates_known_options_and_label_example() -> None:
+    """id+label sprint: known_options is the full universe seen (unioned
+    from every event's options_seen), the param example is the selected
+    LABEL (not the id), and enum_options carries the label universe."""
+    events = _assign_synthetic_ids([
+        _click(
+            "c1", "multiselect-country-toggle",
+            sequence=1,
+        ),
+        # Search "a" surfaces several countries.
+        _search(
+            "i1", "multiselect-country-search", "a", sequence=2,
+            options_seen=[
+                ("ar", "Argentina"),
+                ("au", "Australia"),
+                ("at", "Austria"),
+            ],
+        ),
+        # Operator narrows + clicks Argentina; the click event also
+        # carries the currently-rendered universe.
+        _click_with_options(
+            "c2", "multiselect-country-checkbox-ar",
+            [("ar", "Argentina")],
+            accessible_name="Argentina", sequence=3,
+        ),
+        _click("c3", "multiselect-country-toggle", sequence=4),
+    ])
+    skill = build_skill(skill_name="set_country", events=events, auto=True)
+    spec = next(
+        s.set_selection for s in skill.steps if s.action == "set_selection"
+    )
+
+    # known_options is the SUPERSET of everything seen.
+    ko = {opt.value: opt.label for opt in spec.known_options}
+    assert ko == {
+        "ar": "Argentina",
+        "au": "Australia",
+        "at": "Austria",
+    }
+    # item_labels is only the SELECTED subset.
+    assert spec.item_labels == {"ar": "Argentina"}
+
+    # The declared param example + enum read LABELS, not ids.
+    country = next(p for p in skill.params if p.name == "country")
+    assert country.example == "Argentina"  # selected label, not "ar"
+    enum_labels = {o.label for o in (country.enum_options or [])}
+    assert enum_labels == {"Argentina", "Australia", "Austria"}
+
+
 # ---- runner: reach behaviour ----------------------------------------------
 
 
@@ -208,9 +312,21 @@ class _FakePage:
         return 0
 
 
+class _FakeSelectionPage(_FakePage):
+    """Fake page that returns scripted current/final selection reads."""
+
+    def __init__(self, selection_reads):
+        self._selection_reads = list(selection_reads)
+
+    def evaluate(self, _expr, *args):
+        if args:
+            return self._selection_reads.pop(0)
+        return 0
+
+
 class _FakeSession:
-    def __init__(self):
-        self.page = _FakePage()
+    def __init__(self, page=None):
+        self.page = page or _FakePage()
 
 
 def _make_runner() -> SkillRunner:
@@ -230,11 +346,13 @@ def _make_runner() -> SkillRunner:
     return runner
 
 
-def test_runner_search_path_types_label_not_id() -> None:
-    """The crux of Case B: when select_strategy='search', the runner fills
-    the search box with the option's LABEL ('Zimbabwe'), never the id
-    ('zw'), and waits for the target checkbox to be visible before
-    clicking."""
+def test_runner_search_path_types_label_and_clicks_row_by_label() -> None:
+    """The crux of Case B + id+label locked decision #3: when
+    select_strategy='search', the runner fills the search box with the
+    option's LABEL ('Zimbabwe'), never the id ('zw'), waits for the
+    surfaced ROW (matched by visible label, NOT the id template) to be
+    visible, and clicks THAT row -- so a replay-time-new target reaches
+    without an id template."""
     runner = _make_runner()
     log: list = []
 
@@ -247,6 +365,79 @@ def test_runner_search_path_types_label_not_id() -> None:
         ),
         item_labels={"zw": "Zimbabwe"},
         select_strategy="search",
+        option_list_selector="[data-testid='multiselect-country-popover']",
+    )
+
+    def _fake_locate(fp, params):
+        if fp is spec.search_fp:
+            return _FakeLocator(log, "search")
+        # The id template must NOT be used for the click on the search
+        # path; if it is, the test catches it as a 'checkbox-...' click.
+        return _FakeLocator(log, f"checkbox-{params.get('item')}")
+
+    runner._locate_via_template = _fake_locate  # type: ignore[assignment]
+    runner._set_selection_dom_timeout_ms = lambda: 1000  # type: ignore[assignment]
+    # The reach-by-label-row resolution is stubbed: it returns a fake
+    # locator named by the label it was asked to find, so we can assert
+    # the click targeted the row (by label) and never the id template.
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
+
+    result = runner._search_then_click_option(spec, "zw", "Zimbabwe")
+    assert result is True
+
+    fills = [e for e in log if e[0] == "fill" and e[1] == "search"]
+    # First fill is the LABEL, not the id.
+    assert fills[0] == ("fill", "search", "Zimbabwe")
+    assert ("fill", "search", "zw") not in log
+    # Visibility-gated on the row, then clicked -- by LABEL, not id.
+    assert ("wait_for", "row[Zimbabwe]", "visible") in log
+    assert ("click", "row[Zimbabwe]") in log
+    # The id-templated checkbox must NOT be clicked on the search path.
+    assert ("click", "checkbox-zw") not in log
+    # Search cleared afterward for the next item.
+    assert fills[-1] == ("fill", "search", "")
+
+
+def test_runner_set_selection_param_item_can_carry_label_for_new_id() -> None:
+    """id+label locked decision #2: the operator passes a LABEL
+    (``country=Zimbabwe``); the runner resolves label->id via
+    known_options for the equality assertion, searches the label, and
+    clicks the surfaced ROW by label (never the id template). The new
+    target ('Zimbabwe'->'zw') was NOT the recorded selection
+    ('Argentina')."""
+    runner = _make_runner()
+    runner.params = {"country": ["Zimbabwe"]}
+    # current selection read=[], final read after click=["zw"].
+    runner.session = _FakeSession(_FakeSelectionPage([[], ["zw"]]))  # type: ignore[assignment]
+    log: list = []
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="country",
+        search_fp=ElementFingerprint(test_id="multiselect-country-search"),
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-country-checkbox-{item}"
+        ),
+        current_items_selector="[data-testid^='multiselect-country-chip-']",
+        current_items_id_attr="data-testid",
+        current_items_id_prefix="multiselect-country-chip-",
+        item_labels={"ar": "Argentina"},
+        # The universe seen at record carried both ar/Argentina and the
+        # later-surfaced zw/Zimbabwe so label->id resolution works.
+        known_options=[
+            OptionSnapshot(value="ar", label="Argentina"),
+            OptionSnapshot(value="zw", label="Zimbabwe"),
+        ],
+        select_strategy="search",
+        option_list_selector="[data-testid='multiselect-country-popover']",
+    )
+    step = SkillStep(
+        index=0,
+        action="set_selection",
+        fingerprint=ElementFingerprint(test_id="multiselect-country-toggle"),
+        set_selection=spec,
     )
 
     def _fake_locate(fp, params):
@@ -256,19 +447,82 @@ def test_runner_search_path_types_label_not_id() -> None:
 
     runner._locate_via_template = _fake_locate  # type: ignore[assignment]
     runner._set_selection_dom_timeout_ms = lambda: 1000  # type: ignore[assignment]
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
 
-    result = runner._search_then_click_option(spec, "zw", "Zimbabwe")
-    assert result is True
+    result, level = runner._do_set_selection(step)
 
+    assert result.success is True
+    assert level == 1
     fills = [e for e in log if e[0] == "fill" and e[1] == "search"]
-    # First fill is the LABEL, not the id.
+    # Searched by the resolved LABEL, never the id.
     assert fills[0] == ("fill", "search", "Zimbabwe")
     assert ("fill", "search", "zw") not in log
-    # Visibility-gated before click.
-    assert ("wait_for", "checkbox-zw", "visible") in log
-    assert ("click", "checkbox-zw") in log
-    # Search cleared afterward for the next item.
+    # Reached + clicked the ROW by label; id template never clicked.
+    assert ("wait_for", "row[Zimbabwe]", "visible") in log
+    assert ("click", "row[Zimbabwe]") in log
+    assert ("click", "checkbox-zw") not in log
     assert fills[-1] == ("fill", "search", "")
+
+
+def test_runner_unknown_label_warns_but_still_reaches() -> None:
+    """id+label sprint: a target label not in known_options is not fatal
+    -- the runner emits set_selection_unknown_label (warn) and still
+    attempts the search-by-label reach. Equality is label-aware: the
+    pseudo-id (the label) matches the chip via the label map."""
+    runner = _make_runner()
+    # 'Atlantis' is NOT in known_options -> unknown label path. The
+    # portal still surfaces a chip whose id is the label string here.
+    runner.params = {"country": ["Atlantis"]}
+    runner.session = _FakeSession(  # type: ignore[assignment]
+        _FakeSelectionPage([[], ["Atlantis"]])
+    )
+    log: list = []
+    diags: list = []
+    runner._diagnostic = (  # type: ignore[assignment]
+        lambda code, **kw: diags.append((code, kw))
+    )
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="country",
+        search_fp=ElementFingerprint(test_id="multiselect-country-search"),
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-country-checkbox-{item}"
+        ),
+        current_items_selector="[data-testid^='multiselect-country-chip-']",
+        current_items_id_attr="data-testid",
+        current_items_id_prefix="multiselect-country-chip-",
+        known_options=[
+            OptionSnapshot(value="zw", label="Zimbabwe"),
+        ],
+        select_strategy="search",
+        option_list_selector="[data-testid='multiselect-country-popover']",
+    )
+    step = SkillStep(
+        index=0,
+        action="set_selection",
+        fingerprint=ElementFingerprint(test_id="multiselect-country-toggle"),
+        set_selection=spec,
+    )
+    runner._locate_via_template = (  # type: ignore[assignment]
+        lambda fp, params: _FakeLocator(log, "search")
+    )
+    runner._set_selection_dom_timeout_ms = lambda: 1000  # type: ignore[assignment]
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
+
+    result, level = runner._do_set_selection(step)
+
+    assert result.success is True
+    assert level == 1
+    # Warned about the unknown label.
+    assert any(c == "runner.set_selection_unknown_label" for c, _ in diags)
+    # Still searched + clicked by the label.
+    assert ("fill", "search", "Atlantis") in log
+    assert ("click", "row[Atlantis]") in log
 
 
 def test_runner_direct_path_scrolls_before_click() -> None:

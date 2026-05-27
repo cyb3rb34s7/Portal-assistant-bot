@@ -1997,14 +1997,28 @@ class SkillRunner:
                 expected=_ES(network=[spec.option_source])
             )
 
-        target = self.params.get(spec.param)
-        if not isinstance(target, list):
+        raw_target = self.params.get(spec.param)
+        if isinstance(raw_target, dict):
+            # Replay-time label hints can arrive from a params JSON file
+            # either as [{"id": "zw", "label": "Zimbabwe"}] or as a
+            # compact {"zw": "Zimbabwe"} map. Normalize both forms
+            # below before diffing so reconciliation stays id-keyed.
+            if "id" in raw_target:
+                target = [raw_target]
+            else:
+                target = [
+                    {"id": item_id, "label": item_label}
+                    for item_id, item_label in raw_target.items()
+                ]
+        elif not isinstance(raw_target, list):
             # Tolerant CSV split is convenient for CLI invocations but
             # the planner / agent layer is expected to pass a list. Log
             # the coercion so a stray-comma bug doesn't masquerade as
             # multiple items, and so an operator who passes "foo, bar"
             # as ONE item sees a warning.
-            split = [t.strip() for t in str(target or "").split(",") if t.strip()]
+            split = [
+                t.strip() for t in str(raw_target or "").split(",") if t.strip()
+            ]
             if len(split) > 1:
                 self.audit.log(
                     "warn",
@@ -2015,7 +2029,27 @@ class SkillRunner:
                     ),
                 )
             target = split
-        target_set = set(target)
+        else:
+            target = raw_target
+
+        (
+            target_set,
+            replay_item_labels,
+            unknown_labels,
+        ) = self._set_selection_target_ids_and_labels(target, spec)
+        # id+label sprint: a target label not in known_options is not
+        # fatal -- the operator may target something valid that wasn't
+        # surfaced at record. Warn so it's visible, then attempt the
+        # search-by-label reach anyway.
+        for unk in unknown_labels:
+            self._diagnostic(
+                "runner.set_selection_unknown_label",
+                level="warn",
+                recoverable=True,
+                label=unk,
+                param=spec.param,
+                known_option_count=len(spec.known_options or []),
+            )
 
         page = self.session.page
 
@@ -2113,7 +2147,11 @@ class SkillRunner:
                     ),
                     0,
                 )
-            err = self._reach_and_click_option(spec, item)
+            err = self._reach_and_click_option(
+                spec,
+                item,
+                item_label=replay_item_labels.get(item),
+            )
             if err is not None:
                 return (err, 0)
 
@@ -2125,7 +2163,12 @@ class SkillRunner:
         for item in sorted(to_remove):
             if spec.checkbox_template_fp is None:
                 break
-            err = self._reach_and_click_option(spec, item, soft=True)
+            err = self._reach_and_click_option(
+                spec,
+                item,
+                soft=True,
+                item_label=replay_item_labels.get(item),
+            )
             if err is not None:
                 # soft=True only ever returns a diagnostic-style marker;
                 # the helper already logged it. Continue to the next item.
@@ -2186,7 +2229,24 @@ class SkillRunner:
                     )
                 else:
                     expected = target_set
-                if final_set != expected:
+                # id+label sprint: the assertion is LABEL-aware. Chips
+                # expose ids; the target set may mix real ids (resolved
+                # via known_options) and label pseudo-ids (unknown
+                # labels). Compare by LABEL, case-insensitive, mapping
+                # both sides through known_options (id->label). An id
+                # with no known label maps to itself, so the recorded
+                # id-path stays a valid fallback.
+                id_to_label_ci = {
+                    opt.value: (opt.label or opt.value)
+                    for opt in (spec.known_options or [])
+                }
+
+                def _to_label_key(token: str) -> str:
+                    return id_to_label_ci.get(token, token).strip().lower()
+
+                final_label_keys = {_to_label_key(t) for t in final_set}
+                expected_label_keys = {_to_label_key(t) for t in expected}
+                if final_label_keys != expected_label_keys:
                     return (
                         ToolResult(
                             success=False,
@@ -2203,6 +2263,8 @@ class SkillRunner:
                             error_details={
                                 "expected": sorted(expected),
                                 "actual": sorted(final_set),
+                                "expected_labels": sorted(expected_label_keys),
+                                "actual_labels": sorted(final_label_keys),
                                 "to_add": sorted(to_add),
                                 "to_remove": sorted(to_remove),
                             },
@@ -2240,12 +2302,119 @@ class SkillRunner:
             return int(getattr(self.wait_policy, "dom_timeout_ms", 5000) or 5000)
         return 5000
 
+    @staticmethod
+    def _parse_set_selection_target_item(raw_item: Any) -> tuple[str, Optional[str]]:
+        """Return ``(raw_text, explicit_label)`` for one target item.
+
+        id+label sprint (2026-05-28): the locked convention is that
+        replay param VALUES are human LABELS. So a plain string IS the
+        label; resolution of label->id happens against the spec's
+        ``known_options`` in :meth:`_set_selection_target_ids_and_labels`
+        (this helper doesn't have the spec). The optional ``"id:label"``
+        form and structured ``{"id":..,"label":..}`` dict stay supported
+        for callers (a params file / planner) that want to be explicit
+        and bypass label resolution -- in those forms the first element
+        is treated as the id, the second as the label.
+
+        Returns ``(text, explicit_label)`` where ``explicit_label`` is
+        non-None only when the caller used an explicit id:label / dict
+        form. For a bare string, ``explicit_label`` is None and the
+        string is resolved as a label by the caller.
+        """
+        if isinstance(raw_item, dict):
+            raw_id = raw_item.get("id")
+            if raw_id is None:
+                raw_id = raw_item.get("value")
+            if raw_id is None:
+                return str(raw_item), None
+            item_id = str(raw_id).strip()
+            raw_label = raw_item.get("label")
+            item_label = (
+                str(raw_label).strip()
+                if raw_label is not None and str(raw_label).strip()
+                else None
+            )
+            return item_id, item_label
+
+        text = str(raw_item)
+        if ":" in text:
+            item_id, item_label = text.split(":", 1)
+            item_id = item_id.strip()
+            item_label = item_label.strip()
+            if item_id and item_label:
+                return item_id, item_label
+        return text, None
+
+    def _set_selection_target_ids_and_labels(
+        self,
+        target: list[Any],
+        spec: "SetSelectionSpec",
+    ) -> tuple[set[str], dict[str, str], list[str]]:
+        """Resolve target values (LABELS) to ids + reach labels.
+
+        id+label sprint: each target value is a human LABEL. We resolve
+        it to its id via ``spec.known_options`` (label->value,
+        case-insensitive) so the diff + equality assertion stay id-keyed
+        when possible. The LABEL is always carried as the reach text
+        (typed into the search box). When a label is NOT in
+        known_options, we use the label string itself as the diff
+        pseudo-id and flag it (the caller emits a
+        ``set_selection_unknown_label`` diagnostic) -- the reach is still
+        attempted because the operator may legitimately target something
+        valid that wasn't seen at record.
+
+        Returns ``(target_ids, reach_labels_by_id, unknown_labels)``.
+        """
+        # Build case-insensitive label->id and id set from known_options.
+        label_to_id: dict[str, str] = {}
+        known_ids: set[str] = set()
+        id_to_label: dict[str, str] = {}
+        for opt in (spec.known_options or []):
+            known_ids.add(opt.value)
+            id_to_label[opt.value] = opt.label
+            if opt.label:
+                label_to_id.setdefault(opt.label.strip().lower(), opt.value)
+
+        target_ids: set[str] = set()
+        reach_labels: dict[str, str] = {}
+        unknown_labels: list[str] = []
+
+        for raw_item in target:
+            text, explicit_label = self._parse_set_selection_target_item(raw_item)
+            if explicit_label is not None:
+                # Explicit id:label / dict form: ``text`` is the id, the
+                # label is the reach text. Trust the caller.
+                target_ids.add(text)
+                reach_labels[text] = explicit_label
+                continue
+            # Bare string -> treat as a LABEL. Resolve to an id.
+            key = text.strip().lower()
+            if key in label_to_id:
+                item_id = label_to_id[key]
+                target_ids.add(item_id)
+                # Reach with the canonical recorded label.
+                reach_labels[item_id] = id_to_label.get(item_id) or text
+            elif text in known_ids:
+                # Tolerate an operator who passed an id that happens to
+                # be in known_options (back-compat with id-style params).
+                target_ids.add(text)
+                reach_labels[text] = id_to_label.get(text) or text
+            else:
+                # Unknown label: use it as both the pseudo-id (for
+                # diffing) and the reach text. Flagged so the caller can
+                # warn -- but still attempted.
+                target_ids.add(text)
+                reach_labels[text] = text
+                unknown_labels.append(text)
+        return target_ids, reach_labels, unknown_labels
+
     def _reach_and_click_option(
         self,
         spec: "SetSelectionSpec",
         item: str,
         *,
         soft: bool = False,
+        item_label: Optional[str] = None,
     ) -> Optional[ToolResult]:
         """Reach a single option's checkbox and click it.
 
@@ -2253,8 +2422,9 @@ class SkillRunner:
         of how the operator originally reached the option:
 
           - ``select_strategy='search'`` + ``search_fp``: fill the search
-            box with the item's LABEL (item_labels.get(item, item) -- the
-            id is the fallback), then WAIT for the materialized checkbox
+            box with the item's LABEL. A replay-time label carried in the
+            target param wins; otherwise item_labels.get(item, item) is
+            used (id fallback). Then WAIT for the materialized checkbox
             to become visible (bounded, NOT a fixed sleep -- this rides
             out a server-side spinner). Click it, then clear the search
             for the next item.
@@ -2272,7 +2442,7 @@ class SkillRunner:
         does not propagate it as a step failure.
         """
         page = self.session.page
-        label = spec.item_labels.get(item, item)
+        label = item_label if item_label is not None else spec.item_labels.get(item, item)
         use_search = spec.select_strategy == "search" and spec.search_fp is not None
 
         def _fail(error_kind: str, msg: str) -> Optional[ToolResult]:
@@ -2341,6 +2511,64 @@ class SkillRunner:
                 f"set_selection: click failed for item={item!r}: {e}",
             )
 
+    def _locate_option_row_by_label(self, spec: "SetSelectionSpec", label: str):
+        """Locate a surfaced option ROW by its visible LABEL text.
+
+        id+label sprint (locked decision #3): reaching an option must NOT
+        depend on the id-templated checkbox. After the label is typed
+        into the search box, the popover shows the matching row(s); we
+        find the one whose visible text matches ``label`` (exact, trimmed,
+        case-insensitive) and return a clickable locator for it. Scoped to
+        ``option_list_selector`` (the popover) when present so a stale
+        duplicate elsewhere on the page can't satisfy the match.
+
+        Returns a Playwright Locator (the row's option element) or None
+        when no locator scope is resolvable.
+        """
+        page = self.session.page
+        # Scope: the popover/listbox container, else page-wide.
+        if spec.option_list_selector:
+            scope = page.locator(spec.option_list_selector).first
+        else:
+            scope = page
+
+        # Match by accessible name first (the option's <input>/row exposes
+        # the label as its accessible name); exact + case-insensitive via
+        # a regex anchored to the full string. get_by_role('option') /
+        # 'checkbox' covers the MultiSelect.jsx row; fall back to text.
+        import re as _re
+        rx = _re.compile(r"^\s*" + _re.escape(label) + r"\s*$", _re.IGNORECASE)
+        candidates = []
+        try:
+            candidates.append(scope.get_by_role("checkbox", name=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(scope.get_by_role("option", name=rx))
+        except Exception:
+            pass
+        # Text fallback: a row element whose visible text equals the label.
+        try:
+            candidates.append(scope.get_by_text(rx))
+        except Exception:
+            pass
+        for cand in candidates:
+            try:
+                if cand is not None and cand.count() > 0:
+                    return cand.first
+            except Exception:
+                # count() can throw if the scope isn't attached yet; the
+                # caller's wait_for handles the timing, so just try the
+                # next candidate.
+                try:
+                    return cand.first
+                except Exception:
+                    continue
+        # Last resort: return the first role=option/checkbox candidate so
+        # the caller's wait_for can gate on it (covers a brief render race
+        # where count() is momentarily 0).
+        return candidates[0].first if candidates else None
+
     def _search_then_click_option(
         self,
         spec: "SetSelectionSpec",
@@ -2393,18 +2621,24 @@ class SkillRunner:
             except Exception:
                 pass
 
-        # Resolve the target checkbox, then WAIT for it to be visible.
+        # id+label sprint (locked decision #3): reach the option by its
+        # visible LABEL text, NOT by the id-templated checkbox. The
+        # server search is label-indexed, so after filling the label the
+        # ONLY surfaced row should be the target; we click the row whose
+        # visible text matches the label. This decouples the click from
+        # the opaque id template -- a replay-time-new target (zw /
+        # Zimbabwe) that was never recorded still reaches correctly. The
+        # visibility wait on the row rides out the server spinner with no
+        # fixed sleep.
         try:
-            loc = self._locate_via_template(
-                spec.checkbox_template_fp, {"item": item}
-            )
-            if loc is None:
+            row = self._locate_option_row_by_label(spec, label)
+            if row is None:
                 return False
-            loc.wait_for(
+            row.wait_for(
                 state="visible",
                 timeout=self._set_selection_dom_timeout_ms(),
             )
-            self._robust_click(loc, timeout=3000)
+            self._robust_click(row, timeout=3000)
         except Exception as e:
             self._diagnostic(
                 "runner.set_selection_search_target_not_visible",
