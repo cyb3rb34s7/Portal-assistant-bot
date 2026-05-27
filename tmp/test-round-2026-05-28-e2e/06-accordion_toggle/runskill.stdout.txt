@@ -1,0 +1,25 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:36432) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌─────────────────────────────────────────┐
+│ Replay skill accordion_open             │
+│ Session: 0e40aae59751                   │
+│ Steps:   2                              │
+│ Params:  {'accordion_advanced': 'true'} │
+└─────────────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  set_selection  set_selection_accordion_advanced
+                                Replay summary                                 
+┌───┬───────────────┬──────────────────┬──────────┬────────┬──────────────────┐
+│ # │ Action        │ Label            │ Level    │ Status │ Detail           │
+├───┼───────────────┼──────────────────┼──────────┼────────┼──────────────────┤
+│ 0 │ navigate      │ navigate         │ L1 exact │ ok     │ navigated to     │
+│   │               │                  │          │        │ http://localhost │
+│   │               │                  │          │        │ :5188/asset/B-20 │
+│   │               │                  │          │        │ 02               │
+│ 1 │ set_selection │ set_selection_a… │          │ fail   │ set_selection:   │
+│   │               │                  │          │        │ no               │
+│   │               │                  │          │        │ checkbox_templat │
+│   │               │                  │          │        │ e_fp             │
+└───┴───────────────┴──────────────────┴──────────┴────────┴──────────────────┘
+Audit log: sessions\0e40aae59751\audit_log.jsonl

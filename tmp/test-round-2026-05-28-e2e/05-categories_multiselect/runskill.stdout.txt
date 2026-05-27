@@ -1,0 +1,26 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:37856) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌─────────────────────────────────┐
+│ Replay skill categories_pick    │
+│ Session: 7a26a577f02a           │
+│ Steps:   2                      │
+│ Params:  {'categories': 'Kids'} │
+└─────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  set_selection  set_selection_multiselect_categories
+                                Replay summary                                 
+┌───┬───────────────┬──────────────────┬──────────┬────────┬──────────────────┐
+│ # │ Action        │ Label            │ Level    │ Status │ Detail           │
+├───┼───────────────┼──────────────────┼──────────┼────────┼──────────────────┤
+│ 0 │ navigate      │ navigate         │ L1 exact │ ok     │ navigated to     │
+│   │               │                  │          │        │ http://localhost │
+│   │               │                  │          │        │ :5188/asset/B-20 │
+│   │               │                  │          │        │ 01               │
+│ 1 │ set_selection │ set_selection_m… │          │ fail   │ set_selection_eq │
+│   │               │                  │          │        │ uality_failed:   │
+│   │               │                  │          │        │ expected         │
+│   │               │                  │          │        │ ['kids'], got    │
+│   │               │                  │          │        │ ['sports']       │
+└───┴───────────────┴──────────────────┴──────────┴────────┴──────────────────┘
+Audit log: sessions\7a26a577f02a\audit_log.jsonl

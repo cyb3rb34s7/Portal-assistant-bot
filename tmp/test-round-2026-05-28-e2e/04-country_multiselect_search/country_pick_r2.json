@@ -1,0 +1,1138 @@
+{
+  "name": "country_pick_r2",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "schema_version": 1,
+  "upgraded_from": null,
+  "created_at": "2026-05-27T20:04:42.076032",
+  "updated_at": "2026-05-27T20:04:42.076043",
+  "base_url": "http://localhost:5188/asset/A-1002",
+  "params": [
+    {
+      "name": "country",
+      "type": "string_list",
+      "description": "Multi-select items (by label) for step 1: set_selection_multiselect_country",
+      "example": "Argentina",
+      "required": true,
+      "depends_on": null,
+      "select_from_current_options": false,
+      "provenance": null,
+      "codec": "raw",
+      "constraints": null,
+      "enum_options": [
+        {
+          "value": "ar",
+          "label": "Argentina",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "au",
+          "label": "Australia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "at",
+          "label": "Austria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "br",
+          "label": "Brazil",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "bg",
+          "label": "Bulgaria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ca",
+          "label": "Canada",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "cn",
+          "label": "China",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "co",
+          "label": "Colombia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "hr",
+          "label": "Croatia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "cz",
+          "label": "Czechia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "dk",
+          "label": "Denmark",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "fi",
+          "label": "Finland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "fr",
+          "label": "France",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "de",
+          "label": "Germany",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "hu",
+          "label": "Hungary",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "in",
+          "label": "India",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "id",
+          "label": "Indonesia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ie",
+          "label": "Ireland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "il",
+          "label": "Israel",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "it",
+          "label": "Italy",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "jp",
+          "label": "Japan",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ke",
+          "label": "Kenya",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "my",
+          "label": "Malaysia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "nl",
+          "label": "Netherlands",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "nz",
+          "label": "New Zealand",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ng",
+          "label": "Nigeria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "no",
+          "label": "Norway",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "pl",
+          "label": "Poland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "pt",
+          "label": "Portugal",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ro",
+          "label": "Romania",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ru",
+          "label": "Russia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "sa",
+          "label": "Saudi Arabia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "sg",
+          "label": "Singapore",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "za",
+          "label": "South Africa",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "kr",
+          "label": "South Korea",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "es",
+          "label": "Spain",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ch",
+          "label": "Switzerland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "tw",
+          "label": "Taiwan",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "th",
+          "label": "Thailand",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ua",
+          "label": "Ukraine",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ae",
+          "label": "United Arab Emirates",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "us",
+          "label": "United States",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "vn",
+          "label": "Vietnam",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "zm",
+          "label": "Zambia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "zw",
+          "label": "Zimbabwe",
+          "selected": false,
+          "disabled": false
+        }
+      ],
+      "enum_aliases": {}
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/asset/A-1002",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "7187409a-7c7f-43e3-ac05-61e7c0a21c91"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:04:29.591573",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "set_selection",
+      "fingerprint": {
+        "test_id": "multiselect-country-checkbox-ar",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "checkbox",
+        "accessible_name": "Argentina",
+        "text": null,
+        "placeholder": null,
+        "tag": "input",
+        "input_type": "checkbox",
+        "css_path": "input[data-testid=\"multiselect-country-checkbox-ar\"]",
+        "xpath": "/div/main/section/div/div[3]/div[2]/ul/li/label/input",
+        "ancestor_chain": [
+          {
+            "tag": "label",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "li",
+            "id": null,
+            "testId": "multiselect-country-item-ar",
+            "role": null,
+            "className": "multiselect-item"
+          },
+          {
+            "tag": "ul",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "multiselect-list"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "multiselect-country-popover",
+            "role": "listbox",
+            "className": "multiselect-popover"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "multiselect-country",
+            "role": null,
+            "className": "multiselect"
+          }
+        ],
+        "landmark": "Asset A-1002",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 294.0,
+          "y": 373.0,
+          "width": 13.0,
+          "height": 13.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "checkbox",
+        "value_kind": "boolean",
+        "options_snapshot": null,
+        "selected_options": null,
+        "aria_expanded": null,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": false,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": null,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": "true",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "set_selection_multiselect_country",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": {
+        "mode": "replace",
+        "param": "country",
+        "known_options": [
+          {
+            "value": "ar",
+            "label": "Argentina",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "au",
+            "label": "Australia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "at",
+            "label": "Austria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "br",
+            "label": "Brazil",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "bg",
+            "label": "Bulgaria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ca",
+            "label": "Canada",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "cn",
+            "label": "China",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "co",
+            "label": "Colombia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hr",
+            "label": "Croatia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "cz",
+            "label": "Czechia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "dk",
+            "label": "Denmark",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "fi",
+            "label": "Finland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "fr",
+            "label": "France",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "de",
+            "label": "Germany",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hu",
+            "label": "Hungary",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "in",
+            "label": "India",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "id",
+            "label": "Indonesia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ie",
+            "label": "Ireland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "il",
+            "label": "Israel",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "it",
+            "label": "Italy",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "jp",
+            "label": "Japan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ke",
+            "label": "Kenya",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "my",
+            "label": "Malaysia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "nl",
+            "label": "Netherlands",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "nz",
+            "label": "New Zealand",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ng",
+            "label": "Nigeria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "no",
+            "label": "Norway",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "pl",
+            "label": "Poland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "pt",
+            "label": "Portugal",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ro",
+            "label": "Romania",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ru",
+            "label": "Russia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "sa",
+            "label": "Saudi Arabia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "sg",
+            "label": "Singapore",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "za",
+            "label": "South Africa",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "kr",
+            "label": "South Korea",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "es",
+            "label": "Spain",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ch",
+            "label": "Switzerland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "tw",
+            "label": "Taiwan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "th",
+            "label": "Thailand",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ua",
+            "label": "Ukraine",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ae",
+            "label": "United Arab Emirates",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "us",
+            "label": "United States",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "vn",
+            "label": "Vietnam",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "zm",
+            "label": "Zambia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "zw",
+            "label": "Zimbabwe",
+            "selected": false,
+            "disabled": false
+          }
+        ],
+        "open_picker_fp": {
+          "test_id": "multiselect-country-toggle",
+          "element_id": null,
+          "name": null,
+          "aria_label": null,
+          "role": "button",
+          "accessible_name": "Choose...",
+          "text": "Choose...",
+          "placeholder": null,
+          "tag": "button",
+          "input_type": null,
+          "css_path": "button[data-testid=\"multiselect-country-toggle\"]",
+          "xpath": "/html/body/div/div/main/section/div/div[3]/div/button",
+          "ancestor_chain": [
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country-chips",
+              "role": null,
+              "className": "multiselect-chips"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country",
+              "role": null,
+              "className": "multiselect"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "asset-edit-form",
+              "role": null,
+              "className": "card"
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "testId": "asset-page",
+              "role": null,
+              "className": "page"
+            },
+            {
+              "tag": "main",
+              "id": null,
+              "testId": "app-main",
+              "role": "main",
+              "className": "app-main"
+            }
+          ],
+          "landmark": "Asset A-1002",
+          "nth_of_role": null,
+          "bbox": {
+            "x": 1109.625,
+            "y": 299.0,
+            "width": 73.375,
+            "height": 20.0
+          },
+          "frame_path": [],
+          "in_shadow_root": false,
+          "frame_chain": [],
+          "shadow_path": [],
+          "control_kind": "button",
+          "value_kind": "none",
+          "options_snapshot": null,
+          "selected_options": null,
+          "aria_expanded": false,
+          "aria_disabled": null,
+          "aria_busy": null,
+          "disabled": false,
+          "readonly": null,
+          "contenteditable": null,
+          "locale_hint": "en",
+          "timezone_hint": "Asia/Calcutta",
+          "min": null,
+          "max": null,
+          "step": null,
+          "accept": null,
+          "multiple": null,
+          "options_truncated": null,
+          "alternates": [],
+          "templates": {},
+          "template_sources": {},
+          "template_parts": {}
+        },
+        "search_fp": {
+          "test_id": "multiselect-country-search",
+          "element_id": null,
+          "name": null,
+          "aria_label": null,
+          "role": "textbox",
+          "accessible_name": "Search...",
+          "text": null,
+          "placeholder": "Search...",
+          "tag": "input",
+          "input_type": "text",
+          "css_path": "input[data-testid=\"multiselect-country-search\"]",
+          "xpath": "/html/body/div/div/main/section/div/div[3]/div[2]/input",
+          "ancestor_chain": [
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country-popover",
+              "role": "listbox",
+              "className": "multiselect-popover"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country",
+              "role": null,
+              "className": "multiselect"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "asset-edit-form",
+              "role": null,
+              "className": "card"
+            },
+            {
+              "tag": "section",
+              "id": null,
+              "testId": "asset-page",
+              "role": null,
+              "className": "page"
+            },
+            {
+              "tag": "main",
+              "id": null,
+              "testId": "app-main",
+              "role": "main",
+              "className": "app-main"
+            }
+          ],
+          "landmark": "Asset A-1002",
+          "nth_of_role": null,
+          "bbox": {
+            "x": 280.0,
+            "y": 332.0,
+            "width": 909.0,
+            "height": 32.0
+          },
+          "frame_path": [],
+          "in_shadow_root": false,
+          "frame_chain": [],
+          "shadow_path": [],
+          "control_kind": "text_input",
+          "value_kind": "string",
+          "options_snapshot": null,
+          "selected_options": null,
+          "aria_expanded": null,
+          "aria_disabled": null,
+          "aria_busy": null,
+          "disabled": false,
+          "readonly": false,
+          "contenteditable": null,
+          "locale_hint": "en",
+          "timezone_hint": "Asia/Calcutta",
+          "min": null,
+          "max": null,
+          "step": null,
+          "accept": null,
+          "multiple": null,
+          "options_truncated": null,
+          "alternates": [],
+          "templates": {},
+          "template_sources": {},
+          "template_parts": {}
+        },
+        "checkbox_template_fp": {
+          "test_id": "multiselect-country-checkbox-ar",
+          "element_id": null,
+          "name": null,
+          "aria_label": null,
+          "role": "checkbox",
+          "accessible_name": "Argentina",
+          "text": null,
+          "placeholder": null,
+          "tag": "input",
+          "input_type": "checkbox",
+          "css_path": "input[data-testid=\"multiselect-country-checkbox-ar\"]",
+          "xpath": "/div/main/section/div/div[3]/div[2]/ul/li/label/input",
+          "ancestor_chain": [
+            {
+              "tag": "label",
+              "id": null,
+              "testId": null,
+              "role": null,
+              "className": null
+            },
+            {
+              "tag": "li",
+              "id": null,
+              "testId": "multiselect-country-item-ar",
+              "role": null,
+              "className": "multiselect-item"
+            },
+            {
+              "tag": "ul",
+              "id": null,
+              "testId": null,
+              "role": null,
+              "className": "multiselect-list"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country-popover",
+              "role": "listbox",
+              "className": "multiselect-popover"
+            },
+            {
+              "tag": "div",
+              "id": null,
+              "testId": "multiselect-country",
+              "role": null,
+              "className": "multiselect"
+            }
+          ],
+          "landmark": "Asset A-1002",
+          "nth_of_role": null,
+          "bbox": {
+            "x": 294.0,
+            "y": 373.0,
+            "width": 13.0,
+            "height": 13.0
+          },
+          "frame_path": [],
+          "in_shadow_root": false,
+          "frame_chain": [],
+          "shadow_path": [],
+          "control_kind": "checkbox",
+          "value_kind": "boolean",
+          "options_snapshot": null,
+          "selected_options": null,
+          "aria_expanded": null,
+          "aria_disabled": null,
+          "aria_busy": null,
+          "disabled": false,
+          "readonly": false,
+          "contenteditable": null,
+          "locale_hint": "en",
+          "timezone_hint": "Asia/Calcutta",
+          "min": null,
+          "max": null,
+          "step": null,
+          "accept": null,
+          "multiple": null,
+          "options_truncated": null,
+          "alternates": [],
+          "templates": {},
+          "template_sources": {},
+          "template_parts": {}
+        },
+        "commit_fp": null,
+        "current_items_selector": "[data-testid^='multiselect-country-chip-']:not([data-testid$='-remove'])",
+        "current_items_id_attr": "data-testid",
+        "current_items_id_prefix": "multiselect-country-chip-",
+        "final_equality_assertion": true,
+        "depends_on": null,
+        "parent_picker_fp": null,
+        "option_source": null,
+        "search_result_signal": null,
+        "item_labels": {
+          "ar": "Argentina"
+        },
+        "select_strategy": "search",
+        "option_list_selector": "[data-testid='multiselect-country-popover']",
+        "hierarchy_path": []
+      },
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "26db35b5-2020-4688-9d0f-a79cb0a8f09a",
+          "e84ca1e3-ffab-42b7-8598-fb5038685d00",
+          "d081ba58-7bd9-4249-b83d-4f7df93f0d86",
+          "11224b48-f441-4438-b0f2-b7194ee48db4",
+          "b474b979-a724-4cf3-909d-3a540c758997",
+          "50d88749-6a1a-45c4-8963-e6298a9d3b16",
+          "198524e6-e308-4d3d-a5c0-c9d80edcfaa5",
+          "848deff3-def6-44cf-9ed8-bbb9de0aa5f4",
+          "d263033d-077e-4428-bd1e-7793ff65753b",
+          "50e4b9f5-3d2a-41e9-815d-77d04d388480",
+          "bcd8b300-730e-4080-98b6-02c9f10ed320",
+          "a35e86d7-972c-4035-889f-439804e0fdb9",
+          "f4cc8245-580a-4e54-b930-a5fd8b9b29b3",
+          "a67b9c3f-64e9-44cb-a90e-77854bef21d1",
+          "fc791294-27fb-4ae0-b963-07f72398f870",
+          "445dfdf7-5520-490f-95eb-54f34b6f6926",
+          "3b488168-08dc-4458-b62c-94bca290f43a",
+          "31d35e3a-6fba-4e3e-8571-e7193ec683f8",
+          "145d2e44-bf6b-421e-98c8-03de66dfe356",
+          "4960c8a4-79fe-4bde-8196-621e6e378018",
+          "46af4203-a307-4262-80c7-993f4eca6b54",
+          "e2feda71-b257-468f-9501-20db9150518f"
+        ],
+        "cluster_kind": "set_selection",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:04:32.210875",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "95af3c398132",
+  "legacy_nav_upgrade_count": 0,
+  "annotate_mode": "semantic",
+  "recording_context": {
+    "locale": "en",
+    "timezone": "Asia/Calcutta"
+  },
+  "semantic_clusters": [
+    {
+      "raw_event_ids": [
+        "d263033d-077e-4428-bd1e-7793ff65753b",
+        "a67b9c3f-64e9-44cb-a90e-77854bef21d1",
+        "50e4b9f5-3d2a-41e9-815d-77d04d388480",
+        "bcd8b300-730e-4080-98b6-02c9f10ed320",
+        "a35e86d7-972c-4035-889f-439804e0fdb9",
+        "f4cc8245-580a-4e54-b930-a5fd8b9b29b3",
+        "fc791294-27fb-4ae0-b963-07f72398f870",
+        "445dfdf7-5520-490f-95eb-54f34b6f6926",
+        "3b488168-08dc-4458-b62c-94bca290f43a"
+      ],
+      "cluster_kind": "select_autocomplete",
+      "primary_target_event_id": "3b488168-08dc-4458-b62c-94bca290f43a",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": [
+        "fill_submit",
+        "single_event"
+      ]
+    },
+    {
+      "raw_event_ids": [
+        "26db35b5-2020-4688-9d0f-a79cb0a8f09a",
+        "e84ca1e3-ffab-42b7-8598-fb5038685d00",
+        "d081ba58-7bd9-4249-b83d-4f7df93f0d86",
+        "11224b48-f441-4438-b0f2-b7194ee48db4",
+        "b474b979-a724-4cf3-909d-3a540c758997",
+        "50d88749-6a1a-45c4-8963-e6298a9d3b16",
+        "198524e6-e308-4d3d-a5c0-c9d80edcfaa5",
+        "848deff3-def6-44cf-9ed8-bbb9de0aa5f4",
+        "d263033d-077e-4428-bd1e-7793ff65753b",
+        "50e4b9f5-3d2a-41e9-815d-77d04d388480",
+        "bcd8b300-730e-4080-98b6-02c9f10ed320",
+        "a35e86d7-972c-4035-889f-439804e0fdb9",
+        "f4cc8245-580a-4e54-b930-a5fd8b9b29b3",
+        "a67b9c3f-64e9-44cb-a90e-77854bef21d1",
+        "fc791294-27fb-4ae0-b963-07f72398f870",
+        "445dfdf7-5520-490f-95eb-54f34b6f6926",
+        "3b488168-08dc-4458-b62c-94bca290f43a",
+        "31d35e3a-6fba-4e3e-8571-e7193ec683f8",
+        "145d2e44-bf6b-421e-98c8-03de66dfe356",
+        "4960c8a4-79fe-4bde-8196-621e6e378018",
+        "46af4203-a307-4262-80c7-993f4eca6b54",
+        "e2feda71-b257-468f-9501-20db9150518f"
+      ],
+      "cluster_kind": "set_selection",
+      "primary_target_event_id": "31d35e3a-6fba-4e3e-8571-e7193ec683f8",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": [
+        "single_event"
+      ]
+    },
+    {
+      "raw_event_ids": [
+        "7187409a-7c7f-43e3-ac05-61e7c0a21c91"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "7187409a-7c7f-43e3-ac05-61e7c0a21c91",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    }
+  ]
+}

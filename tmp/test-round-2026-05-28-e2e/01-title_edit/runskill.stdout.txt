@@ -1,0 +1,28 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:37556) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌──────────────────────────────────────────────────┐
+│ Replay skill title_edit                          │
+│ Session: 017a92b2cec5                            │
+│ Steps:   3                                       │
+│ Params:  {'input_asset_title': 'Replayed Title'} │
+└──────────────────────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  change  fill_input_asset_title
+- step 02  click  click_btn_save
+                                Replay summary                                 
+┌───┬──────────┬────────────────────┬──────────┬────────┬─────────────────────┐
+│ # │ Action   │ Label              │ Level    │ Status │ Detail              │
+├───┼──────────┼────────────────────┼──────────┼────────┼─────────────────────┤
+│ 0 │ navigate │ navigate           │ L1 exact │ ok     │ navigated to        │
+│   │          │                    │          │        │ http://localhost:51 │
+│   │          │                    │          │        │ 88/asset/A-9001     │
+│ 1 │ change   │ fill_input_asset_… │ L1 exact │ ok     │ set                 │
+│   │          │                    │          │        │ fill_input_asset_ti │
+│   │          │                    │          │        │ tle = 'Replayed     │
+│   │          │                    │          │        │ Title' [L1 exact]   │
+│ 2 │ click    │ click_btn_save     │ L1 exact │ ok     │ clicked             │
+│   │          │                    │          │        │ click_btn_save [L1  │
+│   │          │                    │          │        │ exact]              │
+└───┴──────────┴────────────────────┴──────────┴────────┴─────────────────────┘
+Audit log: sessions\017a92b2cec5\audit_log.jsonl

@@ -1,0 +1,2 @@
+PASS: recorded APAC>India>Hindi(hi-IN); replayed APAC>India>Tamil(ta-IN) leaf differs; all 4 steps L1 exact; live selects APAC/IN/ta-IN; depends_on cascade waits held (markets+languages repopulated before each pick).
+NOTE: cross-branch leaf (Market=JP/Language=ja-JP) correctly REJECTED -- select_language enum_options are baked branch-specific from the recording (India langs only). Expected design for select_from_current_options=False, not a bug.

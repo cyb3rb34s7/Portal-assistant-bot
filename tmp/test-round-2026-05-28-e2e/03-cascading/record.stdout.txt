@@ -1,0 +1,131 @@
+(node:34672) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+asset A-1001 status: draft
+  #001 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #002 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #003 navigate                                                
+http://localhost:5188/asset/A-1001
+  #004 network_request                                          /api/auth/me
+  #005 network_request                                          /api/auth/me
+  #006 network_response                                          /api/auth/me
+  #007 network_request                                          /api/categories
+  #008 network_request                                          /api/tags
+  #009 network_request                                          /api/regions
+  #010 network_request                                          /api/countries
+  #011 network_request                                          
+/api/assets/A-1001
+  #012 network_request                                          /api/categories
+  #013 network_request                                          /api/tags
+  #014 network_request                                          /api/regions
+  #015 network_request                                          /api/countries
+  #016 network_request                                          
+/api/assets/A-1001
+  #017 network_response                                          /api/auth/me
+  #018 dom_mutation                                            
+  #019 network_response                                          /api/countries
+  #020 network_response                                          /api/tags
+  #021 network_response                                          /api/countries
+  #022 network_response                                          
+/api/categories
+  #023 network_response                                          /api/regions
+  #024 network_response                                          
+/api/assets/A-1001
+  #025 network_response                                          /api/tags
+  #026 network_response                                          
+/api/categories
+  #027 network_response                                          /api/regions
+  #028 network_response                                          
+/api/assets/A-1001
+  #029 dom_mutation                                            
+Region = APAC
+  #030 network_request                                          
+/api/markets?region=APAC
+  #031 input_change   select-region                            APAC
+  #032 dom_mutation                                            
+markets loaded (IN present)
+  #033 network_response                                          
+/api/markets?region=APAC
+  #034 dom_mutation                                            
+Market = India (IN)
+  #035 network_request                                          
+/api/languages?market=IN
+  #036 input_change   select-market                            IN
+  #037 dom_mutation                                            
+languages loaded (hi-IN present)
+  #038 network_response                                          
+/api/languages?market=IN
+  #039 dom_mutation                                            
+Language = Hindi (hi-IN)
+  #040 input_change   select-language                          hi-IN
+                              Recorded 40 events                               
+┌────┬──────────────────┬─────────────────┬───────────────────────────────────┐
+│ #  │ Kind             │ Target          │ Value / URL                       │
+├────┼──────────────────┼─────────────────┼───────────────────────────────────┤
+│ 0  │ network_request  │                 │ ws://localhost:5188/?token=pp0BE… │
+│ 1  │ network_request  │                 │ ws://localhost:5188/?token=pp0BE… │
+│ 2  │ navigate         │                 │ http://localhost:5188/asset/A-10… │
+│ 3  │ network_request  │                 │ /api/auth/me                      │
+│ 4  │ network_request  │                 │ /api/auth/me                      │
+│ 5  │ network_response │                 │ /api/auth/me                      │
+│ 6  │ network_request  │                 │ /api/categories                   │
+│ 7  │ network_request  │                 │ /api/tags                         │
+│ 8  │ network_request  │                 │ /api/regions                      │
+│ 9  │ network_request  │                 │ /api/countries                    │
+│ 10 │ network_request  │                 │ /api/assets/A-1001                │
+│ 11 │ network_request  │                 │ /api/categories                   │
+│ 12 │ network_request  │                 │ /api/tags                         │
+│ 13 │ network_request  │                 │ /api/regions                      │
+│ 14 │ network_request  │                 │ /api/countries                    │
+│ 15 │ network_request  │                 │ /api/assets/A-1001                │
+│ 16 │ network_response │                 │ /api/auth/me                      │
+│ 17 │ dom_mutation     │                 │                                   │
+│ 18 │ network_response │                 │ /api/countries                    │
+│ 19 │ network_response │                 │ /api/tags                         │
+│ 20 │ network_response │                 │ /api/countries                    │
+│ 21 │ network_response │                 │ /api/categories                   │
+│ 22 │ network_response │                 │ /api/regions                      │
+│ 23 │ network_response │                 │ /api/assets/A-1001                │
+│ 24 │ network_response │                 │ /api/tags                         │
+│ 25 │ network_response │                 │ /api/categories                   │
+│ 26 │ network_response │                 │ /api/regions                      │
+│ 27 │ network_response │                 │ /api/assets/A-1001                │
+│ 28 │ dom_mutation     │                 │                                   │
+│ 29 │ network_request  │                 │ /api/markets?region=APAC          │
+│ 30 │ input_change     │ select-region   │ APAC                              │
+│ 31 │ dom_mutation     │                 │                                   │
+│ 32 │ network_response │                 │ /api/markets?region=APAC          │
+│ 33 │ dom_mutation     │                 │                                   │
+│ 34 │ network_request  │                 │ /api/languages?market=IN          │
+│ 35 │ input_change     │ select-market   │ IN                                │
+│ 36 │ dom_mutation     │                 │                                   │
+│ 37 │ network_response │                 │ /api/languages?market=IN          │
+│ 38 │ dom_mutation     │                 │                                   │
+│ 39 │ input_change     │ select-language │ hi-IN                             │
+└────┴──────────────────┴─────────────────┴───────────────────────────────────┘
+
+Trace:  sessions\a10dcdaedbef\trace.jsonl
+Next:   python -m pilot annotate a10dcdaedbef
+SESSION_ID=a10dcdaedbef
+events=40
+EVENT_KINDS=[('network_request', None, None), ('network_request', None, None), 
+('navigate', None, None), ('network_request', None, None), ('network_request', 
+None, None), ('network_response', None, None), ('network_request', None, None),
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('dom_mutation', None, None), 
+('network_request', None, None), ('input_change', 'select-region', 'APAC'), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('network_request', None, None), ('input_change',
+'select-market', 'IN'), ('dom_mutation', None, None), ('network_response', 
+None, None), ('dom_mutation', None, None), ('input_change', 'select-language', 
+'hi-IN')]

@@ -1,0 +1,1 @@
+PASS: recorded Region=AMER(Americas); replayed select_region=APAC; step L1 exact; live select value==APAC (Asia Pacific). select_option proven.

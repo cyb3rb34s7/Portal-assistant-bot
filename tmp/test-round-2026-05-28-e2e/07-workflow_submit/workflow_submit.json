@@ -1,0 +1,248 @@
+{
+  "name": "workflow_submit",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "schema_version": 1,
+  "upgraded_from": null,
+  "created_at": "2026-05-27T20:09:41.028438",
+  "updated_at": "2026-05-27T20:09:41.028448",
+  "base_url": "http://localhost:5188/asset/D-4001",
+  "params": [],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/asset/C-3001",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "d9439044-2560-42cd-86be-fd073a2afae9"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:09:29.810547",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "btn-submit-review",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Submit for review",
+        "text": "Submit for review",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid=\"btn-submit-review\"]",
+        "xpath": "/html/body/div/div/main/section/div/div[8]/button[2]",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "action-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Asset C-3001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 348.921875,
+          "y": 814.234375,
+          "width": 138.15625,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "button",
+        "value_kind": "none",
+        "options_snapshot": null,
+        "selected_options": null,
+        "aria_expanded": null,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": null,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": null,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_btn_submit_review",
+      "param_binding": null,
+      "requires_gate": true,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": {
+        "role_required": null,
+        "session_namespace": null,
+        "refresh_strategy": "navigate"
+      },
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "4c348a36-2629-4903-8f3c-83111c930725",
+          "d343d568-402a-45ed-86f3-418a1bccdfcf"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": "single",
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:09:33.975316",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "5f9c2ba458fa",
+  "legacy_nav_upgrade_count": 0,
+  "annotate_mode": "semantic",
+  "recording_context": {
+    "locale": "en",
+    "timezone": "Asia/Calcutta"
+  },
+  "semantic_clusters": [
+    {
+      "raw_event_ids": [
+        "d9439044-2560-42cd-86be-fd073a2afae9"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "d9439044-2560-42cd-86be-fd073a2afae9",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    },
+    {
+      "raw_event_ids": [
+        "4c348a36-2629-4903-8f3c-83111c930725",
+        "d343d568-402a-45ed-86f3-418a1bccdfcf"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "4c348a36-2629-4903-8f3c-83111c930725",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    }
+  ]
+}

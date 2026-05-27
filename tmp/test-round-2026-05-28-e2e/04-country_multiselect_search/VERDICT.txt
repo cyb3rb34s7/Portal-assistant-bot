@@ -1,0 +1,1 @@
+PASS: recorded Argentina; replayed country=Brazil; both steps L1 exact; live chip==['Brazil'] (replace mode). Regression-guards the green server-search multi-select case.

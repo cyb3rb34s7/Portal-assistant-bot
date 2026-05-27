@@ -1,0 +1,6 @@
+FAIL->PASS (real bug FIXED, commit below): recorded accordion open (false->true).
+BEFORE FIX: annotator misclassified the toggle as a degenerate set_selection (known_options=[], checkbox_template_fp=None) -> replay failed 'no checkbox_template_fp'.
+ROOT CAUSE: _multiselect_prefix() matched any testid ending '-toggle'; 'accordion-advanced-toggle' was treated as a multiselect, and _detect_set_selection_clusters claimed the toggle+dom_mutation (the observed mutation inflated the cluster past the len<=1 guard), pre-empting toggle_state.
+FIX: _detect_set_selection_clusters now requires >=1 checkbox/item SELECTION event before claiming a cluster; a bare -toggle + observed events falls through.
+AFTER FIX: re-annotate -> step is a plain 'click' on accordion-advanced-toggle; replay both steps L1 exact; live aria-expanded=true, panel revealed. PASS.
+NOTE: it became a plain click (not toggle_state) because the grabber did NOT capture target_state_after on this click; desired-state idempotency (toggle_state) needs that grabber field -- separate enhancement. The plain click correctly opens a closed accordion.

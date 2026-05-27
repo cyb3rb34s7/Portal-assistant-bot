@@ -1,0 +1,17 @@
+┌─────────────────────────────────────────┐
+│ Annotating session caa654bd5315         │
+│ Skill: title_edit                       │
+│ Events: 36 raw -> 36 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                         Skill 'title_edit'                         
+┌───┬──────────┬────────────────────────┬───────────────────┬──────┐
+│ # │ Action   │ Label                  │ Param             │ Gate │
+├───┼──────────┼────────────────────────┼───────────────────┼──────┤
+│ 0 │ navigate │ navigate               │                   │      │
+│ 1 │ change   │ fill_input_asset_title │ input_asset_title │      │
+│ 2 │ click    │ click_btn_save         │                   │      │
+└───┴──────────┴────────────────────────┴───────────────────┴──────┘
+
+Declared params: input_asset_title
+Saved: skills\title_edit.json

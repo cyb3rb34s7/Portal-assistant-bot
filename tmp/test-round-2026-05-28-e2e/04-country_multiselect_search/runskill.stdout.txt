@@ -1,0 +1,24 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:7956) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌────────────────────────────────┐
+│ Replay skill country_pick_r2   │
+│ Session: c1e9a8f32406          │
+│ Steps:   2                     │
+│ Params:  {'country': 'Brazil'} │
+└────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  set_selection  set_selection_multiselect_country
+                                Replay summary                                 
+┌───┬───────────────┬──────────────────┬──────────┬────────┬──────────────────┐
+│ # │ Action        │ Label            │ Level    │ Status │ Detail           │
+├───┼───────────────┼──────────────────┼──────────┼────────┼──────────────────┤
+│ 0 │ navigate      │ navigate         │ L1 exact │ ok     │ navigated to     │
+│   │               │                  │          │        │ http://localhost │
+│   │               │                  │          │        │ :5188/asset/A-10 │
+│   │               │                  │          │        │ 02               │
+│ 1 │ set_selection │ set_selection_m… │ L1 exact │ ok     │ set_selection(re │
+│   │               │                  │          │        │ place, country): │
+│   │               │                  │          │        │ +1 -0            │
+└───┴───────────────┴──────────────────┴──────────┴────────┴──────────────────┘
+Audit log: sessions\c1e9a8f32406\audit_log.jsonl

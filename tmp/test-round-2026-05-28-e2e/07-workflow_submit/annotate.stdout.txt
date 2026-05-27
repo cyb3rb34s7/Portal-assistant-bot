@@ -1,0 +1,16 @@
+┌─────────────────────────────────────────┐
+│ Annotating session 5f9c2ba458fa         │
+│ Skill: workflow_submit                  │
+│ Events: 34 raw -> 34 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                 Skill 'workflow_submit'                 
+┌───┬──────────┬─────────────────────────┬───────┬──────┐
+│ # │ Action   │ Label                   │ Param │ Gate │
+├───┼──────────┼─────────────────────────┼───────┼──────┤
+│ 0 │ navigate │ navigate                │       │      │
+│ 1 │ click    │ click_btn_submit_review │       │ yes  │
+└───┴──────────┴─────────────────────────┴───────┴──────┘
+
+Declared params: (none)
+Saved: skills\workflow_submit.json

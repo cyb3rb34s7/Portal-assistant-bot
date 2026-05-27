@@ -1,0 +1,905 @@
+{
+  "name": "cascade_region_market_lang",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "schema_version": 1,
+  "upgraded_from": null,
+  "created_at": "2026-05-27T20:02:14.959994",
+  "updated_at": "2026-05-27T20:02:14.960004",
+  "base_url": "http://localhost:5188/asset/A-1001",
+  "params": [
+    {
+      "name": "select_region",
+      "type": "enum",
+      "description": "Value for step 1: fill_select_region",
+      "example": "APAC",
+      "required": true,
+      "depends_on": null,
+      "select_from_current_options": false,
+      "provenance": null,
+      "codec": "enum_value",
+      "constraints": null,
+      "enum_options": [
+        {
+          "value": "",
+          "label": "—",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "AMER",
+          "label": "Americas",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "EMEA",
+          "label": "Europe / Middle East / Africa",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "APAC",
+          "label": "Asia Pacific",
+          "selected": true,
+          "disabled": false
+        }
+      ],
+      "enum_aliases": {}
+    },
+    {
+      "name": "select_market",
+      "type": "enum",
+      "description": "Value for step 2: fill_select_market",
+      "example": "IN",
+      "required": true,
+      "depends_on": "select_region",
+      "select_from_current_options": false,
+      "provenance": null,
+      "codec": "enum_value",
+      "constraints": null,
+      "enum_options": [
+        {
+          "value": "",
+          "label": "—",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "IN",
+          "label": "India",
+          "selected": true,
+          "disabled": false
+        },
+        {
+          "value": "JP",
+          "label": "Japan",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "AU",
+          "label": "Australia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "SG",
+          "label": "Singapore",
+          "selected": false,
+          "disabled": false
+        }
+      ],
+      "enum_aliases": {}
+    },
+    {
+      "name": "select_language",
+      "type": "enum",
+      "description": "Value for step 3: fill_select_language",
+      "example": "hi-IN",
+      "required": true,
+      "depends_on": "select_market",
+      "select_from_current_options": false,
+      "provenance": null,
+      "codec": "enum_value",
+      "constraints": null,
+      "enum_options": [
+        {
+          "value": "",
+          "label": "—",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "hi-IN",
+          "label": "Hindi",
+          "selected": true,
+          "disabled": false
+        },
+        {
+          "value": "en-IN",
+          "label": "English (India)",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ta-IN",
+          "label": "Tamil",
+          "selected": false,
+          "disabled": false
+        }
+      ],
+      "enum_aliases": {}
+    }
+  ],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/asset/A-1001",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "3da9b0b8-4ca8-4917-8eac-a0ca0e38a384"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:02:01.239716",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "select_option",
+      "fingerprint": {
+        "test_id": "select-region",
+        "element_id": "asset-region",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Region",
+        "text": "— Americas Europe / Middle East / Africa Asia Pacific",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#asset-region",
+        "xpath": "/html/body/div/div/main/section/div/div[4]/div[1]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "cascade-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Asset A-1001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 360.0,
+          "width": 295.65625,
+          "height": 36.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "select_single",
+        "value_kind": "string",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "AMER",
+            "label": "Americas",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "EMEA",
+            "label": "Europe / Middle East / Africa",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "APAC",
+            "label": "Asia Pacific",
+            "selected": true,
+            "disabled": false
+          }
+        ],
+        "selected_options": [
+          "APAC"
+        ],
+        "aria_expanded": null,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": null,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": false,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": "APAC",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_select_region",
+      "param_binding": {
+        "name": "select_region",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": {
+        "recorded_value": "APAC",
+        "recorded_label": "Asia Pacific",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "AMER",
+            "label": "Americas",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "EMEA",
+            "label": "Europe / Middle East / Africa",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "APAC",
+            "label": "Asia Pacific",
+            "selected": true,
+            "disabled": false
+          }
+        ],
+        "match_mode": "value",
+        "aliases": {},
+        "recorded_index": null,
+        "option_match_policy": "exact_only"
+      },
+      "dependency_chain": {
+        "parent_param": "select_region",
+        "child_param": "select_market",
+        "option_source_request": {
+          "url_pattern": "/api/markets",
+          "method": "GET",
+          "status": null,
+          "max_ms": 5000,
+          "optional": false,
+          "started_after_event": null
+        },
+        "child_options_signature_after": "[data-testid='select-market']"
+      },
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "82310c6b-0af0-4815-989e-5832ff53eed0"
+        ],
+        "cluster_kind": "select_option",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:02:01.802355",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 2,
+      "action": "select_option",
+      "fingerprint": {
+        "test_id": "select-market",
+        "element_id": "asset-market",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Market",
+        "text": "— India Japan Australia Singapore",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#asset-market",
+        "xpath": "/html/body/div/div/main/section/div/div[4]/div[2]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "cascade-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Asset A-1001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 586.65625,
+          "y": 360.0,
+          "width": 295.671875,
+          "height": 36.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "select_single",
+        "value_kind": "string",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "IN",
+            "label": "India",
+            "selected": true,
+            "disabled": false
+          },
+          {
+            "value": "JP",
+            "label": "Japan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "AU",
+            "label": "Australia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "SG",
+            "label": "Singapore",
+            "selected": false,
+            "disabled": false
+          }
+        ],
+        "selected_options": [
+          "IN"
+        ],
+        "aria_expanded": null,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": null,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": false,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": "IN",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_select_market",
+      "param_binding": {
+        "name": "select_market",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": {
+        "recorded_value": "IN",
+        "recorded_label": "India",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "IN",
+            "label": "India",
+            "selected": true,
+            "disabled": false
+          },
+          {
+            "value": "JP",
+            "label": "Japan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "AU",
+            "label": "Australia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "SG",
+            "label": "Singapore",
+            "selected": false,
+            "disabled": false
+          }
+        ],
+        "match_mode": "value",
+        "aliases": {},
+        "recorded_index": null,
+        "option_match_policy": "exact_only"
+      },
+      "dependency_chain": {
+        "parent_param": "select_market",
+        "child_param": "select_language",
+        "option_source_request": {
+          "url_pattern": "/api/languages",
+          "method": "GET",
+          "status": null,
+          "max_ms": 5000,
+          "optional": false,
+          "started_after_event": null
+        },
+        "child_options_signature_after": "[data-testid='select-language']"
+      },
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "fe07bf22-0795-4318-ac8b-9ed03fe3969b"
+        ],
+        "cluster_kind": "select_option",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:02:04.612595",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 3,
+      "action": "select_option",
+      "fingerprint": {
+        "test_id": "select-language",
+        "element_id": "asset-language",
+        "name": null,
+        "aria_label": null,
+        "role": "combobox",
+        "accessible_name": "Language",
+        "text": "— Hindi English (India) Tamil",
+        "placeholder": null,
+        "tag": "select",
+        "input_type": null,
+        "css_path": "select#asset-language",
+        "xpath": "/html/body/div/div/main/section/div/div[4]/div[3]/select",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": null
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": null,
+            "role": null,
+            "className": "cascade-row"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          }
+        ],
+        "landmark": "Asset A-1001",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 894.328125,
+          "y": 360.0,
+          "width": 295.65625,
+          "height": 36.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "select_single",
+        "value_kind": "string",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hi-IN",
+            "label": "Hindi",
+            "selected": true,
+            "disabled": false
+          },
+          {
+            "value": "en-IN",
+            "label": "English (India)",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ta-IN",
+            "label": "Tamil",
+            "selected": false,
+            "disabled": false
+          }
+        ],
+        "selected_options": [
+          "hi-IN"
+        ],
+        "aria_expanded": null,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": null,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": false,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": "hi-IN",
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "fill_select_language",
+      "param_binding": {
+        "name": "select_language",
+        "type": "string",
+        "mode": "whole",
+        "template": null
+      },
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": {
+        "recorded_value": "hi-IN",
+        "recorded_label": "Hindi",
+        "options_snapshot": [
+          {
+            "value": "",
+            "label": "—",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hi-IN",
+            "label": "Hindi",
+            "selected": true,
+            "disabled": false
+          },
+          {
+            "value": "en-IN",
+            "label": "English (India)",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ta-IN",
+            "label": "Tamil",
+            "selected": false,
+            "disabled": false
+          }
+        ],
+        "match_mode": "value",
+        "aliases": {},
+        "recorded_index": null,
+        "option_match_policy": "exact_only"
+      },
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "2cb5e9cb-2b45-4723-b06a-e124e888260e"
+        ],
+        "cluster_kind": "select_option",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:02:07.712307",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "a10dcdaedbef",
+  "legacy_nav_upgrade_count": 0,
+  "annotate_mode": "semantic",
+  "recording_context": {
+    "locale": "en",
+    "timezone": "Asia/Calcutta"
+  },
+  "semantic_clusters": [
+    {
+      "raw_event_ids": [
+        "82310c6b-0af0-4815-989e-5832ff53eed0"
+      ],
+      "cluster_kind": "select_option",
+      "primary_target_event_id": "82310c6b-0af0-4815-989e-5832ff53eed0",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": [
+        "single_event"
+      ]
+    },
+    {
+      "raw_event_ids": [
+        "fe07bf22-0795-4318-ac8b-9ed03fe3969b"
+      ],
+      "cluster_kind": "select_option",
+      "primary_target_event_id": "fe07bf22-0795-4318-ac8b-9ed03fe3969b",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": [
+        "single_event"
+      ]
+    },
+    {
+      "raw_event_ids": [
+        "2cb5e9cb-2b45-4723-b06a-e124e888260e"
+      ],
+      "cluster_kind": "select_option",
+      "primary_target_event_id": "2cb5e9cb-2b45-4723-b06a-e124e888260e",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": [
+        "single_event"
+      ]
+    },
+    {
+      "raw_event_ids": [
+        "3da9b0b8-4ca8-4917-8eac-a0ca0e38a384"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "3da9b0b8-4ca8-4917-8eac-a0ca0e38a384",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    }
+  ]
+}
