@@ -1832,6 +1832,26 @@ def _multiselect_item_id(fp: Optional[ElementFingerprint]) -> Optional[str]:
     return None
 
 
+def _multiselect_item_label(
+    fp: Optional[ElementFingerprint], item_id: str
+) -> str:
+    """Display label for a multiselect option, used by the runner to
+    type into a label-indexed (server-side) search box.
+
+    Priority: accessible_name -> text -> aria_label -> the id itself.
+    The checkbox fingerprint's accessible_name is the option's visible
+    text (the <span>{name}</span> next to the <input>); when the grabber
+    only captured the bare checkbox we fall back through text / aria
+    and finally the id (which still lets the runner narrow on a portal
+    whose search matches ids, and is harmless when it doesn't because the
+    visibility wait gates the click)."""
+    if fp is not None:
+        for cand in (fp.accessible_name, fp.text, fp.aria_label):
+            if cand and cand.strip():
+                return cand.strip()
+    return item_id
+
+
 def _detect_set_selection_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -2048,6 +2068,10 @@ def _build_set_selection_spec(
     search_fp: Optional[ElementFingerprint] = None
     checkbox_template_fp: Optional[ElementFingerprint] = None
     target_items: list[str] = []
+    # Real-portal cases A/B: id -> display label, captured from each
+    # checkbox/item click so the runner can type the LABEL into the
+    # search box (the server search is label-indexed, not id-indexed).
+    item_labels: dict[str, str] = {}
 
     for eid in cluster.raw_event_ids:
         e = by_id.get(eid)
@@ -2068,11 +2092,33 @@ def _build_set_selection_spec(
                     target_items.remove(item_id)
                 else:
                     target_items.append(item_id)
+                # Capture the display label for this id. Prefer the
+                # accessible name (computed per WAI-ARIA), then trimmed
+                # text, then aria_label; fall back to the id itself so
+                # the runner always has *something* to type. Always
+                # record (even on toggle-remove) so a later re-add of
+                # the same id keeps its label.
+                label = _multiselect_item_label(e.fingerprint, item_id)
+                item_labels[item_id] = label
                 # Build a template fingerprint from this event (first
                 # one wins, the {item} placeholder is derived by WI-11
                 # template pass).
                 if checkbox_template_fp is None:
                     checkbox_template_fp = e.fingerprint
+
+    # Real-portal case B: when the picker exposes a search box (a search
+    # role event was observed in the cluster) we ALWAYS prefer
+    # search-to-narrow at replay, regardless of how the operator reached
+    # each option. No search box => direct (locator + scroll_into_view
+    # fallback in the runner; real-portal case A).
+    select_strategy = "search" if search_fp is not None else "direct"
+
+    # Popover/listbox container: derive from the picker prefix when we
+    # have one (MultiSelect.jsx renders {prefix}-popover with
+    # role=listbox); else a scoped role=listbox under the picker.
+    option_list_selector: Optional[str] = None
+    if prefix:
+        option_list_selector = f"[data-testid='{prefix}-popover']"
 
     spec = SetSelectionSpec(
         mode="replace",
@@ -2088,6 +2134,9 @@ def _build_set_selection_spec(
         current_items_id_prefix=(
             f"{prefix}-chip-" if prefix else None
         ),
+        item_labels=item_labels,
+        select_strategy=select_strategy,  # type: ignore[arg-type]
+        option_list_selector=option_list_selector,
         final_equality_assertion=True,  # WI-19 safe default
     )
     return spec, target_items, pname
