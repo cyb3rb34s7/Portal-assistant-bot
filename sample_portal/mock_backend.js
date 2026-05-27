@@ -118,6 +118,68 @@ const TAGS = [
   { id: "exclusive", name: "Exclusive" },
 ];
 
+// Countries: a deliberately LONG, alphabetical list (Zimbabwe last) so
+// the last option falls below the popover fold at open. Backs the
+// Country multi-select, whose search is SERVER-SIDE (filtered by
+// /api/countries?q=<query> with an artificial spinner delay). Mirrors
+// the real OTT "Migrate framework" picker the operator hit.
+const COUNTRIES = [
+  { id: "ar", name: "Argentina" },
+  { id: "au", name: "Australia" },
+  { id: "at", name: "Austria" },
+  { id: "be", name: "Belgium" },
+  { id: "br", name: "Brazil" },
+  { id: "bg", name: "Bulgaria" },
+  { id: "ca", name: "Canada" },
+  { id: "cl", name: "Chile" },
+  { id: "cn", name: "China" },
+  { id: "co", name: "Colombia" },
+  { id: "hr", name: "Croatia" },
+  { id: "cz", name: "Czechia" },
+  { id: "dk", name: "Denmark" },
+  { id: "eg", name: "Egypt" },
+  { id: "fi", name: "Finland" },
+  { id: "fr", name: "France" },
+  { id: "de", name: "Germany" },
+  { id: "gr", name: "Greece" },
+  { id: "hu", name: "Hungary" },
+  { id: "in", name: "India" },
+  { id: "id", name: "Indonesia" },
+  { id: "ie", name: "Ireland" },
+  { id: "il", name: "Israel" },
+  { id: "it", name: "Italy" },
+  { id: "jp", name: "Japan" },
+  { id: "ke", name: "Kenya" },
+  { id: "my", name: "Malaysia" },
+  { id: "mx", name: "Mexico" },
+  { id: "nl", name: "Netherlands" },
+  { id: "nz", name: "New Zealand" },
+  { id: "ng", name: "Nigeria" },
+  { id: "no", name: "Norway" },
+  { id: "ph", name: "Philippines" },
+  { id: "pl", name: "Poland" },
+  { id: "pt", name: "Portugal" },
+  { id: "ro", name: "Romania" },
+  { id: "ru", name: "Russia" },
+  { id: "sa", name: "Saudi Arabia" },
+  { id: "sg", name: "Singapore" },
+  { id: "za", name: "South Africa" },
+  { id: "kr", name: "South Korea" },
+  { id: "es", name: "Spain" },
+  { id: "se", name: "Sweden" },
+  { id: "ch", name: "Switzerland" },
+  { id: "tw", name: "Taiwan" },
+  { id: "th", name: "Thailand" },
+  { id: "tr", name: "Turkey" },
+  { id: "ua", name: "Ukraine" },
+  { id: "ae", name: "United Arab Emirates" },
+  { id: "gb", name: "United Kingdom" },
+  { id: "us", name: "United States" },
+  { id: "vn", name: "Vietnam" },
+  { id: "zm", name: "Zambia" },
+  { id: "zw", name: "Zimbabwe" },
+];
+
 // Seed catalog -- mix of overlapping prefixes so search "A-90" returns
 // multiple rows (the operator's real-world multi-match scenario).
 function seedAssets() {
@@ -136,6 +198,7 @@ function seedAssets() {
   for (const a of assets) {
     a.categories = []; // []ids
     a.tags = []; // []ids
+    a.country = []; // []ids
     a.region = null;
     a.market = null;
     a.language = null;
@@ -289,6 +352,19 @@ async function dispatch(req, res, url) {
   if (path === "/api/tags" && method === "GET") {
     return send(res, 200, TAGS, 600);
   }
+  // Server-side country search. Filters COUNTRIES by a
+  // case-insensitive name substring on `q`. The ~300ms delay emulates
+  // the real portal's search spinner -- replay must wait for the
+  // filtered option to materialize, not sleep a fixed amount. Empty q
+  // returns the full alphabetical list (so opening the picker shows
+  // every option, with Zimbabwe below the fold).
+  if (path === "/api/countries" && method === "GET") {
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const rows = q
+      ? COUNTRIES.filter((c) => c.name.toLowerCase().includes(q))
+      : COUNTRIES;
+    return send(res, 200, rows, 300);
+  }
 
   // ---- Catalog search (multi-result scenario) ----
   if (path === "/api/catalog/assets" && method === "GET") {
@@ -356,6 +432,7 @@ async function dispatch(req, res, url) {
         "title",
         "categories",
         "tags",
+        "country",
         "region",
         "market",
         "language",
