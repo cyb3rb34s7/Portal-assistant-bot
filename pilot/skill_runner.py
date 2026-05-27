@@ -1234,7 +1234,10 @@ class SkillRunner:
         if gesture == "double":
             click_fn = lambda: locator.dblclick(timeout=4000)  # noqa: E731
         else:
-            click_fn = lambda: locator.click(timeout=4000)  # noqa: E731
+            # Effect-gated dispatch_event fallback for CDP real-mouse
+            # no-op (see _robust_click). Keeps locator.click() as the
+            # primary path; falls back only when no effect is detected.
+            click_fn = lambda: self._robust_click(locator, timeout=4000)  # noqa: E731
 
         # WI-35: when the click declared a popup effect, wrap the click
         # in expect_page so the new tab/window is captured and bound to
@@ -2085,7 +2088,7 @@ class SkillRunner:
             try:
                 loc = self._locate_via_template(spec.open_picker_fp, {})
                 if loc:
-                    loc.click(timeout=4000)
+                    self._robust_click(loc, timeout=4000)
                     self._wait_for_page_settle(max_ms=2000)
             except Exception as e:
                 return (
@@ -2133,7 +2136,7 @@ class SkillRunner:
             try:
                 loc = self._locate_via_template(spec.commit_fp, {})
                 if loc:
-                    loc.click(timeout=3000)
+                    self._robust_click(loc, timeout=3000)
             except Exception as e:
                 # WI-06: commit-click failure used to disappear silently
                 # -- a picker that didn't close left the next step's
@@ -2330,7 +2333,7 @@ class SkillRunner:
                 # scroll_into_view is best-effort; click still attempts
                 # actionability on its own.
                 pass
-            loc.click(timeout=3000)
+            self._robust_click(loc, timeout=3000)
             return None
         except Exception as e:
             return _fail(
@@ -2401,7 +2404,7 @@ class SkillRunner:
                 state="visible",
                 timeout=self._set_selection_dom_timeout_ms(),
             )
-            loc.click(timeout=3000)
+            self._robust_click(loc, timeout=3000)
         except Exception as e:
             self._diagnostic(
                 "runner.set_selection_search_target_not_visible",
@@ -2420,6 +2423,110 @@ class SkillRunner:
             except Exception:
                 pass
         return True
+
+    # ---- click hardening (CDP real-mouse no-op fallback) --------------
+    def _robust_click(self, loc, *, timeout: int = 4000, settle_ms: int = 350) -> None:
+        """Click ``loc`` with an effect-gated ``dispatch_event('click')``
+        fallback.
+
+        Motivation (2026-05-22 Layer B finding): on a CDP-attached system
+        Chrome (v148), Playwright's synthesized real-mouse clicks
+        (``locator.click()`` / ``page.mouse.click``) do NOT fire some
+        React onClick handlers -- aria-expanded stays false, no popover
+        opens -- even though coordinates and elementFromPoint are correct.
+        ``dispatch_event('click')`` DOES reach the handler. A bare
+        try/except is insufficient because ``locator.click()`` usually
+        does NOT raise when it has no effect; it silently succeeds at the
+        mouse-event level. So we measure an EFFECT and only fall back when
+        none is observed.
+
+        Effect probe (cheap + general, no per-call knowledge):
+          1. If the element exposes any of ``aria-expanded`` /
+             ``aria-pressed`` / ``aria-checked``, snapshot it before the
+             click and compare after -- a toggle that flips its own aria
+             state is the strongest, element-local signal.
+          2. Otherwise fall back to the document-level quiescence watcher
+             (``window.__cp_last_mutation_at``, installed by
+             ``_ensure_watchers``): if no DOM mutation occurred within
+             ``settle_ms`` of the click, treat it as no-effect.
+
+        The primary path stays ``loc.click()`` (preserves hover/focus
+        fidelity); the fallback fires only when the probe reports no
+        change, and emits a ``runner.click_fallback_dispatch`` diagnostic.
+        """
+        page = self.session.page
+        try:
+            self._ensure_watchers(page)
+        except Exception:
+            pass
+
+        # ---- snapshot the effect probe BEFORE the click ----
+        aria_before: Optional[str] = None
+        mutation_before: int = 0
+        try:
+            aria_before = loc.evaluate(
+                "el => { for (const a of "
+                "['aria-expanded','aria-pressed','aria-checked']) {"
+                " if (el.hasAttribute(a)) return a + '=' + el.getAttribute(a);"
+                " } return null; }"
+            )
+        except Exception:
+            aria_before = None
+        if aria_before is None:
+            try:
+                mutation_before = int(
+                    page.evaluate("() => window.__cp_last_mutation_at || 0")
+                ) or 0
+            except Exception:
+                mutation_before = 0
+
+        # ---- primary path: real-mouse click ----
+        loc.click(timeout=timeout)
+
+        # ---- measure the effect ----
+        try:
+            page.wait_for_timeout(settle_ms)
+        except Exception:
+            pass
+        had_effect = True  # assume effect unless the probe proves otherwise
+        if aria_before is not None:
+            try:
+                aria_after = loc.evaluate(
+                    "el => { for (const a of "
+                    "['aria-expanded','aria-pressed','aria-checked']) {"
+                    " if (el.hasAttribute(a)) return a + '=' + el.getAttribute(a);"
+                    " } return null; }"
+                )
+            except Exception:
+                aria_after = aria_before
+            had_effect = aria_after != aria_before
+            probe = "aria"
+        else:
+            try:
+                mutation_after = int(
+                    page.evaluate("() => window.__cp_last_mutation_at || 0")
+                ) or 0
+            except Exception:
+                mutation_after = mutation_before
+            had_effect = mutation_after > mutation_before
+            probe = "mutation"
+
+        if had_effect:
+            return
+
+        # ---- no observed effect: dispatch_event fallback ----
+        self._diagnostic(
+            "runner.click_fallback_dispatch",
+            level="warn",
+            recoverable=True,
+            probe=probe,
+            aria_before=aria_before,
+        )
+        loc.dispatch_event("click")
+        try:
+            page.wait_for_timeout(settle_ms)
+        except Exception:
+            pass
 
     def _do_fill_submit(
         self, step: SkillStep, value: Optional[str]

@@ -184,11 +184,28 @@ class _FakeLocator:
     def wait_for(self, **kw):
         self._log.append(("wait_for", self._name, kw.get("state")))
 
+    def evaluate(self, _expr):
+        # _robust_click's aria probe. Report an aria-checked flip so the
+        # real click is treated as having had an effect (no fallback) --
+        # these tests assert the reach logic, not the click fallback.
+        self._log.append(("evaluate", self._name))
+        self._aria_calls = getattr(self, "_aria_calls", 0) + 1
+        return f"aria-checked={'true' if self._aria_calls > 1 else 'false'}"
+
+    def dispatch_event(self, event, **_kw):
+        self._log.append(("dispatch_event", self._name, event))
+
 
 class _FakePage:
     """Minimal stand-in for the Playwright Page the runner reads via
     ``self.session.page``. The reach helpers only need ``page`` to exist;
     locator resolution is stubbed via ``_locate_via_template``."""
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def evaluate(self, _expr):
+        return 0
 
 
 class _FakeSession:
@@ -280,3 +297,117 @@ def test_runner_direct_path_scrolls_before_click() -> None:
     assert ("click", "checkbox-us") in log
     # scroll precedes click.
     assert log.index(("scroll", "checkbox-us")) < log.index(("click", "checkbox-us"))
+
+
+# ---- runner: _robust_click effect-gated dispatch_event fallback -----------
+
+
+class _RobustLocator:
+    """Locator that records click()/dispatch_event() and reports a
+    scripted aria-snapshot sequence so the effect probe can be exercised.
+
+    ``aria_values`` is a list consumed one entry per ``evaluate`` call:
+    None means the element has no aria-* attr (probe falls back to the
+    mutation watcher); a string like 'aria-expanded=false' is a snapshot.
+    """
+
+    def __init__(self, log, *, aria_values):
+        self._log = log
+        self._aria = list(aria_values)
+
+    def click(self, **_kw):
+        self._log.append(("click",))
+
+    def dispatch_event(self, event, **_kw):
+        self._log.append(("dispatch_event", event))
+
+    def evaluate(self, _expr):
+        return self._aria.pop(0) if self._aria else None
+
+
+class _RobustPage:
+    """Page whose __cp_last_mutation_at can be scripted via ``mutation``;
+    each evaluate() call returns the next value (so the test can simulate
+    'mutation advanced' vs 'no mutation')."""
+
+    def __init__(self, *, mutation_values=None):
+        self._mut = list(mutation_values or [])
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def evaluate(self, _expr):
+        return self._mut.pop(0) if self._mut else 0
+
+
+class _RobustSession:
+    def __init__(self, page):
+        self.page = page
+
+
+def _robust_runner(page) -> SkillRunner:
+    runner = _make_runner()
+    runner.session = _RobustSession(page)  # type: ignore[assignment]
+    runner._ensure_watchers = lambda _p: None  # type: ignore[assignment]
+    return runner
+
+
+def test_robust_click_aria_change_no_fallback() -> None:
+    """When the aria probe flips (real click had an effect), the runner
+    clicks once and does NOT dispatch a fallback event."""
+    log: list = []
+    page = _RobustPage()
+    runner = _robust_runner(page)
+    loc = _RobustLocator(
+        log,
+        aria_values=["aria-expanded=false", "aria-expanded=true"],
+    )
+    runner._robust_click(loc)
+    assert ("click",) in log
+    assert not any(e[0] == "dispatch_event" for e in log)
+
+
+def test_robust_click_aria_unchanged_triggers_dispatch() -> None:
+    """The CDP no-op case: aria-expanded stays false after the real
+    click, so the runner falls back to dispatch_event('click') and emits
+    the diagnostic."""
+    log: list = []
+    page = _RobustPage()
+    runner = _robust_runner(page)
+    loc = _RobustLocator(
+        log,
+        aria_values=["aria-expanded=false", "aria-expanded=false"],
+    )
+    runner._robust_click(loc)
+    # click() fired first, THEN dispatch_event as the fallback.
+    assert log[0] == ("click",)
+    assert ("dispatch_event", "click") in log
+    assert log.index(("click",)) < log.index(("dispatch_event", "click"))
+    codes = [d.code for d in runner.diagnostics]
+    assert "runner.click_fallback_dispatch" in codes
+
+
+def test_robust_click_mutation_probe_no_mutation_falls_back() -> None:
+    """No aria attr -> document-level mutation probe. If
+    __cp_last_mutation_at did not advance after the click, treat as
+    no-effect and dispatch."""
+    log: list = []
+    # evaluate sequence: before=1000 (mutation snapshot), after=1000 (unchanged)
+    page = _RobustPage(mutation_values=[1000, 1000])
+    runner = _robust_runner(page)
+    loc = _RobustLocator(log, aria_values=[None])  # no aria attr
+    runner._robust_click(loc)
+    assert log[0] == ("click",)
+    assert ("dispatch_event", "click") in log
+
+
+def test_robust_click_mutation_probe_advanced_no_fallback() -> None:
+    """No aria attr but the mutation timestamp advanced after the click
+    -> the click had an effect, no fallback."""
+    log: list = []
+    page = _RobustPage(mutation_values=[1000, 1500])
+    runner = _robust_runner(page)
+    loc = _RobustLocator(log, aria_values=[None])
+    runner._robust_click(loc)
+    assert ("click",) in log
+    assert not any(e[0] == "dispatch_event" for e in log)
