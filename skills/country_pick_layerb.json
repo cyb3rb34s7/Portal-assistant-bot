@@ -6,36 +6,293 @@
   "version": 1,
   "schema_version": 1,
   "upgraded_from": null,
-  "created_at": "2026-05-27T18:07:56.508872",
-  "updated_at": "2026-05-27T18:07:56.508882",
+  "created_at": "2026-05-27T19:52:14.924800",
+  "updated_at": "2026-05-27T19:52:14.924810",
   "base_url": null,
   "params": [
     {
       "name": "country",
       "type": "string_list",
-      "description": "Multi-select items for step 1: fill_multiselect_country_checkbox_ar",
-      "example": "ar",
+      "description": "Multi-select items (by label) for step 1: set_selection_multiselect_country",
+      "example": "Argentina",
       "required": true,
       "depends_on": null,
       "select_from_current_options": false,
       "provenance": null,
       "codec": "raw",
       "constraints": null,
-      "enum_options": null,
-      "enum_aliases": {}
-    },
-    {
-      "name": "multiselect_country_checkbox_ar",
-      "type": "boolean",
-      "description": "Value for step 1: fill_multiselect_country_checkbox_ar",
-      "example": "true",
-      "required": true,
-      "depends_on": null,
-      "select_from_current_options": false,
-      "provenance": null,
-      "codec": "boolean",
-      "constraints": null,
-      "enum_options": null,
+      "enum_options": [
+        {
+          "value": "ar",
+          "label": "Argentina",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "au",
+          "label": "Australia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "at",
+          "label": "Austria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "br",
+          "label": "Brazil",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "bg",
+          "label": "Bulgaria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ca",
+          "label": "Canada",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "cn",
+          "label": "China",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "co",
+          "label": "Colombia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "hr",
+          "label": "Croatia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "cz",
+          "label": "Czechia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "dk",
+          "label": "Denmark",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "fi",
+          "label": "Finland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "fr",
+          "label": "France",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "de",
+          "label": "Germany",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "hu",
+          "label": "Hungary",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "in",
+          "label": "India",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "id",
+          "label": "Indonesia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ie",
+          "label": "Ireland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "il",
+          "label": "Israel",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "it",
+          "label": "Italy",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "jp",
+          "label": "Japan",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ke",
+          "label": "Kenya",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "my",
+          "label": "Malaysia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "nl",
+          "label": "Netherlands",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "nz",
+          "label": "New Zealand",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ng",
+          "label": "Nigeria",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "no",
+          "label": "Norway",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "pl",
+          "label": "Poland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "pt",
+          "label": "Portugal",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ro",
+          "label": "Romania",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ru",
+          "label": "Russia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "sa",
+          "label": "Saudi Arabia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "sg",
+          "label": "Singapore",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "za",
+          "label": "South Africa",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "kr",
+          "label": "South Korea",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "es",
+          "label": "Spain",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ch",
+          "label": "Switzerland",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "tw",
+          "label": "Taiwan",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "th",
+          "label": "Thailand",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ua",
+          "label": "Ukraine",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "ae",
+          "label": "United Arab Emirates",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "us",
+          "label": "United States",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "vn",
+          "label": "Vietnam",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "zm",
+          "label": "Zambia",
+          "selected": false,
+          "disabled": false
+        },
+        {
+          "value": "zw",
+          "label": "Zimbabwe",
+          "selected": false,
+          "disabled": false
+        }
+      ],
       "enum_aliases": {}
     }
   ],
@@ -44,7 +301,7 @@
       "index": 0,
       "action": "navigate",
       "fingerprint": null,
-      "url": "http://localhost:5188/asset/A-1001",
+      "url": "http://localhost:5188/asset/A-1002",
       "value": null,
       "file_path": null,
       "wait_ms": null,
@@ -85,7 +342,7 @@
       },
       "provenance": {
         "raw_event_ids": [
-          "d2642d57-8688-4748-a256-9157a4d103db"
+          "e13c8728-d2d4-488d-9c7a-70a8338c4093"
         ],
         "cluster_kind": "single_event",
         "detection_method": "deterministic"
@@ -93,7 +350,7 @@
       "value_transition": null,
       "click_gesture": null,
       "effect_signature": null,
-      "captured_at": "2026-05-27T18:07:46.840899",
+      "captured_at": "2026-05-27T19:50:09.440471",
       "screenshot_path": null,
       "auto_post_observed": null
     },
@@ -150,7 +407,7 @@
             "className": "multiselect"
           }
         ],
-        "landmark": "Asset A-1001",
+        "landmark": "Asset A-1002",
         "nth_of_role": null,
         "bbox": {
           "x": 294.0,
@@ -189,13 +446,8 @@
       "value": "true",
       "file_path": null,
       "wait_ms": null,
-      "semantic_label": "fill_multiselect_country_checkbox_ar",
-      "param_binding": {
-        "name": "multiselect_country_checkbox_ar",
-        "type": "string",
-        "mode": "whole",
-        "template": null
-      },
+      "semantic_label": "set_selection_multiselect_country",
+      "param_binding": null,
       "requires_gate": false,
       "gate_reason": null,
       "post_condition": null,
@@ -207,6 +459,278 @@
       "set_selection": {
         "mode": "replace",
         "param": "country",
+        "known_options": [
+          {
+            "value": "ar",
+            "label": "Argentina",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "au",
+            "label": "Australia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "at",
+            "label": "Austria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "br",
+            "label": "Brazil",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "bg",
+            "label": "Bulgaria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ca",
+            "label": "Canada",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "cn",
+            "label": "China",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "co",
+            "label": "Colombia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hr",
+            "label": "Croatia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "cz",
+            "label": "Czechia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "dk",
+            "label": "Denmark",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "fi",
+            "label": "Finland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "fr",
+            "label": "France",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "de",
+            "label": "Germany",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "hu",
+            "label": "Hungary",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "in",
+            "label": "India",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "id",
+            "label": "Indonesia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ie",
+            "label": "Ireland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "il",
+            "label": "Israel",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "it",
+            "label": "Italy",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "jp",
+            "label": "Japan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ke",
+            "label": "Kenya",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "my",
+            "label": "Malaysia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "nl",
+            "label": "Netherlands",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "nz",
+            "label": "New Zealand",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ng",
+            "label": "Nigeria",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "no",
+            "label": "Norway",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "pl",
+            "label": "Poland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "pt",
+            "label": "Portugal",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ro",
+            "label": "Romania",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ru",
+            "label": "Russia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "sa",
+            "label": "Saudi Arabia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "sg",
+            "label": "Singapore",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "za",
+            "label": "South Africa",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "kr",
+            "label": "South Korea",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "es",
+            "label": "Spain",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ch",
+            "label": "Switzerland",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "tw",
+            "label": "Taiwan",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "th",
+            "label": "Thailand",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ua",
+            "label": "Ukraine",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "ae",
+            "label": "United Arab Emirates",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "us",
+            "label": "United States",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "vn",
+            "label": "Vietnam",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "zm",
+            "label": "Zambia",
+            "selected": false,
+            "disabled": false
+          },
+          {
+            "value": "zw",
+            "label": "Zimbabwe",
+            "selected": false,
+            "disabled": false
+          }
+        ],
         "open_picker_fp": {
           "test_id": "multiselect-country-toggle",
           "element_id": null,
@@ -257,7 +781,7 @@
               "className": "app-main"
             }
           ],
-          "landmark": "Asset A-1001",
+          "landmark": "Asset A-1002",
           "nth_of_role": null,
           "bbox": {
             "x": 1109.625,
@@ -342,7 +866,7 @@
               "className": "app-main"
             }
           ],
-          "landmark": "Asset A-1001",
+          "landmark": "Asset A-1002",
           "nth_of_role": null,
           "bbox": {
             "x": 280.0,
@@ -427,7 +951,7 @@
               "className": "multiselect"
             }
           ],
-          "landmark": "Asset A-1001",
+          "landmark": "Asset A-1002",
           "nth_of_role": null,
           "bbox": {
             "x": 294.0,
@@ -463,7 +987,7 @@
           "template_parts": {}
         },
         "commit_fp": null,
-        "current_items_selector": "[data-testid^='multiselect-country-chip-']",
+        "current_items_selector": "[data-testid^='multiselect-country-chip-']:not([data-testid$='-remove'])",
         "current_items_id_attr": "data-testid",
         "current_items_id_prefix": "multiselect-country-chip-",
         "final_equality_assertion": true,
@@ -504,22 +1028,28 @@
       },
       "provenance": {
         "raw_event_ids": [
-          "bbc40494-f898-437f-9c43-308222d41d11",
-          "6b86e376-e413-472c-945e-0afba77cdc51",
-          "21a3efe0-d5a5-43e5-91da-1273fa9a8fac",
-          "1a7154a3-3ad7-4806-b182-50fc57f0b641",
-          "3a3569ee-810a-4bad-9058-bd131c3bb06b",
-          "eaa1d136-c6fa-48be-9d1a-63616fd4c805",
-          "24524514-1582-4e11-8b08-a538dcef27af",
-          "f90eb10d-f476-44ec-a77f-eb6110fa9692",
-          "36070aee-e639-4e36-93fa-aff6fc27d1e6",
-          "4ccdb0b8-c107-498e-983a-5c6fe5f86fa9",
-          "bb2f8f92-6daa-449f-84fc-2b538720094b",
-          "edcb2ee0-6409-4791-bd45-affd085cd8d9",
-          "f2c7bd66-d40c-4f40-bd06-b2f1f4a16eef",
-          "0cd6f156-1ce6-448a-8fb1-234287a8cfd7",
-          "e0c5354f-ae98-4f9f-a78b-9e3f95c0ec4c",
-          "8b166b9e-f73f-4dc6-bb9c-b2c4ee97ea42"
+          "0fa1fa6b-94af-41c2-a525-02279b86e1f1",
+          "d21d6021-835a-4868-89a7-d6fd9ff1d0c1",
+          "6e875293-e7ac-4a26-a8f2-8eb2796247e1",
+          "4407fd4b-fc29-4215-9913-5e2885cbe435",
+          "96bc65a3-6538-4462-a98b-37ee9a14e060",
+          "15342e6c-27c0-4c4c-9e6b-dd58364b58d9",
+          "b67c6290-acca-4a5e-a130-12cc59132152",
+          "a087879f-f83f-4590-81df-c0160b46b0be",
+          "629d0135-f2ae-459c-add4-4e3f922d698b",
+          "e34fa0ad-8998-4a21-977d-a1fb64ee90a2",
+          "454ef2bd-6121-4130-9fd2-e58a2d04be49",
+          "99fc8854-4b84-41d4-9901-c08f690e09f7",
+          "d57fb342-d3a8-4ee6-8759-2bc792269dc5",
+          "706afee0-583f-4f8e-863b-56cd29f6924e",
+          "d425fe14-b604-40d7-a9aa-a4f72a38f533",
+          "0eacba2a-084d-41ad-93d9-a1f934acdff9",
+          "33e420eb-c0a4-40b5-b93f-f7c59c809125",
+          "43f751a7-03bd-4aeb-8356-7e5580bf58d5",
+          "992f6d51-de02-43f4-8eac-55d305b96381",
+          "cebfe9f2-c5f4-44b5-8ae9-913c741b307c",
+          "daf6a82b-5fca-47cd-9178-0f0706eb28f2",
+          "e0143e63-27db-4702-af94-73a67ea668cc"
         ],
         "cluster_kind": "set_selection",
         "detection_method": "deterministic"
@@ -527,12 +1057,12 @@
       "value_transition": null,
       "click_gesture": null,
       "effect_signature": null,
-      "captured_at": "2026-05-27T18:07:48.732248",
+      "captured_at": "2026-05-27T19:50:12.070858",
       "screenshot_path": null,
       "auto_post_observed": null
     }
   ],
-  "source_session_id": "f8aa7b09297c",
+  "source_session_id": "b84ec8ed0ce0",
   "legacy_nav_upgrade_count": 0,
   "annotate_mode": "semantic",
   "recording_context": {
@@ -542,13 +1072,18 @@
   "semantic_clusters": [
     {
       "raw_event_ids": [
-        "36070aee-e639-4e36-93fa-aff6fc27d1e6",
-        "4ccdb0b8-c107-498e-983a-5c6fe5f86fa9",
-        "bb2f8f92-6daa-449f-84fc-2b538720094b",
-        "edcb2ee0-6409-4791-bd45-affd085cd8d9"
+        "629d0135-f2ae-459c-add4-4e3f922d698b",
+        "706afee0-583f-4f8e-863b-56cd29f6924e",
+        "e34fa0ad-8998-4a21-977d-a1fb64ee90a2",
+        "454ef2bd-6121-4130-9fd2-e58a2d04be49",
+        "99fc8854-4b84-41d4-9901-c08f690e09f7",
+        "d57fb342-d3a8-4ee6-8759-2bc792269dc5",
+        "d425fe14-b604-40d7-a9aa-a4f72a38f533",
+        "0eacba2a-084d-41ad-93d9-a1f934acdff9",
+        "33e420eb-c0a4-40b5-b93f-f7c59c809125"
       ],
       "cluster_kind": "select_autocomplete",
-      "primary_target_event_id": "edcb2ee0-6409-4791-bd45-affd085cd8d9",
+      "primary_target_event_id": "33e420eb-c0a4-40b5-b93f-f7c59c809125",
       "effects": null,
       "confidence": 1.0,
       "alternatives_considered": [
@@ -558,25 +1093,31 @@
     },
     {
       "raw_event_ids": [
-        "bbc40494-f898-437f-9c43-308222d41d11",
-        "6b86e376-e413-472c-945e-0afba77cdc51",
-        "21a3efe0-d5a5-43e5-91da-1273fa9a8fac",
-        "1a7154a3-3ad7-4806-b182-50fc57f0b641",
-        "3a3569ee-810a-4bad-9058-bd131c3bb06b",
-        "eaa1d136-c6fa-48be-9d1a-63616fd4c805",
-        "24524514-1582-4e11-8b08-a538dcef27af",
-        "f90eb10d-f476-44ec-a77f-eb6110fa9692",
-        "36070aee-e639-4e36-93fa-aff6fc27d1e6",
-        "4ccdb0b8-c107-498e-983a-5c6fe5f86fa9",
-        "bb2f8f92-6daa-449f-84fc-2b538720094b",
-        "edcb2ee0-6409-4791-bd45-affd085cd8d9",
-        "f2c7bd66-d40c-4f40-bd06-b2f1f4a16eef",
-        "0cd6f156-1ce6-448a-8fb1-234287a8cfd7",
-        "e0c5354f-ae98-4f9f-a78b-9e3f95c0ec4c",
-        "8b166b9e-f73f-4dc6-bb9c-b2c4ee97ea42"
+        "0fa1fa6b-94af-41c2-a525-02279b86e1f1",
+        "d21d6021-835a-4868-89a7-d6fd9ff1d0c1",
+        "6e875293-e7ac-4a26-a8f2-8eb2796247e1",
+        "4407fd4b-fc29-4215-9913-5e2885cbe435",
+        "96bc65a3-6538-4462-a98b-37ee9a14e060",
+        "15342e6c-27c0-4c4c-9e6b-dd58364b58d9",
+        "b67c6290-acca-4a5e-a130-12cc59132152",
+        "a087879f-f83f-4590-81df-c0160b46b0be",
+        "629d0135-f2ae-459c-add4-4e3f922d698b",
+        "e34fa0ad-8998-4a21-977d-a1fb64ee90a2",
+        "454ef2bd-6121-4130-9fd2-e58a2d04be49",
+        "99fc8854-4b84-41d4-9901-c08f690e09f7",
+        "d57fb342-d3a8-4ee6-8759-2bc792269dc5",
+        "706afee0-583f-4f8e-863b-56cd29f6924e",
+        "d425fe14-b604-40d7-a9aa-a4f72a38f533",
+        "0eacba2a-084d-41ad-93d9-a1f934acdff9",
+        "33e420eb-c0a4-40b5-b93f-f7c59c809125",
+        "43f751a7-03bd-4aeb-8356-7e5580bf58d5",
+        "992f6d51-de02-43f4-8eac-55d305b96381",
+        "cebfe9f2-c5f4-44b5-8ae9-913c741b307c",
+        "daf6a82b-5fca-47cd-9178-0f0706eb28f2",
+        "e0143e63-27db-4702-af94-73a67ea668cc"
       ],
       "cluster_kind": "set_selection",
-      "primary_target_event_id": "f2c7bd66-d40c-4f40-bd06-b2f1f4a16eef",
+      "primary_target_event_id": "43f751a7-03bd-4aeb-8356-7e5580bf58d5",
       "effects": null,
       "confidence": 1.0,
       "alternatives_considered": [
@@ -585,10 +1126,10 @@
     },
     {
       "raw_event_ids": [
-        "d2642d57-8688-4748-a256-9157a4d103db"
+        "e13c8728-d2d4-488d-9c7a-70a8338c4093"
       ],
       "cluster_kind": "single_event",
-      "primary_target_event_id": "d2642d57-8688-4748-a256-9157a4d103db",
+      "primary_target_event_id": "e13c8728-d2d4-488d-9c7a-70a8338c4093",
       "effects": null,
       "confidence": 1.0,
       "alternatives_considered": []

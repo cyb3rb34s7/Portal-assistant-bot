@@ -19,7 +19,9 @@ from pilot.teach import TeachRecorder
 
 CDP = "http://127.0.0.1:9222"
 BASE = "http://localhost:5188"
-ASSET = "A-1001"
+# id+label sprint: A-1002 is a clean draft (A-1001 was mutated by the
+# prior Layer B run). The picker is editable only on draft.
+ASSET = "A-1002"
 console = Console()
 
 
@@ -95,6 +97,23 @@ def main() -> int:
         "search:!!document.querySelector('[data-testid=multiselect-country-search]')})"
     )
     console.print(f"[magenta]after toggle: {after}[/magenta]")
+
+    # id+label sprint: FIRST search a broad letter so SEVERAL countries
+    # render -- this populates known_options with multiple id+label
+    # pairs (the grabber captures the surfaced universe on the search
+    # input_change). Then narrow to Argentina and select it.
+    console.print("[cyan]searching 'a' (surface several countries)[/cyan]")
+    page.fill("[data-testid=multiselect-country-search]", "a")
+    page.wait_for_selector(
+        "[data-testid^=multiselect-country-checkbox-]", timeout=8000
+    )
+    pump(recorder, page, 700)
+    seen = page.evaluate(
+        "() => Array.from(document.querySelectorAll("
+        "'[data-testid^=multiselect-country-checkbox-]'))"
+        ".map(e => e.getAttribute('data-testid')).slice(0, 12)"
+    )
+    console.print(f"[magenta]rows after 'a': {seen}[/magenta]")
 
     console.print("[cyan]searching 'Argentina'[/cyan]")
     page.fill("[data-testid=multiselect-country-search]", "Argentina")

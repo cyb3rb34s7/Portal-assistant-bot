@@ -215,6 +215,14 @@ def test_annotator_no_stray_param_for_set_selection() -> None:
     assert "checkbox" not in (step.semantic_label or "")
     assert step.semantic_label == "set_selection_multiselect_country"
 
+    # Layer B fix: the chip read selector must exclude the chip's remove
+    # sub-button (...-chip-<id>-remove) so the read isn't polluted with
+    # '<id>-remove' pseudo-ids that break the equality assertion.
+    spec = step.set_selection
+    assert spec.current_items_selector.endswith(
+        ":not([data-testid$='-remove'])"
+    )
+
 
 def test_annotator_populates_known_options_and_label_example() -> None:
     """id+label sprint: known_options is the full universe seen (unioned

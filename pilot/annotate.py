@@ -2176,8 +2176,17 @@ def _build_set_selection_spec(
         search_fp=search_fp,
         checkbox_template_fp=checkbox_template_fp,
         commit_fp=None,  # toggle close uses same open_fp
+        # id+label sprint (Layer B fix): the chip read must match ONLY
+        # the chip element ({prefix}-chip-{id}), NOT its remove sub-
+        # button ({prefix}-chip-{id}-remove) which also starts with the
+        # same prefix. Without the :not(...-remove) guard the read
+        # returned ['zw', 'zw-remove'] and the equality assertion failed
+        # even though Zimbabwe was correctly selected. Exclude the
+        # remove button so the chip set is clean.
         current_items_selector=(
-            f"[data-testid^='{prefix}-chip-']" if prefix else None
+            f"[data-testid^='{prefix}-chip-']"
+            f":not([data-testid$='-remove'])"
+            if prefix else None
         ),
         current_items_id_attr="data-testid",
         current_items_id_prefix=(
