@@ -1,0 +1,28 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:31372) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌──────────────────────────────┐
+│ Replay skill workflow_submit │
+│ Session: ccf4e9eb8d4d        │
+│ Steps:   2                   │
+│ Params:  {}                  │
+└──────────────────────────────┘
+- step 00  navigate  navigate
+┌──────────────────────────────── Human gate ─────────────────────────────────┐
+│ Approval required                                                           │
+│ Step: 1  click                                                              │
+│ Label: click_btn_submit_review                                              │
+│ Reason: marked irreversible during annotation                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+Approve? [y/n] (n):                                 Replay summary                                 
+┌───┬──────────┬─────────────────────┬──────────┬────────┬────────────────────┐
+│ # │ Action   │ Label               │ Level    │ Status │ Detail             │
+├───┼──────────┼─────────────────────┼──────────┼────────┼────────────────────┤
+│ 0 │ navigate │ navigate            │ L1 exact │ ok     │ navigated to       │
+│   │          │                     │          │        │ http://localhost:5 │
+│   │          │                     │          │        │ 188/asset/C-3001   │
+│ 1 │ click    │ click_btn_submit_r… │          │ fail   │ Rejected at gate:  │
+│   │          │                     │          │        │ click_btn_submit_r │
+│   │          │                     │          │        │ eview              │
+└───┴──────────┴─────────────────────┴──────────┴────────┴────────────────────┘
+Audit log: sessions\ccf4e9eb8d4d\audit_log.jsonl

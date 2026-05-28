@@ -1,0 +1,1 @@
+PASS: replay set title to 'Replayed Title' (recorded 'Recorded Title'); all 3 steps L1 exact; backend A-9001.title == 'Replayed Title', status draft. Saved toast write confirmed.

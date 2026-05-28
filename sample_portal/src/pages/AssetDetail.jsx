@@ -21,6 +21,10 @@ export default function AssetDetail() {
   const [asset, setAsset] = useState(null);
   const [categories, setCategories] = useState([]);
   const [tags, setTags] = useState([]);
+  // Country uses a SERVER-SIDE search picker. We keep the full list for
+  // rendering selected chips' labels; the popover list comes from the
+  // server (fetchCountries) so the search spinner is real.
+  const [countries, setCountries] = useState([]);
   const [regions, setRegions] = useState([]);
   const [markets, setMarkets] = useState([]);
   const [languages, setLanguages] = useState([]);
@@ -42,6 +46,7 @@ export default function AssetDetail() {
     title: "",
     categories: [],
     tags: [],
+    country: [],
     region: "",
     market: "",
     language: "",
@@ -102,6 +107,9 @@ export default function AssetDetail() {
     api.get("/api/categories").then(setCategories);
     api.get("/api/tags").then(setTags);
     api.get("/api/regions").then(setRegions);
+    // Full country list -- used only to render selected chips' labels.
+    // The picker's option list is fetched server-side on each search.
+    api.get("/api/countries").then(setCountries);
   }, []);
 
   useEffect(() => {
@@ -116,6 +124,7 @@ export default function AssetDetail() {
           title: a.title || "",
           categories: a.categories || [],
           tags: a.tags || [],
+          country: a.country || [],
           region: a.region || "",
           market: a.market || "",
           language: a.language || "",
@@ -157,6 +166,14 @@ export default function AssetDetail() {
       .catch(() => setLanguages([]))
       .finally(() => setLoadingLanguages(false));
   }, [form.market]);
+
+  // Server-side country search. The MultiSelect calls this on each
+  // filter change; the ~300ms backend delay shows a real spinner. We
+  // return [{id, name}] for the popover list.
+  async function fetchCountries(query) {
+    const q = (query || "").trim();
+    return api.get(`/api/countries?q=${encodeURIComponent(q)}`);
+  }
 
   // ---- Persist ----
   async function onSave() {
@@ -307,6 +324,22 @@ export default function AssetDetail() {
           onChange={(v) => setForm({ ...form, tags: v })}
           placeholder="Pick tags..."
           disabled={!isDraft}
+        />
+
+        {/* Country: SERVER-SIDE search picker with a LONG list
+            (Zimbabwe last, below the popover fold). Reproduces the real
+            OTT "Migrate framework" multi-select. `options` carries the
+            full list for chip labels; `fetchOptions` backs the popover
+            list with /api/countries?q= (spinner). */}
+        <MultiSelect
+          label="Country"
+          testId="multiselect-country"
+          options={countries}
+          value={form.country}
+          onChange={(v) => setForm({ ...form, country: v })}
+          placeholder="Pick countries..."
+          disabled={!isDraft}
+          fetchOptions={fetchCountries}
         />
 
         <div className="cascade-row">

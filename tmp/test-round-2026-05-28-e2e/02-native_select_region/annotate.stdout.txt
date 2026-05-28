@@ -1,0 +1,16 @@
+┌─────────────────────────────────────────┐
+│ Annotating session 777d897c0222         │
+│ Skill: region_select                    │
+│ Events: 32 raw -> 32 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                      Skill 'region_select'                      
+┌───┬───────────────┬────────────────────┬───────────────┬──────┐
+│ # │ Action        │ Label              │ Param         │ Gate │
+├───┼───────────────┼────────────────────┼───────────────┼──────┤
+│ 0 │ navigate      │ navigate           │               │      │
+│ 1 │ select_option │ fill_select_region │ select_region │      │
+└───┴───────────────┴────────────────────┴───────────────┴──────┘
+
+Declared params: select_region
+Saved: skills\region_select.json

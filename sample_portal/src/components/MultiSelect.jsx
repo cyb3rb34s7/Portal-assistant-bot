@@ -20,10 +20,22 @@ export default function MultiSelect({
   onChange,
   placeholder,
   disabled,
+  // Optional server-backed search. When provided, the popover list is
+  // populated by calling fetchOptions(query) (returns a Promise of
+  // [{id, name}]) instead of filtering `options` client-side. A brief
+  // spinner shows while the request is in flight -- this faithfully
+  // reproduces a real portal's SERVER-SIDE search. `options` is still
+  // used as the canonical label source for rendering selected chips,
+  // so callers pass the full list there. When fetchOptions is omitted,
+  // the component behaves exactly as before (client-side filter).
+  fetchOptions,
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
+  const [serverResults, setServerResults] = useState([]);
+  const [searching, setSearching] = useState(false);
   const wrapRef = useRef(null);
+  const reqSeq = useRef(0);
 
   // Close on outside click.
   useEffect(() => {
@@ -37,10 +49,40 @@ export default function MultiSelect({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  // Server-backed search: refetch the option list whenever the filter
+  // (or open-state) changes. A monotonically increasing request seq
+  // drops stale responses so a fast "z" -> "zi" -> "zim" sequence
+  // never renders an out-of-order list. Only active when fetchOptions
+  // is provided.
+  useEffect(() => {
+    if (!fetchOptions || !open) return undefined;
+    const seq = ++reqSeq.current;
+    setSearching(true);
+    let cancelled = false;
+    Promise.resolve(fetchOptions(filter))
+      .then((rows) => {
+        if (cancelled || seq !== reqSeq.current) return;
+        setServerResults(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (cancelled || seq !== reqSeq.current) return;
+        setServerResults([]);
+      })
+      .finally(() => {
+        if (cancelled || seq !== reqSeq.current) return;
+        setSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchOptions, filter, open]);
+
   const selected = new Set(value || []);
-  const filtered = (options || []).filter((o) =>
-    o.name.toLowerCase().includes(filter.toLowerCase()),
-  );
+  const filtered = fetchOptions
+    ? serverResults
+    : (options || []).filter((o) =>
+        o.name.toLowerCase().includes(filter.toLowerCase()),
+      );
 
   function toggle(id) {
     if (selected.has(id)) selected.delete(id);
@@ -114,6 +156,15 @@ export default function MultiSelect({
             data-testid={`${testId}-search`}
             className="multiselect-search"
           />
+          {searching && (
+            <div
+              className="multiselect-searching"
+              data-testid={`${testId}-searching`}
+              role="status"
+            >
+              Searching...
+            </div>
+          )}
           <ul className="multiselect-list">
             {filtered.map((o) => (
               <li

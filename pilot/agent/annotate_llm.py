@@ -152,11 +152,45 @@ async def annotate_skill(
         }
 
     step_summary = _build_step_summary(steps_v1)
-    params_summary = [
-        f"- {p['name']}  type={p.get('type', 'string')}  "
-        f"example={p.get('example', '')!r}  required={p.get('required', True)}"
-        for p in params_v1
-    ]
+
+    # id+label sprint: map each set_selection param to the option
+    # universe (id+label) seen at record time, so the LLM can infer the
+    # param's semantics + propose aliases from the actual labels. The
+    # known_options live on the step's set_selection spec, keyed by the
+    # spec's ``param`` (which equals the v1 param name for the list).
+    known_options_by_param: dict[str, list[dict[str, str]]] = {}
+    for s in steps_v1:
+        ss = s.get("set_selection") or {}
+        pname = ss.get("param")
+        ko = ss.get("known_options") or []
+        if pname and ko:
+            known_options_by_param[pname] = [
+                {"id": o.get("value"), "label": o.get("label")}
+                for o in ko
+                if isinstance(o, dict)
+            ]
+
+    def _params_summary_line(p: dict) -> str:
+        line = (
+            f"- {p['name']}  type={p.get('type', 'string')}  "
+            f"example={p.get('example', '')!r}  "
+            f"required={p.get('required', True)}"
+        )
+        ko = known_options_by_param.get(p["name"])
+        if ko:
+            # Surface the id+label universe so the LLM reads real labels
+            # ("Argentina (ar)") for semantic inference + alias proposals.
+            sample = ", ".join(
+                f"{o['label']} ({o['id']})" for o in ko[:25]
+            )
+            more = "" if len(ko) <= 25 else f" ... (+{len(ko) - 25} more)"
+            line += (
+                f"  multiselect_options=[{sample}{more}]"
+                "  (replay value is the LABEL; runner resolves label->id)"
+            )
+        return line
+
+    params_summary = [_params_summary_line(p) for p in params_v1]
 
     sys_prompt = (
         "You are the annotate stage of an agentic portal-automation system. "
@@ -227,7 +261,7 @@ async def annotate_skill(
     alias_map: dict[str, str] = {}
     for lp in annotation.parameters:
         v1_param = next(p for p in params_v1 if p["name"] == lp.original_name)
-        v2_params.append({
+        v2_param = {
             "name": lp.semantic_name,
             "semantic": lp.semantic_description,
             "required": bool(v1_param.get("required", True)),
@@ -236,7 +270,20 @@ async def annotate_skill(
             ) else v1_param.get("type", "string"),
             "source_hint": lp.source_hint,
             "default_hint": v1_param.get("example"),
-        })
+        }
+        # id+label sprint: carry the multi-select option LABELS onto the
+        # v2 param so a future planner clarify step can offer the
+        # operator the labels seen at record time (replay values are
+        # labels; the runner resolves label->id via the spec's
+        # known_options). The planner consumes ``label_options`` when
+        # building a clarifying question for a string_list param --
+        # see pilot/agent/clarify.py / planner param-prompt path. We do
+        # NOT build the interactive UX here; we only make the data
+        # available on the param. Absent for non-multiselect params.
+        ko = known_options_by_param.get(lp.original_name)
+        if ko:
+            v2_param["label_options"] = [o["label"] for o in ko if o.get("label")]
+        v2_params.append(v2_param)
         alias_map[lp.semantic_name] = lp.original_name
 
     destructive_actions = []

@@ -1,0 +1,242 @@
+{
+  "name": "accordion_open",
+  "description": "",
+  "portal": null,
+  "tags": [],
+  "version": 1,
+  "schema_version": 1,
+  "upgraded_from": null,
+  "created_at": "2026-05-27T20:13:33.450796",
+  "updated_at": "2026-05-27T20:13:33.450805",
+  "base_url": "http://localhost:5188/asset/B-2002",
+  "params": [],
+  "steps": [
+    {
+      "index": 0,
+      "action": "navigate",
+      "fingerprint": null,
+      "url": "http://localhost:5188/asset/B-2002",
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "navigate",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "a101c6c2-8ad3-4fc3-84e5-ec7fd4cfdb16"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": null,
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:08:05.953309",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    },
+    {
+      "index": 1,
+      "action": "click",
+      "fingerprint": {
+        "test_id": "accordion-advanced-toggle",
+        "element_id": null,
+        "name": null,
+        "aria_label": null,
+        "role": "button",
+        "accessible_name": "Show advanced settings",
+        "text": "Show advanced settings",
+        "placeholder": null,
+        "tag": "button",
+        "input_type": null,
+        "css_path": "button[data-testid=\"accordion-advanced-toggle\"]",
+        "xpath": "/html/body/div/div/main/section/div/div[6]/button",
+        "ancestor_chain": [
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "accordion-advanced",
+            "role": null,
+            "className": "accordion"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "asset-edit-form",
+            "role": null,
+            "className": "card"
+          },
+          {
+            "tag": "section",
+            "id": null,
+            "testId": "asset-page",
+            "role": null,
+            "className": "page"
+          },
+          {
+            "tag": "main",
+            "id": null,
+            "testId": "app-main",
+            "role": "main",
+            "className": "app-main"
+          },
+          {
+            "tag": "div",
+            "id": null,
+            "testId": "app-shell",
+            "role": null,
+            "className": "app-shell"
+          }
+        ],
+        "landmark": "Asset B-2002",
+        "nth_of_role": null,
+        "bbox": {
+          "x": 279.0,
+          "y": 532.171875,
+          "width": 181.78125,
+          "height": 34.0
+        },
+        "frame_path": [],
+        "in_shadow_root": false,
+        "frame_chain": [],
+        "shadow_path": [],
+        "control_kind": "button",
+        "value_kind": "none",
+        "options_snapshot": null,
+        "selected_options": null,
+        "aria_expanded": false,
+        "aria_disabled": null,
+        "aria_busy": null,
+        "disabled": false,
+        "readonly": null,
+        "contenteditable": null,
+        "locale_hint": "en",
+        "timezone_hint": "Asia/Calcutta",
+        "min": null,
+        "max": null,
+        "step": null,
+        "accept": null,
+        "multiple": null,
+        "options_truncated": null,
+        "alternates": [],
+        "templates": {},
+        "template_sources": {},
+        "template_parts": {}
+      },
+      "url": null,
+      "value": null,
+      "file_path": null,
+      "wait_ms": null,
+      "semantic_label": "click_accordion_advanced_toggle",
+      "param_binding": null,
+      "requires_gate": false,
+      "gate_reason": null,
+      "post_condition": null,
+      "expected_signals": null,
+      "assert_after": [],
+      "disambiguation_hint": null,
+      "ambiguity_policy": null,
+      "repair_policy": null,
+      "set_selection": null,
+      "fill_submit": null,
+      "select_autocomplete": null,
+      "select_option": null,
+      "dependency_chain": null,
+      "date_select": null,
+      "slider_set": null,
+      "shortcut": null,
+      "rich_text": null,
+      "file_spec": null,
+      "drag_drop": null,
+      "download_spec": null,
+      "canvas_gesture": null,
+      "toggle_state": null,
+      "scroll_until": null,
+      "strict_locale": false,
+      "page_context": null,
+      "auth_precondition": null,
+      "effects": null,
+      "replay_policy": {
+        "on_failure": "abort",
+        "reload_allowed": false,
+        "requires_current_page": null,
+        "optional": false
+      },
+      "provenance": {
+        "raw_event_ids": [
+          "64d40839-68a2-484c-a60f-9b286267c778"
+        ],
+        "cluster_kind": "single_event",
+        "detection_method": "deterministic"
+      },
+      "value_transition": null,
+      "click_gesture": "single",
+      "effect_signature": null,
+      "captured_at": "2026-05-27T20:08:06.519397",
+      "screenshot_path": null,
+      "auto_post_observed": null
+    }
+  ],
+  "source_session_id": "41734fcea483",
+  "legacy_nav_upgrade_count": 0,
+  "annotate_mode": "semantic",
+  "recording_context": {
+    "locale": "en",
+    "timezone": "Asia/Calcutta"
+  },
+  "semantic_clusters": [
+    {
+      "raw_event_ids": [
+        "a101c6c2-8ad3-4fc3-84e5-ec7fd4cfdb16"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "a101c6c2-8ad3-4fc3-84e5-ec7fd4cfdb16",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    },
+    {
+      "raw_event_ids": [
+        "64d40839-68a2-484c-a60f-9b286267c778"
+      ],
+      "cluster_kind": "single_event",
+      "primary_target_event_id": "64d40839-68a2-484c-a60f-9b286267c778",
+      "effects": null,
+      "confidence": 1.0,
+      "alternatives_considered": []
+    }
+  ]
+}

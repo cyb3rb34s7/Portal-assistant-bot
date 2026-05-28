@@ -1,0 +1,5 @@
+PARTIAL: recorded Submit-for-review on C-3001 (draft->in_review). 
+(a) GATE proven: CLI replay correctly BLOCKED the destructive transition at the human gate (no approval in non-interactive run).
+(b) WI-43 proven: with auto-approve, the runner refused the click with error_kind=target_disabled ('no readiness signal declared') because the Submit button is disabled during the post-navigate asset GET and the annotator emitted NO asset-load readiness signal on the navigate step. This is the runner being safely-strict, NOT a runner action-path bug.
+(c) DESTRUCTIVE PATH PROVEN: with a real readiness pre-wait (button enabled) + auto-approve, the runner's _robust_click fired and D-4002 transitioned draft->in_review (verified via status pill).
+DESIGN GAP (documented, not fixed -- needs annotator design decision): annotate should emit a readiness/post-condition wait on a navigate step that precedes a click on a control gated by an async load, so vanilla CLI replay doesn't race the GET.

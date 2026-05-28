@@ -1,0 +1,29 @@
+(node:12936) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌──────────────────────────────┐
+│ Replay skill workflow_submit │
+│ Session: 2dc96bb44a18        │
+│ Steps:   2                   │
+│ Params:  {}                  │
+└──────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  click  click_btn_submit_review
+                                Replay summary                                 
+┌───┬──────────┬─────────────────────┬──────────┬────────┬────────────────────┐
+│ # │ Action   │ Label               │ Level    │ Status │ Detail             │
+├───┼──────────┼─────────────────────┼──────────┼────────┼────────────────────┤
+│ 0 │ navigate │ navigate            │ L1 exact │ ok     │ navigated to       │
+│   │          │                     │          │        │ http://localhost:5 │
+│   │          │                     │          │        │ 188/asset/C-3001   │
+│ 1 │ click    │ click_btn_submit_r… │          │ fail   │ click target is    │
+│   │          │                     │          │        │ disabled; no       │
+│   │          │                     │          │        │ readiness signal   │
+│   │          │                     │          │        │ declared:          │
+│   │          │                     │          │        │ locator.is_disable │
+│   │          │                     │          │        │ d() == True        │
+└───┴──────────┴─────────────────────┴──────────┴────────┴────────────────────┘
+Audit log: sessions\2dc96bb44a18\audit_log.jsonl
+step 0 navigate navigate -> success=True level=1 :: navigated to 
+http://localhost:5188/asset/C-3001
+step 1 click click_btn_submit_review -> success=False level=0 :: click (target 
+disabled)

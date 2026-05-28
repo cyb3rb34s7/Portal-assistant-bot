@@ -1,0 +1,16 @@
+┌─────────────────────────────────────────┐
+│ Annotating session 41734fcea483         │
+│ Skill: accordion_open                   │
+│ Events: 31 raw -> 31 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                        Skill 'accordion_open'                         
+┌───┬───────────────┬──────────────────────────────────┬───────┬──────┐
+│ # │ Action        │ Label                            │ Param │ Gate │
+├───┼───────────────┼──────────────────────────────────┼───────┼──────┤
+│ 0 │ navigate      │ navigate                         │       │      │
+│ 1 │ set_selection │ set_selection_accordion_advanced │       │      │
+└───┴───────────────┴──────────────────────────────────┴───────┴──────┘
+
+Declared params: accordion_advanced
+Saved: skills\accordion_open.json

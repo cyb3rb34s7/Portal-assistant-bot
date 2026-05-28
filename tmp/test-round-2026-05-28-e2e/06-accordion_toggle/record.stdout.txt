@@ -1,0 +1,102 @@
+(node:36056) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+asset B-2002 status: draft
+  #001 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #002 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #003 navigate                                                
+http://localhost:5188/asset/B-2002
+  #004 network_request                                          /api/auth/me
+  #005 network_request                                          /api/auth/me
+  #006 network_response                                          /api/auth/me
+  #007 network_request                                          /api/categories
+  #008 network_request                                          /api/tags
+  #009 network_request                                          /api/regions
+  #010 network_request                                          /api/countries
+  #011 network_request                                          
+/api/assets/B-2002
+  #012 network_request                                          /api/categories
+  #013 network_request                                          /api/tags
+  #014 network_request                                          /api/regions
+  #015 network_request                                          /api/countries
+  #016 network_request                                          
+/api/assets/B-2002
+  #017 network_response                                          /api/auth/me
+  #018 dom_mutation                                            
+  #019 network_response                                          /api/countries
+  #020 network_response                                          /api/tags
+  #021 network_response                                          /api/countries
+  #022 network_response                                          
+/api/categories
+  #023 network_response                                          /api/regions
+  #024 network_response                                          
+/api/assets/B-2002
+  #025 network_response                                          /api/tags
+  #026 network_response                                          
+/api/categories
+  #027 network_response                                          /api/regions
+  #028 network_response                                          
+/api/assets/B-2002
+  #029 dom_mutation                                            
+accordion start aria-expanded=false
+opening accordion (expand)
+accordion now aria-expanded=true
+  #030 click          accordion-advanced-toggle                
+  #031 dom_mutation                                            
+                              Recorded 31 events                               
+┌────┬──────────────────┬──────────────────────────┬──────────────────────────┐
+│ #  │ Kind             │ Target                   │ Value / URL              │
+├────┼──────────────────┼──────────────────────────┼──────────────────────────┤
+│ 0  │ network_request  │                          │ ws://localhost:5188/?to… │
+│ 1  │ network_request  │                          │ ws://localhost:5188/?to… │
+│ 2  │ navigate         │                          │ http://localhost:5188/a… │
+│ 3  │ network_request  │                          │ /api/auth/me             │
+│ 4  │ network_request  │                          │ /api/auth/me             │
+│ 5  │ network_response │                          │ /api/auth/me             │
+│ 6  │ network_request  │                          │ /api/categories          │
+│ 7  │ network_request  │                          │ /api/tags                │
+│ 8  │ network_request  │                          │ /api/regions             │
+│ 9  │ network_request  │                          │ /api/countries           │
+│ 10 │ network_request  │                          │ /api/assets/B-2002       │
+│ 11 │ network_request  │                          │ /api/categories          │
+│ 12 │ network_request  │                          │ /api/tags                │
+│ 13 │ network_request  │                          │ /api/regions             │
+│ 14 │ network_request  │                          │ /api/countries           │
+│ 15 │ network_request  │                          │ /api/assets/B-2002       │
+│ 16 │ network_response │                          │ /api/auth/me             │
+│ 17 │ dom_mutation     │                          │                          │
+│ 18 │ network_response │                          │ /api/countries           │
+│ 19 │ network_response │                          │ /api/tags                │
+│ 20 │ network_response │                          │ /api/countries           │
+│ 21 │ network_response │                          │ /api/categories          │
+│ 22 │ network_response │                          │ /api/regions             │
+│ 23 │ network_response │                          │ /api/assets/B-2002       │
+│ 24 │ network_response │                          │ /api/tags                │
+│ 25 │ network_response │                          │ /api/categories          │
+│ 26 │ network_response │                          │ /api/regions             │
+│ 27 │ network_response │                          │ /api/assets/B-2002       │
+│ 28 │ dom_mutation     │                          │                          │
+│ 29 │ click            │ accordion-advanced-togg… │                          │
+│ 30 │ dom_mutation     │                          │                          │
+└────┴──────────────────┴──────────────────────────┴──────────────────────────┘
+
+Trace:  sessions\41734fcea483\trace.jsonl
+Next:   python -m pilot annotate 41734fcea483
+SESSION_ID=41734fcea483
+events=31
+EVENT_KINDS=[('network_request', None, None), ('network_request', None, None), 
+('navigate', None, None), ('network_request', None, None), ('network_request', 
+None, None), ('network_response', None, None), ('network_request', None, None),
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('dom_mutation', None, None), ('click', 
+'accordion-advanced-toggle', None), ('dom_mutation', None, None)]

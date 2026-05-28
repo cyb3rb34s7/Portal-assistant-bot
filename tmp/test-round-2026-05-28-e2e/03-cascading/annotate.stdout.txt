@@ -1,0 +1,18 @@
+┌─────────────────────────────────────────┐
+│ Annotating session a10dcdaedbef         │
+│ Skill: cascade_region_market_lang       │
+│ Events: 40 raw -> 40 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                 Skill 'cascade_region_market_lang'                  
+┌───┬───────────────┬──────────────────────┬─────────────────┬──────┐
+│ # │ Action        │ Label                │ Param           │ Gate │
+├───┼───────────────┼──────────────────────┼─────────────────┼──────┤
+│ 0 │ navigate      │ navigate             │                 │      │
+│ 1 │ select_option │ fill_select_region   │ select_region   │      │
+│ 2 │ select_option │ fill_select_market   │ select_market   │      │
+│ 3 │ select_option │ fill_select_language │ select_language │      │
+└───┴───────────────┴──────────────────────┴─────────────────┴──────┘
+
+Declared params: select_region, select_market, select_language
+Saved: skills\cascade_region_market_lang.json

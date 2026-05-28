@@ -1,0 +1,165 @@
+(node:34620) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+asset A-1002 status: draft
+  #001 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #002 network_request                                          
+ws://localhost:5188/?token=pp0BElaxo9pZ
+  #003 navigate                                                
+http://localhost:5188/asset/A-1002
+  #004 network_request                                          /api/auth/me
+  #005 network_request                                          /api/auth/me
+  #006 network_response                                          /api/auth/me
+  #007 network_request                                          /api/categories
+  #008 network_request                                          /api/tags
+  #009 network_request                                          /api/regions
+  #010 network_request                                          /api/countries
+  #011 network_request                                          
+/api/assets/A-1002
+  #012 network_request                                          /api/categories
+  #013 network_request                                          /api/tags
+  #014 network_request                                          /api/regions
+  #015 network_request                                          /api/countries
+  #016 network_request                                          
+/api/assets/A-1002
+  #017 network_response                                          /api/auth/me
+  #018 dom_mutation                                            
+  #019 network_response                                          /api/countries
+  #020 network_response                                          /api/tags
+  #021 network_response                                          /api/countries
+  #022 network_response                                          
+/api/categories
+  #023 network_response                                          /api/regions
+  #024 network_response                                          
+/api/assets/A-1002
+  #025 network_response                                          /api/tags
+  #026 network_response                                          
+/api/categories
+  #027 network_response                                          /api/regions
+  #028 network_response                                          
+/api/assets/A-1002
+  #029 dom_mutation                                            
+opening country picker
+  #030 click          multiselect-country-toggle               
+  #031 network_request                                          
+/api/countries?q=
+  #032 dom_mutation                                            
+  #033 network_response                                          
+/api/countries?q=
+  #034 dom_mutation                                            
+searching 'a'
+  #035 network_request                                          
+/api/countries?q=a
+  #036 dom_mutation                                            
+  #037 network_response                                          
+/api/countries?q=a
+  #038 input_change   multiselect-country-search               a
+  #039 dom_mutation                                            
+searching 'Argentina'
+  #040 network_request                                          
+/api/countries?q=Argentina
+  #041 dom_mutation                                            
+  #042 network_response                                          
+/api/countries?q=Argentina
+  #043 input_change   multiselect-country-search               Argentina
+  #044 dom_mutation                                            
+selecting Argentina
+  #045 network_request                                          
+/api/countries?q=Argentina
+  #046 click          multiselect-country-checkbox-ar          
+  #047 input_change   multiselect-country-checkbox-ar          true
+  #048 dom_mutation                                            
+  #049 network_response                                          
+/api/countries?q=Argentina
+  #050 dom_mutation                                            
+  #051 click          multiselect-country-toggle               
+  #052 dom_mutation                                            
+                              Recorded 52 events                               
+┌────┬──────────────────┬──────────────────────────┬──────────────────────────┐
+│ #  │ Kind             │ Target                   │ Value / URL              │
+├────┼──────────────────┼──────────────────────────┼──────────────────────────┤
+│ 0  │ network_request  │                          │ ws://localhost:5188/?to… │
+│ 1  │ network_request  │                          │ ws://localhost:5188/?to… │
+│ 2  │ navigate         │                          │ http://localhost:5188/a… │
+│ 3  │ network_request  │                          │ /api/auth/me             │
+│ 4  │ network_request  │                          │ /api/auth/me             │
+│ 5  │ network_response │                          │ /api/auth/me             │
+│ 6  │ network_request  │                          │ /api/categories          │
+│ 7  │ network_request  │                          │ /api/tags                │
+│ 8  │ network_request  │                          │ /api/regions             │
+│ 9  │ network_request  │                          │ /api/countries           │
+│ 10 │ network_request  │                          │ /api/assets/A-1002       │
+│ 11 │ network_request  │                          │ /api/categories          │
+│ 12 │ network_request  │                          │ /api/tags                │
+│ 13 │ network_request  │                          │ /api/regions             │
+│ 14 │ network_request  │                          │ /api/countries           │
+│ 15 │ network_request  │                          │ /api/assets/A-1002       │
+│ 16 │ network_response │                          │ /api/auth/me             │
+│ 17 │ dom_mutation     │                          │                          │
+│ 18 │ network_response │                          │ /api/countries           │
+│ 19 │ network_response │                          │ /api/tags                │
+│ 20 │ network_response │                          │ /api/countries           │
+│ 21 │ network_response │                          │ /api/categories          │
+│ 22 │ network_response │                          │ /api/regions             │
+│ 23 │ network_response │                          │ /api/assets/A-1002       │
+│ 24 │ network_response │                          │ /api/tags                │
+│ 25 │ network_response │                          │ /api/categories          │
+│ 26 │ network_response │                          │ /api/regions             │
+│ 27 │ network_response │                          │ /api/assets/A-1002       │
+│ 28 │ dom_mutation     │                          │                          │
+│ 29 │ click            │ multiselect-country-tog… │                          │
+│ 30 │ network_request  │                          │ /api/countries?q=        │
+│ 31 │ dom_mutation     │                          │                          │
+│ 32 │ network_response │                          │ /api/countries?q=        │
+│ 33 │ dom_mutation     │                          │                          │
+│ 34 │ network_request  │                          │ /api/countries?q=a       │
+│ 35 │ dom_mutation     │                          │                          │
+│ 36 │ network_response │                          │ /api/countries?q=a       │
+│ 37 │ input_change     │ multiselect-country-sea… │ a                        │
+│ 38 │ dom_mutation     │                          │                          │
+│ 39 │ network_request  │                          │ /api/countries?q=Argent… │
+│ 40 │ dom_mutation     │                          │                          │
+│ 41 │ network_response │                          │ /api/countries?q=Argent… │
+│ 42 │ input_change     │ multiselect-country-sea… │ Argentina                │
+│ 43 │ dom_mutation     │                          │                          │
+│ 44 │ network_request  │                          │ /api/countries?q=Argent… │
+│ 45 │ click            │ multiselect-country-che… │                          │
+│ 46 │ input_change     │ multiselect-country-che… │ true                     │
+│ 47 │ dom_mutation     │                          │                          │
+│ 48 │ network_response │                          │ /api/countries?q=Argent… │
+│ 49 │ dom_mutation     │                          │                          │
+│ 50 │ click            │ multiselect-country-tog… │                          │
+│ 51 │ dom_mutation     │                          │                          │
+└────┴──────────────────┴──────────────────────────┴──────────────────────────┘
+
+Trace:  sessions\95af3c398132\trace.jsonl
+Next:   python -m pilot annotate 95af3c398132
+SESSION_ID=95af3c398132
+events=52
+EVENT_KINDS=[('network_request', None, None), ('network_request', None, None), 
+('navigate', None, None), ('network_request', None, None), ('network_request', 
+None, None), ('network_response', None, None), ('network_request', None, None),
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_request', None, None), 
+('network_request', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('network_response', None, None), 
+('network_response', None, None), ('dom_mutation', None, None), ('click', 
+'multiselect-country-toggle', None), ('network_request', None, None), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('network_request', None, None), ('dom_mutation',
+None, None), ('network_response', None, None), ('input_change', 
+'multiselect-country-search', 'a'), ('dom_mutation', None, None), 
+('network_request', None, None), ('dom_mutation', None, None), 
+('network_response', None, None), ('input_change', 
+'multiselect-country-search', 'Argentina'), ('dom_mutation', None, None), 
+('network_request', None, None), ('click', 'multiselect-country-checkbox-ar', 
+None), ('input_change', 'multiselect-country-checkbox-ar', 'true'), 
+('dom_mutation', None, None), ('network_response', None, None), 
+('dom_mutation', None, None), ('click', 'multiselect-country-toggle', None), 
+('dom_mutation', None, None)]

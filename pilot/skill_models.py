@@ -2312,7 +2312,36 @@ class SetSelectionSpec(BaseModel):
 
     mode: Literal["replace", "add", "remove", "preserve"]
     param: str
-    """Name of the list parameter. Resolved to ``list[str]`` at replay."""
+    """Name of the list parameter. Resolved to ``list[str]`` at replay.
+
+    id+label convention (2026-05-28): replay param VALUES are human
+    LABELS (e.g. ``country=Zimbabwe``), NOT opaque ids. The runner
+    resolves each label to its id via ``known_options`` (label->value,
+    case-insensitive) for the equality assertion + diagnostics, and
+    reaches the option by typing the LABEL into the search box and
+    clicking the surfaced row whose visible text matches -- the id
+    template is never required for the click. The operator never types
+    ids."""
+
+    known_options: list["OptionSnapshot"] = Field(default_factory=list)
+    """id+label sprint (2026-05-28): the full universe of options seen
+    at record time -- every option row that rendered during the
+    multi-select interaction (including server-search results), as
+    ``OptionSnapshot`` entries (value=id, label=label). Populated by the
+    annotator by unioning every contributing event's
+    ``TraceEvent.options_seen``. This is the SUPERSET; ``item_labels``
+    (below) is the subset the operator actually SELECTED.
+
+    Three consumers:
+      1. Replay -- the runner builds a label->id map (case-insensitive)
+         so a target LABEL resolves to its id for the equality
+         assertion; reach-by-label still works for labels NOT in this
+         set (unknown-label diagnostic + best-effort search).
+      2. LLM annotation -- the id+label pairs feed semantic inference
+         and alias generation.
+      3. Planner -- the v2 param surfaces these labels so a future
+         clarify step can offer the operator the seen options.
+    Empty for legacy skills recorded before the wider option capture."""
 
     open_picker_fp: Optional[ElementFingerprint] = None
     """Click target to open the dropdown. Optional -- some pickers stay
@@ -2384,6 +2413,52 @@ class SetSelectionSpec(BaseModel):
     ``option_source`` (initial refresh) -- this is per-keystroke
     filtering. Runner waits for this signal after typing into the
     search field, before clicking the per-item checkbox."""
+
+    # Real-portal cases A/B: reaching an option is replay-time logic, not
+    # replayed keystrokes. The structural fact is "picker's selected set
+    # == target list"; HOW each option is reached is chosen at replay for
+    # robustness. These three fields carry the reach mechanism.
+    item_labels: dict[str, str] = Field(default_factory=dict)
+    """Map of item id -> display label. The runner types the LABEL (not
+    the id) into the search box, because portal search matches on the
+    visible option text. Root-cause bug fix (real-portal case B): the
+    runner used to fill the search with the item id, which never matched
+    a label-indexed server search. Empty map => the runner falls back to
+    typing the raw item id (legacy behavior, preserved for skills
+    recorded before this field existed). Populated by the annotator from
+    each checkbox/item click's accessible_name / text / aria_label."""
+
+    select_strategy: Literal["search", "scroll", "direct"] = "direct"
+    """Replay-time reach mechanism for each option to add/remove:
+      - ``search``: type the item's label into ``search_fp`` to narrow
+        the list, wait for the materialized checkbox to become VISIBLE
+        (bounded by wait_policy.dom_timeout_ms -- NOT a fixed sleep,
+        which naturally rides out a server-side search spinner), click
+        it, then clear the search for the next item. The annotator sets
+        this whenever the picker exposes a search box.
+      - ``scroll`` / ``direct``: resolve the checkbox via
+        ``checkbox_template_fp`` then ``scroll_into_view_if_needed()``
+        before clicking. Used for off-viewport targets in pickers
+        without a search box (real-portal case A). The portal's lists
+        are non-virtualized, so a locator + scroll is sufficient; no
+        scroll-until-render loop is needed.
+    Default ``direct`` preserves legacy behavior for skills recorded
+    before this field existed. When ``select_strategy='search'`` but no
+    ``search_fp`` is present, the runner falls back to scroll/direct;
+    when ``direct``/``scroll`` can't find the checkbox AND ``search_fp``
+    exists, the runner falls back to the search path."""
+
+    option_list_selector: Optional[str] = None
+    """CSS selector for the popover / listbox container. Two uses:
+      1. Visibility scope -- the runner waits for a target checkbox to
+         become visible (search strategy) and may scope the wait to this
+         container so a stale duplicate elsewhere on the page can't
+         satisfy it.
+      2. Scroll fallback container -- the scroll-into-view target.
+    Derived by the annotator from the picker prefix
+    (``[data-testid='{prefix}-popover']``) or a scoped ``[role='listbox']``.
+    None for legacy skills (the runner falls back to page-wide
+    visibility + the locator's own scroll_into_view_if_needed)."""
 
     hierarchy_path: list[str] = Field(default_factory=list)
     """WI-20: for hierarchical pickers (e.g. category > subcategory >
@@ -3348,6 +3423,20 @@ class TraceEvent(BaseModel):
     picked. None for legacy traces (which only captured ``file_name``);
     annotator falls back to a single FileMetadata derived from
     ``file_name`` in that case."""
+
+    options_seen: Optional[list[OptionSnapshot]] = None
+    """id+label sprint (2026-05-28): the full set of option rows
+    rendered inside a custom multi-select at the moment of this event.
+    Populated by the grabber on multiselect option ``click`` and
+    multiselect-search ``input_change`` events -- each entry is
+    ``{value=id, label=visible label}``. Distinct from the native
+    ``<select>`` ``options_snapshot`` (which lives on the fingerprint);
+    this is the custom-widget universe captured ACROSS events
+    (including server-search results as they surface). The annotator
+    unions every event's ``options_seen`` for a picker into the
+    SetSelectionSpec's ``known_options`` (label->id resolution at
+    replay, LLM annotation, planner clarify). None for non-multiselect
+    events and legacy traces."""
 
     drop_target_fp: Optional[ElementFingerprint] = None
     """WI-30: on ``drop`` events, the fingerprint of the target the

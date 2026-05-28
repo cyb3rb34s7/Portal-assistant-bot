@@ -1,0 +1,21 @@
+(node:38664) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+D-4002 status before: draft
+┌──────────────────────────────┐
+│ Replay skill workflow_submit │
+│ Session: a69dc4dde1ed        │
+│ Steps:   1                   │
+│ Params:  {}                  │
+└──────────────────────────────┘
+- step 01  click  click_btn_submit_review
+                                Replay summary                                 
+┌───┬────────┬─────────────────────┬──────────┬────────┬──────────────────────┐
+│ # │ Action │ Label               │ Level    │ Status │ Detail               │
+├───┼────────┼─────────────────────┼──────────┼────────┼──────────────────────┤
+│ 1 │ click  │ click_btn_submit_r… │ L1 exact │ ok     │ clicked              │
+│   │        │                     │          │        │ click_btn_submit_rev │
+│   │        │                     │          │        │ iew [L1 exact]       │
+└───┴────────┴─────────────────────┴──────────┴────────┴──────────────────────┘
+Audit log: sessions\a69dc4dde1ed\audit_log.jsonl
+step 1 click -> success=True :: clicked click_btn_submit_review [L1 exact]
+D-4002 status after: in_review

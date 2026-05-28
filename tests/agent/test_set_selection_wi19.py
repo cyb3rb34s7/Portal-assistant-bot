@@ -153,6 +153,61 @@ def test_detector_skips_lone_toggle_click() -> None:
     assert consumed == set()
 
 
+def _mutation(event_id: str, sequence: int = 1) -> TraceEvent:
+    return TraceEvent(
+        ts=datetime.utcnow(),
+        kind="dom_mutation",
+        fingerprint=None,
+        page_url="http://x",
+        event_id=event_id,
+        interaction_id=event_id,
+        caused_by=None,
+        sequence=sequence,
+        source="observer",
+    )
+
+
+def test_detector_does_not_claim_accordion_toggle() -> None:
+    """Regression (2026-05-28 e2e round, scenario 6): a NON-multiselect
+    disclosure button whose testid happens to end in ``-toggle`` (e.g.
+    ``accordion-advanced-toggle``) followed only by an observed DOM
+    mutation (aria-expanded flip) must NOT be claimed as a set_selection.
+
+    Before the fix, the observed event inflated the cluster past the
+    ``len <= 1`` guard, producing a degenerate set_selection with no
+    checkbox_template_fp + empty known_options that the runner could not
+    replay (``set_selection: no checkbox_template_fp``), and it pre-empted
+    toggle_state detection. The fix requires at least one checkbox/item
+    selection event before consuming the cluster.
+    """
+    expand_fp = ElementFingerprint(
+        test_id="accordion-advanced-toggle",
+        tag="button",
+        role="button",
+        aria_expanded=False,
+    )
+    events = _assign_synthetic_ids([
+        TraceEvent(
+            ts=datetime.utcnow(),
+            kind="click",
+            fingerprint=expand_fp,
+            page_url="http://x",
+            event_id="c1",
+            interaction_id="c1",
+            caused_by=None,
+            sequence=1,
+            source="user_click",
+        ),
+        _mutation("m1", sequence=2),
+    ])
+    causality = build_causality_graph(events)
+    consumed: set[str] = set()
+    clusters = _detect_set_selection_clusters(events, causality, consumed)
+    assert clusters == []
+    # The accordion click stays AVAILABLE for toggle_state / single-event.
+    assert "c1" not in consumed
+
+
 # ----- annotator integration ----------------------------------------------
 
 

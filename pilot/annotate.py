@@ -1832,6 +1832,26 @@ def _multiselect_item_id(fp: Optional[ElementFingerprint]) -> Optional[str]:
     return None
 
 
+def _multiselect_item_label(
+    fp: Optional[ElementFingerprint], item_id: str
+) -> str:
+    """Display label for a multiselect option, used by the runner to
+    type into a label-indexed (server-side) search box.
+
+    Priority: accessible_name -> text -> aria_label -> the id itself.
+    The checkbox fingerprint's accessible_name is the option's visible
+    text (the <span>{name}</span> next to the <input>); when the grabber
+    only captured the bare checkbox we fall back through text / aria
+    and finally the id (which still lets the runner narrow on a portal
+    whose search matches ids, and is harmless when it doesn't because the
+    visibility wait gates the click)."""
+    if fp is not None:
+        for cand in (fp.accessible_name, fp.text, fp.aria_label):
+            if cand and cand.strip():
+                return cand.strip()
+    return item_id
+
+
 def _detect_set_selection_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
@@ -1915,6 +1935,27 @@ def _detect_set_selection_clusters(
         # meaningful set_selection -- the operator may have just
         # peeked. Skip.
         if len(cluster_events) <= 1:
+            i += 1
+            continue
+
+        # A set_selection MUST involve at least one option selection
+        # (a checkbox/item click). A bare ``*-toggle`` click followed
+        # only by observed events (DOM mutations, network) is NOT a
+        # multi-select interaction -- e.g. an accordion disclosure
+        # button whose testid happens to end in ``-toggle`` and flips
+        # aria-expanded. Without this guard such a click is wrongly
+        # claimed here (producing a degenerate set_selection with no
+        # checkbox_template_fp + empty known_options) and pre-empts
+        # ``_detect_toggle_state_clusters``, which would correctly emit
+        # a toggle_state step. Require a real selection event before
+        # consuming the cluster; otherwise leave the events for the
+        # toggle_state / single-event detectors.
+        has_selection = any(
+            ce.kind not in _OBSERVED_EVENT_KINDS
+            and _multiselect_role(ce.fingerprint) in ("checkbox", "item")
+            for ce in cluster_events
+        )
+        if not has_selection:
             i += 1
             continue
 
@@ -2027,13 +2068,17 @@ def _build_set_selection_spec(
 ) -> tuple[SetSelectionSpec, list[str], str]:
     """WI-19: derive a SetSelectionSpec from a set_selection cluster.
 
-    Returns (spec, target_items, param_name).
+    Returns (spec, target_labels, param_name).
 
-    The target_items list is the final-selected items the operator
-    checked (gleaned from the checkbox/item click events in the
-    cluster). param_name is the inferred name for the list param
-    (from the prefix's last segment: 'multiselect-categories' ->
-    'categories').
+    id+label sprint (2026-05-28): the returned ``target_labels`` are the
+    human LABELS of the final-selected items (used for the param's
+    example/enum so a human reads "Argentina"), NOT the opaque ids. The
+    spec's ``known_options`` carries the full universe seen at record
+    time (every option row that rendered, unioned from each contributing
+    event's ``options_seen``). ``item_labels`` (id->label) stays as the
+    selected subset for back-compat. param_name is the inferred name for
+    the list param (from the prefix's last segment:
+    'multiselect-categories' -> 'categories').
     """
     _ = events
     by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
@@ -2048,11 +2093,46 @@ def _build_set_selection_spec(
     search_fp: Optional[ElementFingerprint] = None
     checkbox_template_fp: Optional[ElementFingerprint] = None
     target_items: list[str] = []
+    # Real-portal cases A/B: id -> display label, captured from each
+    # checkbox/item click so the runner can type the LABEL into the
+    # search box (the server search is label-indexed, not id-indexed).
+    item_labels: dict[str, str] = {}
+    # id+label sprint: the full option universe seen at record time,
+    # unioned from every contributing event's options_seen (grabber
+    # captures all rendered rows on each option click + search input).
+    # id -> label, first-label-wins; later turned into known_options.
+    known_options_map: dict[str, str] = {}
+
+    def _absorb_options_seen(seen: Optional[list[Any]]) -> None:
+        """Fold one event's options_seen into the running universe."""
+        if not seen:
+            return
+        for opt in seen:
+            # opt is an OptionSnapshot (value=id, label=label) after
+            # TraceEvent validation; tolerate a raw dict for safety.
+            if isinstance(opt, dict):
+                oid = opt.get("value")
+                olabel = opt.get("label")
+            else:
+                oid = getattr(opt, "value", None)
+                olabel = getattr(opt, "label", None)
+            if oid is None:
+                continue
+            oid = str(oid)
+            olabel = str(olabel).strip() if olabel else ""
+            if oid not in known_options_map or (
+                not known_options_map[oid] and olabel
+            ):
+                known_options_map[oid] = olabel or oid
 
     for eid in cluster.raw_event_ids:
         e = by_id.get(eid)
         if e is None:
             continue
+        # Absorb the option universe from ANY event in the cluster that
+        # carried one (toggle-open click, search input_change, option
+        # click) -- the superset of everything the operator surfaced.
+        _absorb_options_seen(getattr(e, "options_seen", None))
         role = _multiselect_role(e.fingerprint)
         if role == "toggle" and e.kind == "click" and open_fp is None:
             open_fp = e.fingerprint
@@ -2068,11 +2148,47 @@ def _build_set_selection_spec(
                     target_items.remove(item_id)
                 else:
                     target_items.append(item_id)
+                # Capture the display label for this id. Prefer the
+                # accessible name (computed per WAI-ARIA), then trimmed
+                # text, then aria_label; fall back to the id itself so
+                # the runner always has *something* to type. Always
+                # record (even on toggle-remove) so a later re-add of
+                # the same id keeps its label.
+                label = _multiselect_item_label(e.fingerprint, item_id)
+                item_labels[item_id] = label
+                # The clicked option is part of the universe too -- make
+                # sure it's in known_options even if options_seen missed
+                # it (older grabber / single-render race).
+                if item_id not in known_options_map or not known_options_map[item_id]:
+                    known_options_map[item_id] = label
                 # Build a template fingerprint from this event (first
                 # one wins, the {item} placeholder is derived by WI-11
                 # template pass).
                 if checkbox_template_fp is None:
                     checkbox_template_fp = e.fingerprint
+
+    # Real-portal case B: when the picker exposes a search box (a search
+    # role event was observed in the cluster) we ALWAYS prefer
+    # search-to-narrow at replay, regardless of how the operator reached
+    # each option. No search box => direct (locator + scroll_into_view
+    # fallback in the runner; real-portal case A).
+    select_strategy = "search" if search_fp is not None else "direct"
+
+    # Popover/listbox container: derive from the picker prefix when we
+    # have one (MultiSelect.jsx renders {prefix}-popover with
+    # role=listbox); else a scoped role=listbox under the picker.
+    option_list_selector: Optional[str] = None
+    if prefix:
+        option_list_selector = f"[data-testid='{prefix}-popover']"
+
+    # id+label sprint: known_options is the full universe (superset of
+    # the selected item_labels). Preserve insertion order for stable
+    # JSON; ids the operator selected but options_seen never surfaced
+    # are already folded in via the checkbox-click path above.
+    known_options = [
+        OptionSnapshot(value=oid, label=olabel or oid)
+        for oid, olabel in known_options_map.items()
+    ]
 
     spec = SetSelectionSpec(
         mode="replace",
@@ -2081,16 +2197,36 @@ def _build_set_selection_spec(
         search_fp=search_fp,
         checkbox_template_fp=checkbox_template_fp,
         commit_fp=None,  # toggle close uses same open_fp
+        # id+label sprint (Layer B fix): the chip read must match ONLY
+        # the chip element ({prefix}-chip-{id}), NOT its remove sub-
+        # button ({prefix}-chip-{id}-remove) which also starts with the
+        # same prefix. Without the :not(...-remove) guard the read
+        # returned ['zw', 'zw-remove'] and the equality assertion failed
+        # even though Zimbabwe was correctly selected. Exclude the
+        # remove button so the chip set is clean.
         current_items_selector=(
-            f"[data-testid^='{prefix}-chip-']" if prefix else None
+            f"[data-testid^='{prefix}-chip-']"
+            f":not([data-testid$='-remove'])"
+            if prefix else None
         ),
         current_items_id_attr="data-testid",
         current_items_id_prefix=(
             f"{prefix}-chip-" if prefix else None
         ),
+        item_labels=item_labels,
+        known_options=known_options,
+        select_strategy=select_strategy,  # type: ignore[arg-type]
+        option_list_selector=option_list_selector,
         final_equality_assertion=True,  # WI-19 safe default
     )
-    return spec, target_items, pname
+    # id+label sprint: return the human LABELS of the selected items (not
+    # ids) so the declared param's example/enum reads "Argentina", and
+    # replay values are labels. Fall back to the id when a label is
+    # missing.
+    target_labels = [
+        item_labels.get(item_id, item_id) for item_id in target_items
+    ]
+    return spec, target_labels, pname
 
 
 def _detect_date_select_clusters(
@@ -3429,6 +3565,27 @@ def build_skill(
                 action = "date_select"
             elif cluster_here.cluster_kind == "set_selection":
                 action = "set_selection"
+                # id+label sprint (fix finding 3a): the cluster's
+                # primary-target event is the checkbox CLICK. The legacy
+                # infer_param_binding bound it as its own boolean param
+                # (e.g. multiselect_country_checkbox_ar), so the step
+                # declared TWO params and replay aborted needing the
+                # stray one. A set_selection step is fully described by
+                # its list param (declared from the spec below); the
+                # checkbox click is CONSUMED by the cluster and must NOT
+                # also be bound. Suppress the binding + gate here so the
+                # param-binding declaration pass (and the step itself)
+                # never emit the stray param.
+                binding = None
+                gate = False
+                # Relabel the step from the mislabeled
+                # "fill_multiselect_country_checkbox_ar" to a clean
+                # set_selection label derived from the picker prefix.
+                _ms_prefix = _multiselect_prefix(ev.fingerprint)
+                if _ms_prefix:
+                    label = f"set_selection_{_ms_prefix}".replace("-", "_")
+                else:
+                    label = "set_selection"
             elif cluster_here.cluster_kind == "slider_set":
                 action = "slider_set"
             elif cluster_here.cluster_kind == "rich_text_set":
@@ -4122,23 +4279,34 @@ def build_skill(
                 required=True,
             )
 
-        # WI-19: declare a string_list param for set_selection steps.
-        # The cluster's target_items is the final selected set the
-        # operator built; we store it as the param's example so the
-        # runner / replay UI sees what was originally picked.
+        # WI-19 + id+label sprint: declare a string_list param for
+        # set_selection steps. ``set_selection_target_items`` now holds
+        # the human LABELS of the selected items (not ids), so the
+        # example reads "Argentina" and replay values are labels. The
+        # param also carries enum_options = the full option universe
+        # (known_options) so the planner / replay UI can offer the
+        # operator the labels seen at record time. The runner resolves
+        # label->id internally via the spec's known_options.
         if (
             set_selection_spec is not None
             and set_selection_param_name
             and set_selection_param_name not in declared_params
         ):
+            ms_enum_options = (
+                list(set_selection_spec.known_options)
+                if set_selection_spec.known_options
+                else None
+            )
             declared_params[set_selection_param_name] = SkillParam(
                 name=set_selection_param_name,
                 type="string_list",
                 codec="raw",
                 description=(
-                    f"Multi-select items for step {step.index}: {label}"
+                    f"Multi-select items (by label) for step "
+                    f"{step.index}: {label}"
                 ),
                 example=", ".join(set_selection_target_items) or None,
+                enum_options=ms_enum_options,
                 required=True,
             )
 

@@ -1,0 +1,16 @@
+┌─────────────────────────────────────────┐
+│ Annotating session a462ebdf9ac0         │
+│ Skill: categories_pick                  │
+│ Events: 39 raw -> 39 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                          Skill 'categories_pick'                          
+┌───┬───────────────┬──────────────────────────────────────┬───────┬──────┐
+│ # │ Action        │ Label                                │ Param │ Gate │
+├───┼───────────────┼──────────────────────────────────────┼───────┼──────┤
+│ 0 │ navigate      │ navigate                             │       │      │
+│ 1 │ set_selection │ set_selection_multiselect_categories │       │      │
+└───┴───────────────┴──────────────────────────────────────┴───────┴──────┘
+
+Declared params: categories
+Saved: skills\categories_pick.json

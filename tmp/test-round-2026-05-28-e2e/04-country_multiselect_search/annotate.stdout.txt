@@ -1,0 +1,16 @@
+┌─────────────────────────────────────────┐
+│ Annotating session 95af3c398132         │
+│ Skill: country_pick_r2                  │
+│ Events: 52 raw -> 52 after noise filter │
+│ Mode:  auto                             │
+└─────────────────────────────────────────┘
+                        Skill 'country_pick_r2'                         
+┌───┬───────────────┬───────────────────────────────────┬───────┬──────┐
+│ # │ Action        │ Label                             │ Param │ Gate │
+├───┼───────────────┼───────────────────────────────────┼───────┼──────┤
+│ 0 │ navigate      │ navigate                          │       │      │
+│ 1 │ set_selection │ set_selection_multiselect_country │       │      │
+└───┴───────────────┴───────────────────────────────────┴───────┴──────┘
+
+Declared params: country
+Saved: skills\country_pick_r2.json

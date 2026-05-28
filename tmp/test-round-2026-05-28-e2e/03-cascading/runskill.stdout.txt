@@ -1,0 +1,38 @@
+Connecting to Chrome at http://127.0.0.1:9222 ...
+(node:38068) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Replay skill cascade_region_market_lang                                     │
+│ Session: 336418f4ea88                                                       │
+│ Steps:   4                                                                  │
+│ Params:  {'select_region': 'APAC', 'select_market': 'JP',                   │
+│ 'select_language': 'ja-JP'}                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+- step 00  navigate  navigate
+- step 01  select_option  fill_select_region
+- step 02  select_option  fill_select_market
+- step 03  select_option  fill_select_language
+                                Replay summary                                 
+┌───┬───────────────┬──────────────────┬──────────┬────────┬──────────────────┐
+│ # │ Action        │ Label            │ Level    │ Status │ Detail           │
+├───┼───────────────┼──────────────────┼──────────┼────────┼──────────────────┤
+│ 0 │ navigate      │ navigate         │ L1 exact │ ok     │ navigated to     │
+│   │               │                  │          │        │ http://localhost │
+│   │               │                  │          │        │ :5188/asset/A-10 │
+│   │               │                  │          │        │ 01               │
+│ 1 │ select_option │ fill_select_reg… │ L1 exact │ ok     │ select_option(fi │
+│   │               │                  │          │        │ ll_select_region │
+│   │               │                  │          │        │ ='APAC') [L1     │
+│   │               │                  │          │        │ exact]           │
+│ 2 │ select_option │ fill_select_mar… │ L1 exact │ ok     │ select_option(fi │
+│   │               │                  │          │        │ ll_select_market │
+│   │               │                  │          │        │ ='JP') [L1       │
+│   │               │                  │          │        │ exact]           │
+│ 3 │ select_option │ fill_select_lan… │          │ fail   │ param            │
+│   │               │                  │          │        │ 'select_language │
+│   │               │                  │          │        │ ': value 'ja-JP' │
+│   │               │                  │          │        │ is not in the    │
+│   │               │                  │          │        │ declared option  │
+│   │               │                  │          │        │ set              │
+└───┴───────────────┴──────────────────┴──────────┴────────┴──────────────────┘
+Audit log: sessions\336418f4ea88\audit_log.jsonl
