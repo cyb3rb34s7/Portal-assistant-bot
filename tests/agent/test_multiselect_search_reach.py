@@ -561,6 +561,125 @@ def test_runner_direct_path_scrolls_before_click() -> None:
     assert log.index(("scroll", "checkbox-us")) < log.index(("click", "checkbox-us"))
 
 
+# ---- runner: B3.1 require_search mandatory-search gate -------------------
+
+
+def test_runner_require_search_no_search_fp_fails_structurally() -> None:
+    """B3.1: when spec.require_search=True but search_fp is None, the
+    runner FAILS with error_kind='search_required_no_search_fp' --
+    never falls back to direct/scroll."""
+    runner = _make_runner()
+    log: list = []
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="country",
+        # Despite require_search, no search_fp is declared.
+        search_fp=None,
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-country-checkbox-{item}"
+        ),
+        item_labels={"ca": "Canada"},
+        select_strategy="direct",
+        require_search=True,
+    )
+    runner._locate_via_template = (  # type: ignore[assignment]
+        lambda fp, params: _FakeLocator(log, f"checkbox-{params.get('item')}")
+    )
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
+
+    err = runner._reach_and_click_option(spec, "ca", item_label="Canada")
+    assert err is not None
+    assert err.success is False
+    assert err.error_kind == "search_required_no_search_fp"
+    # NO click attempted -- the gate stopped the runner.
+    assert not any(e[0] == "click" for e in log)
+
+
+def test_runner_require_search_skips_direct_and_scroll_path() -> None:
+    """B3.1: with require_search=True and search_fp present, the runner
+    uses ONLY the search-then-click path; direct/scroll never runs."""
+    runner = _make_runner()
+    log: list = []
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="country",
+        search_fp=ElementFingerprint(test_id="multiselect-country-search"),
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-country-checkbox-{item}"
+        ),
+        item_labels={"ca": "Canada"},
+        select_strategy="search",
+        require_search=True,
+    )
+
+    def _fake_locate(fp, params):
+        if fp is spec.search_fp:
+            return _FakeLocator(log, "search")
+        # If direct/scroll WERE attempted, this would record a
+        # checkbox-... locator that we'd see in the log -- we assert it
+        # doesn't appear.
+        return _FakeLocator(log, f"checkbox-{params.get('item')}")
+
+    runner._locate_via_template = _fake_locate  # type: ignore[assignment]
+    runner._set_selection_dom_timeout_ms = lambda: 1000  # type: ignore[assignment]
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: _FakeLocator(log, f"row[{lbl}]")
+    )
+    runner._resolve_row_click_target = lambda r: r  # type: ignore[assignment]
+
+    err = runner._reach_and_click_option(spec, "ca", item_label="Canada")
+    assert err is None
+    # Search filled with the LABEL, row clicked by label.
+    fills = [e for e in log if e[0] == "fill" and e[1] == "search"]
+    assert fills[0] == ("fill", "search", "Canada")
+    assert ("click", "row[Canada]") in log
+    # The scroll path was NEVER touched: no scroll_into_view, no
+    # id-templated checkbox click.
+    assert not any(e[0] == "scroll" for e in log)
+    assert ("click", "checkbox-ca") not in log
+
+
+def test_runner_require_search_failure_does_not_fallback() -> None:
+    """B3.1: when search_then_click fails AND require_search=True, the
+    runner does NOT try the scroll/direct path -- it surfaces a
+    distinct error_kind so the operator sees the gate held."""
+    runner = _make_runner()
+    log: list = []
+
+    spec = SetSelectionSpec(
+        mode="replace",
+        param="country",
+        search_fp=ElementFingerprint(test_id="multiselect-country-search"),
+        checkbox_template_fp=ElementFingerprint(
+            test_id="multiselect-country-checkbox-{item}"
+        ),
+        item_labels={"ca": "Canada"},
+        select_strategy="search",
+        require_search=True,
+    )
+    # Search _itself_ resolves, but the row never appears -> the
+    # _search_then_click_option will return False.
+    runner._locate_via_template = (  # type: ignore[assignment]
+        lambda fp, params: _FakeLocator(log, "search")
+    )
+    runner._set_selection_dom_timeout_ms = lambda: 1000  # type: ignore[assignment]
+    # Return None from row-locate to force search path failure.
+    runner._locate_option_row_by_label = (  # type: ignore[assignment]
+        lambda _spec, lbl: None
+    )
+
+    err = runner._reach_and_click_option(spec, "ca", item_label="Canada")
+    assert err is not None
+    assert err.success is False
+    # Distinct error_kind: not 'set_selection_item_not_found' (which is
+    # the fallback path's kind), but the mandatory-search variant.
+    assert err.error_kind == "set_selection_search_required_failed"
+
+
 def test_runner_direct_path_reaches_client_side_option_by_label_row() -> None:
     """Real bug #5 (e2e matrix 2026-05-28): a CLIENT-SIDE (direct
     strategy, no search box) multi-select must retarget a DIFFERENT

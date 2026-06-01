@@ -48,6 +48,7 @@ from .skill_models import (
     ElementFingerprint,
     ExpectedSignals,
     ParamBinding,
+    SelectOptionSpec,
     Skill,
     SkillStep,
     StepAssertion,
@@ -2421,6 +2422,14 @@ class SkillRunner:
         Reaching is replay-time logic chosen for robustness, independent
         of how the operator originally reached the option:
 
+          - ``spec.require_search=True`` (2026-06-02 batch 3/B3.1): use
+            ONLY the search path. The annotator declared this picker
+            MUST be searched (ng-multiselect-dropdown, virtualized
+            list, etc.); silently falling back to direct/scroll would
+            click the wrong off-viewport row or fail on a virtualized
+            list that hasn't materialized the target. No fallback past
+            this gate.
+
           - ``select_strategy='search'`` + ``search_fp``: fill the search
             box with the item's LABEL. A replay-time label carried in the
             target param wins; otherwise item_labels.get(item, item) is
@@ -2461,6 +2470,44 @@ class SkillRunner:
                 action_taken=msg,
                 error_kind=error_kind,
                 error_details={"item": item, "label": label},
+            )
+
+        # ---- B3.1: mandatory-search gate ----
+        # When the annotator declared require_search=True, the runner
+        # MUST search-then-click for every option. Silently falling back
+        # to a direct or scroll-into-view click is wrong for:
+        #   - virtualized lists (cdk-virtual-scroll) where the target
+        #     row hasn't materialized;
+        #   - server-side filter pickers (ng-multiselect-dropdown) where
+        #     the candidate options aren't even on the page until the
+        #     search request resolves;
+        #   - pickers where the id template was never reliably
+        #     generalizable (the operator only picked one item, so the
+        #     {item} placeholder isn't established).
+        # No fallback past this gate.
+        if spec.require_search:
+            if spec.search_fp is None:
+                self._diagnostic(
+                    "runner.set_selection_search_required_but_missing",
+                    level="error",
+                    recoverable=False,
+                    item=item,
+                    label=label,
+                    param=spec.param,
+                )
+                return _fail(
+                    "search_required_no_search_fp",
+                    "set_selection: require_search=True but no search_fp "
+                    "declared; operator must re-record or declare search_fp",
+                )
+            clicked = self._search_then_click_option(spec, item, label)
+            if clicked is True:
+                return None
+            return _fail(
+                "set_selection_search_required_failed",
+                f"set_selection: require_search=True; search-then-click "
+                f"failed for item={item!r} label={label!r} "
+                f"(NO direct/scroll fallback past the mandatory-search gate)",
             )
 
         # ---- search-to-narrow path ----
@@ -2640,6 +2687,12 @@ class SkillRunner:
         # Zimbabwe) that was never recorded still reaches correctly. The
         # visibility wait on the row rides out the server spinner with no
         # fixed sleep.
+        #
+        # 2026-06-02 batch 3/B3.3 (virtualized list pattern): when the
+        # surfaced row CONTAINS a mat-checkbox, the row text itself is
+        # not the clickable target -- click handlers live on the
+        # checkbox. Resolve to the row's mat-checkbox child if one
+        # exists; otherwise click the row.
         try:
             row = self._locate_option_row_by_label(spec, label)
             if row is None:
@@ -2648,7 +2701,11 @@ class SkillRunner:
                 state="visible",
                 timeout=self._set_selection_dom_timeout_ms(),
             )
-            self._robust_click(row, timeout=3000)
+            # B3.3: if the row carries a mat-checkbox child, click it
+            # instead of the row -- this is the cdk-virtual-scroll
+            # rows pattern.
+            click_target = self._resolve_row_click_target(row)
+            self._robust_click(click_target, timeout=3000)
         except Exception as e:
             self._diagnostic(
                 "runner.set_selection_search_target_not_visible",
@@ -2667,6 +2724,25 @@ class SkillRunner:
             except Exception:
                 pass
         return True
+
+    def _resolve_row_click_target(self, row):
+        """B3.3: when a surfaced option row contains a mat-checkbox
+        descendant, return the mat-checkbox locator (the row text is
+        not the clickable target in the cdk-virtual-scroll pattern;
+        click handlers live on the checkbox). Otherwise return the
+        row itself.
+
+        Best-effort: any exception walking the row locator falls back
+        to the row -- the caller's robust_click will still attempt to
+        actionability-gate on it.
+        """
+        try:
+            checkbox = row.locator("mat-checkbox").first
+            if checkbox.count() > 0:
+                return checkbox
+        except Exception:
+            pass
+        return row
 
     # ---- click hardening (CDP real-mouse no-op fallback) --------------
     def _robust_click(self, loc, *, timeout: int = 4000, settle_ms: int = 350) -> None:
@@ -3118,6 +3194,43 @@ class SkillRunner:
                 0,
             )
 
+        # B3.2: mandatory-search gate for select_option (mat-select with
+        # mat-autocomplete / search-fronted picker). When the annotator
+        # marked require_search=True, the runner MUST type the LABEL
+        # into the search input and click the surfaced row, NOT call
+        # native <select>.select_option(value) or click an id-templated
+        # mat-option.
+        if spec.require_search:
+            if spec.search_fp is None:
+                self._diagnostic(
+                    "runner.select_option_search_required_but_missing",
+                    level="error",
+                    recoverable=False,
+                    requested=value or spec.recorded_value,
+                )
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option",
+                        error=(
+                            "select_option: require_search=True but no "
+                            "search_fp declared; operator must re-record or "
+                            "declare search_fp"
+                        ),
+                        error_kind="search_required_no_search_fp",
+                    ),
+                    0,
+                )
+            # Resolve the operator-supplied label (replay value), falling
+            # back to the recorded label.
+            resolved_label = (
+                str(value) if value is not None and value != ""
+                else (spec.recorded_label or spec.recorded_value or "")
+            )
+            return self._do_select_option_via_search(
+                step, spec, resolved_label,
+            )
+
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
             ambig = self._consume_ambiguity()
@@ -3343,6 +3456,139 @@ class SkillRunner:
             ),
             screenshot_path=shot,
             unverified_error="select_option: post-action verify failed",
+        )
+
+    def _do_select_option_via_search(
+        self,
+        step: SkillStep,
+        spec: SelectOptionSpec,
+        resolved_label: str,
+    ) -> tuple[ToolResult, int]:
+        """B3.2: mandatory-search reach for a single-select picker.
+
+        Used when ``spec.require_search=True`` (mat-select with
+        autocomplete, or a single-select fronted by a server-side
+        search). The recorded click target may have been an
+        id-templated mat-option whose id changed at replay; the safe
+        reach is to type the LABEL into the search input, wait for the
+        surfaced row, click it.
+
+        Falls back to the option-list visibility wait + row click; the
+        gate is mandatory so there is NO direct/scroll fallback.
+
+        Parallels :meth:`_search_then_click_option` (used by
+        set_selection) but works on a single picker. Resolves the
+        result row by ``_locate_option_row_by_label`` adapted to use a
+        scoped ``[role='listbox']`` when no explicit list selector.
+        """
+        page = self.session.page
+        try:
+            search_loc = self._locate_via_template(spec.search_fp, {})
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"search input not found: {e}",
+                    error_kind="select_option_search_input_not_found",
+                ),
+                0,
+            )
+        if search_loc is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error="search input not found",
+                    error_kind="select_option_search_input_not_found",
+                ),
+                0,
+            )
+        try:
+            search_loc.fill(resolved_label)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_select_option_search_fill")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"search fill failed: {e}",
+                    error_kind="select_option_search_fill_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+
+        # Wait for the surfaced row whose visible text matches the label.
+        import re as _re
+        rx = _re.compile(
+            r"^\s*" + _re.escape(resolved_label) + r"\s*$", _re.IGNORECASE,
+        )
+        # Try multiple candidate scopes: mat-option (the typical
+        # mat-select panel row), [role='option'], or anywhere on the
+        # page.
+        candidates: list = []
+        try:
+            candidates.append(page.get_by_role("option", name=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.locator("mat-option", has_text=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.get_by_text(rx))
+        except Exception:
+            pass
+        row = None
+        for cand in candidates:
+            try:
+                if cand is not None and cand.count() > 0:
+                    row = cand.first
+                    break
+            except Exception:
+                continue
+        if row is None and candidates:
+            row = candidates[0].first
+        if row is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=(
+                        f"option_not_in_results: label={resolved_label!r} "
+                        f"not surfaced after search"
+                    ),
+                    error_kind="option_not_in_results",
+                    error_details={"label": resolved_label},
+                ),
+                0,
+            )
+        try:
+            row.wait_for(state="visible", timeout=5000)
+            self._robust_click(row, timeout=3000)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_select_option_search_click")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"row click failed: {e}",
+                    error_kind="select_option_search_click_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+        shot = self._screenshot(f"step_{step.index}_select_option_search")
+        return (
+            ToolResult(
+                success=True,
+                action_taken=(
+                    f"select_option(search, label={resolved_label!r})"
+                ),
+                screenshot_path=shot,
+            ),
+            1,
         )
 
     def _do_date_select(self, step: SkillStep) -> tuple[ToolResult, int]:
