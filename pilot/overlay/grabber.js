@@ -28,6 +28,21 @@
   var INPUT_DEBOUNCE_MS = (typeof window.__cp_input_debounce_ms === "number"
     && window.__cp_input_debounce_ms > 0)
     ? window.__cp_input_debounce_ms : 400;
+  // 2026-06-02 B5: server-search inputs (placeholder="Search",
+  // ng-multiselect-dropdown's filter, mat-autocomplete with a debounced
+  // ?q= fetch) need a LONGER window than a plain form field. The real
+  // Frame TV portal's trace.jsonl recorded BOTH "cana" and "canada" as
+  // separate input_change events because the 400 ms debounce fired
+  // mid-typing. Bumping the search-input window to 600 ms produces a
+  // single trailing-edge emission with the FINAL value. Operator can
+  // override via window.__cp_search_debounce_ms; we cap at >= base.
+  var SEARCH_INPUT_DEBOUNCE_MS = (function () {
+    var override = window.__cp_search_debounce_ms;
+    if (typeof override === "number" && override > 0) {
+      return Math.max(override, INPUT_DEBOUNCE_MS);
+    }
+    return Math.max(600, INPUT_DEBOUNCE_MS);
+  })();
 
   // ---- WI-02: causality + identity + ordering ---------------------------
   //
@@ -2375,6 +2390,62 @@
     return null;
   }
 
+  // 2026-06-02 B4: collect mat-option rows from an open overlay panel
+  // associated with the given mat-select. id comes from the mat-option's
+  // own id attribute (e.g. mat-option-85); label is the option's text.
+  // Preference order for finding the panel:
+  //   1. aria-owns on the mat-select (panel id explicitly listed),
+  //   2. any cdk-overlay-pane currently in the DOM that contains
+  //      mat-option rows (the Material runtime renders panels into
+  //      .cdk-overlay-container at click time).
+  // Returns [] when no panel is open / no options exist.
+  function _collectMatSelectOptions(matSelectEl) {
+    var out = [];
+    var seen = {};
+    try {
+      var pane = null;
+      var owns = matSelectEl.getAttribute && matSelectEl.getAttribute("aria-owns");
+      if (owns) {
+        var ids = owns.split(/\s+/);
+        for (var i = 0; i < ids.length; i++) {
+          var byId = document.getElementById(ids[i]);
+          if (byId) {
+            // Either the id IS the pane, or the pane is its closest
+            // .cdk-overlay-pane ancestor / descendant.
+            if (byId.classList && byId.classList.contains("cdk-overlay-pane")) {
+              pane = byId; break;
+            }
+            var ancestorPane = byId.closest && byId.closest(".cdk-overlay-pane");
+            if (ancestorPane) { pane = ancestorPane; break; }
+            // Treat the id as the pane wrapper itself (some portals
+            // assign the id to the inner panel, not the .cdk-overlay-pane).
+            if (byId.querySelector && byId.querySelector(".mat-option")) {
+              pane = byId; break;
+            }
+          }
+        }
+      }
+      var panes = pane ? [pane]
+        : Array.prototype.slice.call(
+          document.querySelectorAll(".cdk-overlay-pane"));
+      for (var p = 0; p < panes.length; p++) {
+        var matOpts = panes[p].querySelectorAll(".mat-option");
+        for (var k = 0; k < matOpts.length; k++) {
+          var opt = matOpts[k];
+          var id = opt.id || ("mat-option-anon-" + k);
+          if (seen[id]) continue;
+          var labelText = trim(opt.textContent || "");
+          seen[id] = 1;
+          out.push({ value: id, label: labelText });
+        }
+        if (out.length) break; // first pane with options wins
+      }
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] _collectMatSelectOptions failed", e);
+    }
+    return out;
+  }
+
   // Scan a multiselect's currently-rendered option rows and return
   // [{value, label}] for each. id comes from the -checkbox-X / -item-X
   // testid suffix; label is the option's accessible name / row text. The
@@ -2568,6 +2639,18 @@
       var clickOptionsSeen = clickMsPrefix
         ? _collectMultiselectOptions(clickMsPrefix)
         : null;
+      // 2026-06-02 B4: when the click resolves to a mat-select widget
+      // root, ALSO probe for an associated overlay panel's mat-options
+      // and emit them as options_seen so the annotator can build
+      // known_options for the planner. The panel may be the just-opened
+      // one (aria-owns set by the Material runtime), or -- on portals
+      // where aria-owns isn't wired -- ANY currently-open
+      // .cdk-overlay-pane carrying mat-option rows.
+      if ((!clickOptionsSeen || !clickOptionsSeen.length) &&
+          (target.tagName || "").toLowerCase() === "mat-select") {
+        var matOpts = _collectMatSelectOptions(target);
+        if (matOpts && matOpts.length) clickOptionsSeen = matOpts;
+      }
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
@@ -2683,6 +2766,36 @@
     }
   }
 
+  // 2026-06-02 B5: a "search-like" input is one whose downstream effect
+  // is a server-side fetch keyed by ?q=. Two shapes catch the universe:
+  //   (a) <input placeholder="Search"> -- the canonical Material
+  //       autocomplete / filter input;
+  //   (b) any input inside an <ng-multiselect-dropdown> (the search
+  //       row's input has placeholder="Search" too, but the cheap
+  //       ancestor test handles non-canonical variants).
+  function _isSearchLikeInput(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      var ph = el.getAttribute && el.getAttribute("placeholder");
+      if (ph && /search/i.test(ph)) return true;
+      var al = el.getAttribute && el.getAttribute("aria-label");
+      if (al && /search/i.test(al)) return true;
+      if (el.closest && el.closest("ng-multiselect-dropdown")) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  // 2026-06-02 B5: trailing-edge coalescing. Track the most recent
+  // value typed into a given element so a burst (e.g. "cana"->"canada")
+  // emits ONLY the last value. fireInput already reads el.value at
+  // emission time -- the WeakMap is here to give the operator a way to
+  // assert "the recorded value was the final one I saw" in tests + to
+  // serve as a quick "skip emit if value didn't actually change" guard
+  // on the trailing edge (covers programmatic input dispatches that
+  // re-fire 'input' with the same value).
+  var _lastInputValueFor = (typeof WeakMap === "function")
+    ? new WeakMap() : new Map();
+
   function schedulePending(el) {
     if (pendingInputEl && pendingInputEl !== el) {
       // different element — flush the old one before tracking the new
@@ -2691,13 +2804,22 @@
     }
     pendingInputEl = el;
     if (pendingInputTimer) clearTimeout(pendingInputTimer);
+    // 2026-06-02 B5: record the CURRENT value so when the trailing-edge
+    // timer fires we can dedupe (cheap guard against double-fires).
+    try { _lastInputValueFor.set(el, el.value == null ? "" : String(el.value)); } catch (e) {}
+    // 2026-06-02 B5: pick the right debounce window. Search-like inputs
+    // need the longer window because the server-search round-trip is
+    // measured in hundreds of ms, and an early-fired input_change
+    // captures a mid-typing value the operator never committed.
+    var debounceMs = _isSearchLikeInput(el)
+      ? SEARCH_INPUT_DEBOUNCE_MS : INPUT_DEBOUNCE_MS;
     pendingInputTimer = setTimeout(function () {
       if (pendingInputEl) {
         fireInput(pendingInputEl);
         pendingInputEl = null;
         pendingInputTimer = null;
       }
-    }, INPUT_DEBOUNCE_MS);
+    }, debounceMs);
   }
 
   // Only text-ish input types use the debounced input listener. Other
