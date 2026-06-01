@@ -257,6 +257,18 @@ class ElementFingerprint(BaseModel):
     treats a truncated snapshot as 'do not assume this is exhaustive'
     -- emit a search/filter step (WI-25) instead of declared aliases."""
 
+    # 2026-06-02 diagnosis B3: the human-readable display value of the
+    # widget at recording time. For mat-select this is the trimmed text
+    # of ``.mat-select-value-text`` (e.g. "18_KANTM2_8K"); for
+    # mat-checkbox the boolean string "true"/"false"; for
+    # ng-multiselect-dropdown the joined selected-chip text. null when
+    # the widget exposes no steady-state value (plain buttons / links).
+    # Critical disambiguator for the planner when two structurally
+    # identical mat-selects (same tag, same null role/name post-B1+B2)
+    # nevertheless show distinct on-screen values -- e.g. a Year
+    # dropdown showing "2019" vs a Model dropdown showing "18_KANTM2_8K".
+    current_value: Optional[str] = None
+
     # Alternate fingerprints accumulated by self-heal (L3) over time.
     # On replay, each alternate is tried via L1/L2 BEFORE invoking L3
     # again, so a portal that drifted once stays cheap to re-execute.
