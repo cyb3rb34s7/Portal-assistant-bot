@@ -2127,6 +2127,89 @@ def _detect_cascading_select(
     return chains
 
 
+# ---- 2026-06-02 batch 2/B2.6: multi-parent cascading detection -----------
+
+
+def _detect_multi_parent_dependencies(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    child_event_id: str,
+    *,
+    parent_value_by_pname: dict[str, str],
+) -> tuple[list[str], Optional[str], Optional[TraceEvent]]:
+    """B2.6: detect MULTIPLE prior selections whose values appear as
+    query parameters of the network request that refreshed the child
+    picker's options.
+
+    Walks the events list looking for a network_request whose URL was
+    fired just before ``child_event_id`` and whose query string
+    contains values that match prior parent params'
+    (param_name, recorded_value) pairs.
+
+    Returns ``(depends_on_params, url_pattern, request_event)``.
+    - depends_on_params: ordered list of parent param names whose values
+      are URL query params for this child's option request (preserves
+      append order to keep the recorded sequence stable across runs);
+    - url_pattern: the request URL path stripped of query (the
+      ``option_source.url_pattern`` for the spec);
+    - request_event: the network_request itself.
+
+    Empty list + None when no multi-parent network request is found.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    event_index = {
+        ev.event_id: i for i, ev in enumerate(events) if ev.event_id
+    }
+    child_i = event_index.get(child_event_id)
+    if child_i is None:
+        return ([], None, None)
+
+    # Walk BACKWARD from the child event looking for a network_request
+    # whose URL is closest in time and whose query string carries
+    # parent param values. Stop at the prior user_action (we don't want
+    # to cross interaction boundaries).
+    for j in range(child_i - 1, -1, -1):
+        ev = events[j]
+        if ev.kind not in ("network_request", "network_response"):
+            continue
+        if not ev.url:
+            continue
+        try:
+            path_only, _, query = ev.url.partition("?")
+        except Exception:
+            continue
+        if "=" not in (query or ""):
+            continue
+        # Parse query params as a flat dict of param_value strings.
+        observed_values: list[str] = []
+        for tok in (query or "").split("&"):
+            if "=" not in tok:
+                continue
+            _, _, val = tok.partition("=")
+            if val:
+                from urllib.parse import unquote
+                try:
+                    observed_values.append(unquote(val).strip())
+                except Exception:
+                    observed_values.append(val.strip())
+        if not observed_values:
+            continue
+        # Find which parent params' recorded values appear in the
+        # observed query values.
+        matched: list[str] = []
+        for pname, pval in parent_value_by_pname.items():
+            if not pval:
+                continue
+            for ov in observed_values:
+                if ov == pval or ov.lower() == pval.lower():
+                    if pname not in matched:
+                        matched.append(pname)
+                    break
+        if len(matched) >= 1:
+            return (matched, path_only, ev)
+    return ([], None, None)
+
+
 def _build_select_option_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -4502,6 +4585,62 @@ def build_skill(
                         set_selection_spec.hierarchy_path = [
                             parent_pname, set_selection_param_name,
                         ]
+
+            # B2.6: multi-parent cascading detection. Walk the trace for
+            # a network_request whose query string carries values of
+            # MULTIPLE prior selections (e.g. ``/api/models?make=X&year=Y``
+            # depends on BOTH make and year, not just one). When found,
+            # record depends_on_params + option_source so the runner waits
+            # for all parents before reconciling.
+            if set_selection_spec is not None and ev.event_id:
+                # Collect prior (param_name -> recorded_value) pairs from
+                # what we've accumulated so far this loop.
+                prior_values: dict[str, str] = {}
+                for pname, pval in params_seen:
+                    if pname and pval:
+                        prior_values[pname] = pval
+                # Also include any labeled-widget params declared as we
+                # iterate (the example carries the latest current_value).
+                for dp_name, dp_param in declared_params.items():
+                    if dp_param.example:
+                        prior_values.setdefault(dp_name, str(dp_param.example))
+                if prior_values:
+                    multi_parents, url_pattern, req_ev = (
+                        _detect_multi_parent_dependencies(
+                            events, causality, ev.event_id,
+                            parent_value_by_pname=prior_values,
+                        )
+                    )
+                    if len(multi_parents) >= 2 or (
+                        len(multi_parents) == 1
+                        and set_selection_spec.depends_on is None
+                    ):
+                        set_selection_spec.depends_on_params = multi_parents
+                        # If we don't yet have an option_source, populate
+                        # from the discovered request.
+                        if (
+                            set_selection_spec.option_source is None
+                            and req_ev is not None
+                            and url_pattern
+                        ):
+                            method = (req_ev.method or "GET").upper()
+                            if method not in (
+                                "GET", "POST", "PATCH", "PUT", "DELETE"
+                            ):
+                                method = "GET"
+                            set_selection_spec.option_source = NetworkExpectation(
+                                url_pattern=url_pattern,
+                                method=method,  # type: ignore[arg-type]
+                                optional=False,
+                            )
+                        # If the single legacy depends_on is None but we
+                        # have one detected parent, set depends_on too
+                        # for back-compat with runners that read it.
+                        if (
+                            set_selection_spec.depends_on is None
+                            and len(multi_parents) >= 1
+                        ):
+                            set_selection_spec.depends_on = multi_parents[0]
 
         # WI-17: build the SelectOptionSpec for select_option cluster
         # steps. The recording's options_snapshot is captured on the

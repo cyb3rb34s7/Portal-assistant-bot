@@ -522,6 +522,129 @@ def test_b22_select_option_spec_unions_options_seen() -> None:
     assert ids == {"o1": "Samsung", "o2": "LG", "o3": "Sony"}
 
 
+# ---- B2.6: multi-parent cascading -----------------------------------------
+
+
+def test_b26_multi_parent_dependencies() -> None:
+    """B2.6: ``_detect_multi_parent_dependencies`` finds a network
+    request whose query string carries values matching MULTIPLE prior
+    selections, returning the parent param names + URL pattern."""
+    from pilot.annotate import (
+        _detect_multi_parent_dependencies,
+        build_causality_graph,
+    )
+
+    # Sequence: pick Year=2024, pick Make=Samsung, then a network
+    # request /api/models?make=Samsung&year=2024 fires, then the
+    # operator clicks the Model picker.
+    year_pick = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="click",
+        fingerprint=ElementFingerprint(
+            tag="mat-select",
+            element_id="mat-select-year",
+            accessible_name="Year*:",
+            current_value="2024",
+        ),
+        page_url="http://localhost:5189/",
+        event_id="e_year",
+        sequence=1,
+        source="user_click",
+    )
+    make_pick = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="click",
+        fingerprint=ElementFingerprint(
+            tag="mat-select",
+            element_id="mat-select-make",
+            accessible_name="Target Make*:",
+            current_value="Samsung",
+        ),
+        page_url="http://localhost:5189/",
+        event_id="e_make",
+        sequence=2,
+        source="user_click",
+    )
+    network = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="network_request",
+        url="http://localhost:5189/api/models?make=Samsung&year=2024",
+        method="GET",
+        page_url="http://localhost:5189/",
+        event_id="e_net",
+        sequence=3,
+        source="network",
+    )
+    model_pick = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="click",
+        fingerprint=ElementFingerprint(
+            tag="mat-select",
+            element_id="mat-select-model",
+            accessible_name="Target Model*:",
+        ),
+        page_url="http://localhost:5189/",
+        event_id="e_model",
+        sequence=4,
+        source="user_click",
+    )
+    events = _assign_synthetic_ids([year_pick, make_pick, network, model_pick])
+    causality = build_causality_graph(events)
+
+    parents, url_pattern, req = _detect_multi_parent_dependencies(
+        events,
+        causality,
+        "e_model",
+        parent_value_by_pname={"year": "2024", "target_make": "Samsung"},
+    )
+    assert set(parents) == {"year", "target_make"}
+    assert url_pattern == "http://localhost:5189/api/models"
+    assert req is not None
+    assert req.event_id == "e_net"
+
+
+def test_b26_no_multi_parent_when_no_query_match() -> None:
+    """When the network request query string doesn't carry any parent
+    value, depends_on_params is empty."""
+    from pilot.annotate import (
+        _detect_multi_parent_dependencies,
+        build_causality_graph,
+    )
+
+    network = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="network_request",
+        url="http://localhost:5189/api/unrelated?foo=bar",
+        method="GET",
+        page_url="http://localhost:5189/",
+        event_id="e_net",
+        sequence=1,
+        source="network",
+    )
+    child = TraceEvent(
+        ts=datetime.utcnow(),
+        kind="click",
+        fingerprint=ElementFingerprint(
+            tag="mat-select",
+            element_id="mat-select-model",
+            accessible_name="Target Model*:",
+        ),
+        page_url="http://localhost:5189/",
+        event_id="e_child",
+        sequence=2,
+        source="user_click",
+    )
+    events = _assign_synthetic_ids([network, child])
+    causality = build_causality_graph(events)
+    parents, url_pattern, req = _detect_multi_parent_dependencies(
+        events, causality, "e_child",
+        parent_value_by_pname={"year": "2024", "make": "Samsung"},
+    )
+    assert parents == []
+    assert url_pattern is None
+    assert req is None
+
+
 # ---- B2.4: require_search on SelectOptionSpec via search input ------------
 
 
