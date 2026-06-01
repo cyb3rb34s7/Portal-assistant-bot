@@ -1594,6 +1594,24 @@ class SelectOptionSpec(BaseModel):
     runner FAILS the step with ``error_kind='search_required_no_search_fp'``
     rather than silently falling back to direct-click."""
 
+    refresh_options_after: bool = True
+    """2026-06-02 final batch item 2: when True, the runner re-reads
+    the LIVE mat-select panel options at replay BEFORE comparing against
+    the operator's target label.
+
+    Critical for cascading picks (target_model depends on year + make):
+    when the operator replays with different year/make, the model option
+    set fetched from the server differs from ``known_options`` recorded
+    under the original parents. The legacy enum_label codec rejects
+    labels not in known_options; this flag lets the runner consult the
+    live options first and accept any label that matches what's
+    currently surfaced.
+
+    Default True is safe: for non-cascading picks the live options match
+    known_options and the behavior is unchanged. Operators can opt out
+    by setting False on a step where they want strict known_options
+    enforcement (e.g. an enum whose option universe is fixed)."""
+
 
 class DependencyChain(BaseModel):
     """WI-18: declares a chain of parent->child select dependencies.

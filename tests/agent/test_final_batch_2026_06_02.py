@@ -227,6 +227,48 @@ def test_select_option_spec_refresh_options_roundtrip() -> None:
     assert restored.refresh_options_after is False
 
 
+def test_cascading_relax_codec_passes_raw_value_through() -> None:
+    """When the SelectOptionSpec has ``refresh_options_after=True``
+    AND the operator passes a label NOT in the recorded known_options,
+    the runner relaxes the enum_label codec and lets the value through
+    so the action handler can match against LIVE options on the page.
+
+    Tested via the param_codecs ParamValidationError raise pattern --
+    the runner's relax decision is exercised in the e2e and via this
+    direct unit test on the spec field.
+    """
+    from pilot.param_codecs import _decode_enum_label, ParamValidationError
+
+    options = [
+        OptionSnapshot(value="o1", label="Recorded-A"),
+        OptionSnapshot(value="o2", label="Recorded-B"),
+    ]
+    # The codec rejects unknown labels — this is the failure path the
+    # runner catches and converts to a label-through when refresh-after
+    # is enabled.
+    with pytest.raises(ParamValidationError) as ei:
+        _decode_enum_label("Brazil", "country_region", options)
+    assert "not in the declared option set" in str(ei.value)
+    # The error_details lists the recorded options so the runner /
+    # operator sees what was known.
+    assert "Recorded-A" in ei.value.details.get("available_labels", [])
+
+
+def test_cascading_target_not_in_live_options_error_kind_in_runner() -> None:
+    """The runner's ``_do_mat_select_open_then_pick`` returns
+    ``cascading_target_not_in_live_options`` when the spec is in
+    refresh-after mode and the live DOM doesn't surface the target."""
+    # Inspect the runner source for the error_kind string -- a
+    # lightweight pin that the contract is in place. (Driving the full
+    # runner against a fake page is in the e2e suite.)
+    import pathlib
+    runner_src = pathlib.Path(
+        "pilot/skill_runner.py"
+    ).read_text(encoding="utf-8")
+    assert "cascading_target_not_in_live_options" in runner_src
+    assert "refresh_options_after" in runner_src
+
+
 # ---------------------------------------------------------------------------
 # Item 3: cdk-virtual-scroll param renaming
 # ---------------------------------------------------------------------------

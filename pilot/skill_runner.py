@@ -618,26 +618,81 @@ class SkillRunner:
         try:
             value = self._resolved_value(step)
         except ParamValidationError as pve:
-            # WI-05: typed codec / constraint failure. Surface as a
-            # structured error BEFORE the page is touched. The
-            # orchestrator's pause flow shows the operator the
-            # diagnostic and lets them retry/skip/abort.
-            shot = self._screenshot(f"step_{step.index}_param_validation")
-            return (
-                ToolResult(
-                    success=False,
-                    action_taken=f"param validation: {pve.message}",
-                    error=str(pve),
-                    error_kind="param_validation_failed",
-                    error_details={
-                        "param": pve.param_name,
-                        "step_index": step.index,
-                        **pve.details,
-                    },
-                    screenshot_path=shot,
-                ),
-                0,
-            )
+            # 2026-06-02 final batch item 2: cascading enum refresh.
+            # When the step is a select_option / set_selection whose spec
+            # has ``refresh_options_after=True`` (the default for
+            # cascading children), the recorded ``known_options`` is
+            # stale at replay because the parent picks changed. Rather
+            # than fail-fast on the recorded enum, pass the raw operator
+            # value through; the runner's _do_mat_select_open_then_pick
+            # / set_selection search flow consults the LIVE option list
+            # and either matches the label or fails with
+            # cascading_target_not_in_live_options listing the live
+            # universe (no silent fallback).
+            relax = False
+            if step.action == "select_option" and step.select_option is not None:
+                relax = bool(getattr(step.select_option, "refresh_options_after", False))
+            elif step.action == "set_selection" and step.set_selection is not None:
+                # set_selection with depends_on_params is the cascading
+                # case (Country/Region depends on year+make+model).
+                ss_spec = step.set_selection
+                relax = bool(getattr(ss_spec, "depends_on_params", None))
+            if relax and step.param_binding is not None:
+                # Read the raw param value (skip the codec entirely) and
+                # let the action handler reconcile against live options.
+                raw = self.params.get(step.param_binding.name)
+                if raw is not None:
+                    value = raw if not isinstance(raw, list) else None
+                    self._diagnostic(
+                        "runner.cascading_relaxed_codec",
+                        level="warn",
+                        recoverable=True,
+                        step_index=step.index,
+                        param=step.param_binding.name,
+                        raw_value=str(raw)[:120],
+                        reason=str(pve.message)[:200],
+                    )
+                else:
+                    # No raw value -- fall through to standard error.
+                    shot = self._screenshot(
+                        f"step_{step.index}_param_validation"
+                    )
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=f"param validation: {pve.message}",
+                            error=str(pve),
+                            error_kind="param_validation_failed",
+                            error_details={
+                                "param": pve.param_name,
+                                "step_index": step.index,
+                                **pve.details,
+                            },
+                            screenshot_path=shot,
+                        ),
+                        0,
+                    )
+            else:
+                # WI-05: typed codec / constraint failure. Surface as a
+                # structured error BEFORE the page is touched. The
+                # orchestrator's pause flow shows the operator the
+                # diagnostic and lets them retry/skip/abort.
+                shot = self._screenshot(f"step_{step.index}_param_validation")
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"param validation: {pve.message}",
+                        error=str(pve),
+                        error_kind="param_validation_failed",
+                        error_details={
+                            "param": pve.param_name,
+                            "step_index": step.index,
+                            **pve.details,
+                        },
+                        screenshot_path=shot,
+                    ),
+                    0,
+                )
 
         # Allow framework state + effects to settle between steps, and
         # flush any pending async work. When step.expected_signals is
@@ -3701,15 +3756,26 @@ class SkillRunner:
                 )
             except Exception:
                 seen_labels = []
+            # 2026-06-02 final batch item 2: when the spec is in
+            # refresh-after mode (cascading), surface the failure as
+            # ``cascading_target_not_in_live_options`` so the operator
+            # sees that their pick wasn't in the FRESHLY-observed
+            # universe. The legacy ``option_not_available`` stays for
+            # non-cascading picks.
+            cascading = bool(getattr(spec, "refresh_options_after", False))
+            err_kind = (
+                "cascading_target_not_in_live_options"
+                if cascading else "option_not_available"
+            )
             return (
                 ToolResult(
                     success=False,
                     action_taken="select_option(mat_open_pick)",
                     error=(
-                        f"option_not_available: {resolved_label!r} not "
+                        f"{err_kind}: {resolved_label!r} not "
                         f"in surfaced options"
                     ),
-                    error_kind="option_not_available",
+                    error_kind=err_kind,
                     error_details={
                         "requested": resolved_label,
                         "available": seen_labels,
