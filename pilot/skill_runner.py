@@ -3236,10 +3236,84 @@ class SkillRunner:
             ambig = self._consume_ambiguity()
             if ambig is not None:
                 return self._build_ambiguous_result(step, ambig, "select_option")
+            # B3 (2026-06-02): mat-select clusters have the option click
+            # as the primary fingerprint. At replay the panel is closed
+            # so the recorded mat-option-N element doesn't exist. Try
+            # the open-then-click-by-label fallback: walk the step's
+            # provenance for a mat-select widget root, open it, then
+            # click the option-row whose visible text matches the
+            # resolved label.
+            if (
+                spec.match_mode == "label"
+                and step.fingerprint is not None
+                and (step.fingerprint.tag or "").lower() in (
+                    "mat-option", "span"
+                )
+            ):
+                target_label = (
+                    str(value) if value is not None and value != ""
+                    else (spec.recorded_label or "")
+                )
+                if value is not None:
+                    v = str(value)
+                    for opt in spec.known_options:
+                        if opt.value == v:
+                            target_label = opt.label or target_label
+                            break
+                if target_label:
+                    return self._do_mat_select_open_then_pick(
+                        step, spec, target_label,
+                    )
             return self._fallback_human(step, "could not locate select target")
 
         # Operator-resolved value via the param binding (or step.value).
         resolved = value if value is not None else (spec.recorded_value or "")
+
+        # B3 (2026-06-02): when the resolved locator is a mat-select
+        # custom element (not a native <select>), short-circuit to the
+        # open-then-click-by-label path. mat-select has no .options
+        # property and a native .select_option() call fails.
+        try:
+            tag_name = locator.evaluate(
+                "el => (el.tagName || '').toLowerCase()"
+            )
+        except Exception:
+            tag_name = ""
+        # B3 (2026-06-02): for mat-select clusters AND any case where the
+        # resolved locator is NOT a native <select> but the spec is
+        # match_mode=label (set on mat-select clusters), route through
+        # the open-then-pick handler. Without this an L2/L3 heal that
+        # finds a leftover span / mat-option from a prior panel would
+        # crash on the native el.options read.
+        if tag_name == "mat-select" or (
+            spec.match_mode == "label" and tag_name != "select"
+        ):
+            # For mat-select clusters the spec carries enum_options
+            # whose ``value`` is the opaque id (``mat-option-N``) and
+            # ``label`` is the human-readable text. The ``enum_label``
+            # codec converts the operator's input LABEL to its VALUE,
+            # so ``value`` here is typically the opaque id. We need
+            # the LABEL to find the row by visible text. Look it up.
+            target_label = (
+                str(value) if value is not None and value != ""
+                else (spec.recorded_label or "")
+            )
+            # Convert id-shaped value back to label via known_options.
+            if value is not None:
+                v = str(value)
+                for opt in spec.known_options:
+                    if opt.value == v:
+                        target_label = opt.label or target_label
+                        break
+            if target_label:
+                # When the resolved tag is already a mat-select, pass
+                # the locator through; else let the handler find the
+                # right widget on the page.
+                pass_locator = locator if tag_name == "mat-select" else None
+                return self._do_mat_select_open_then_pick(
+                    step, spec, target_label, open_locator=pass_locator,
+                    level=level, heal=heal,
+                )
 
         # Read the current options to validate against. The recording's
         # options_snapshot is the at-record-time view; at replay the
@@ -3452,6 +3526,219 @@ class SkillRunner:
             heal=heal,
             action_taken=(
                 f"select_option({step.semantic_label}={target_value!r}) "
+                f"[{LEVEL_LABELS[level]}]"
+            ),
+            screenshot_path=shot,
+            unverified_error="select_option: post-action verify failed",
+        )
+
+    def _do_mat_select_open_then_pick(
+        self,
+        step: SkillStep,
+        spec: SelectOptionSpec,
+        resolved_label: str,
+        *,
+        open_locator: Optional[Any] = None,
+        level: int = 1,
+        heal: Optional[Any] = None,
+    ) -> tuple[ToolResult, int]:
+        """B3 (2026-06-02): mat-select panel-open-then-click-by-label.
+
+        Used when the recorded fingerprint is a mat-option (the option
+        click that the operator made AFTER opening the panel). At
+        replay the panel is closed, so the recorded mat-option-N
+        element doesn't exist. We need to:
+          1. find the mat-select widget root (walk the step's provenance
+             raw_event_ids for a mat-select tag),
+          2. click it to open the panel,
+          3. wait for any mat-option to render,
+          4. click the option whose visible text matches the resolved
+             label.
+
+        When ``open_locator`` is provided (the caller already resolved
+        the mat-select widget), use it directly.
+        """
+        page = self.session.page
+        # Locate the open trigger. Prefer ``open_locator``; else try
+        # several heuristics.
+        if open_locator is None:
+            # Heuristic 1: the step's param_binding name often matches
+            # the mat-select id family (e.g. param=year ->
+            # #mat-select-year; param=target_make -> #mat-select-make).
+            if step.param_binding is not None:
+                pname = step.param_binding.name
+                candidates_id: list[str] = [
+                    f"mat-select#mat-select-{pname}",
+                    f"mat-select#mat-select-{pname.split('_')[-1]}",
+                    # 'target_make' -> 'make'
+                ]
+                for sel in candidates_id:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() == 1:
+                            open_locator = loc
+                            break
+                    except Exception:
+                        continue
+
+            # Heuristic 2: walk the page's mat-selects looking for one
+            # whose currently-displayed value matches one of the spec's
+            # known_options labels.
+            if open_locator is None:
+                try:
+                    mat_count = page.locator("mat-select").count()
+                except Exception:
+                    mat_count = 0
+                if mat_count == 1:
+                    open_locator = page.locator("mat-select")
+                elif mat_count > 1:
+                    try:
+                        all_mats = page.locator("mat-select")
+                        known_labels_lower = {
+                            (o.label or "").strip().lower()
+                            for o in spec.known_options
+                            if (o.label or "").strip()
+                        }
+                        known_labels_lower.add(
+                            (spec.recorded_label or "").strip().lower()
+                        )
+                        for i in range(min(mat_count, 12)):
+                            cand = all_mats.nth(i)
+                            try:
+                                txt = (
+                                    cand.evaluate(
+                                        "el => (el.textContent || '').trim()"
+                                    )
+                                    or ""
+                                ).strip().lower()
+                            except Exception:
+                                continue
+                            if txt in known_labels_lower:
+                                open_locator = cand
+                                break
+                    except Exception:
+                        pass
+            if open_locator is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option(mat_open_pick)",
+                        error=(
+                            f"could not locate mat-select picker for "
+                            f"label={resolved_label!r}"
+                        ),
+                        error_kind="select_option_picker_not_found",
+                    ),
+                    0,
+                )
+
+        # Click the picker to open the panel.
+        try:
+            open_locator.click(timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"open click failed: {e}",
+                    error_kind="select_option_open_failed",
+                ),
+                0,
+            )
+        # Wait for the panel to surface.
+        try:
+            page.wait_for_selector(
+                ".cdk-overlay-pane mat-option, mat-option", timeout=3000,
+            )
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"panel did not surface: {e}",
+                    error_kind="select_option_panel_no_surface",
+                ),
+                0,
+            )
+
+        # Click the mat-option whose visible text matches the label
+        # (case-insensitive, trimmed exact match).
+        import re as _re
+        rx = _re.compile(
+            r"^\s*" + _re.escape(resolved_label) + r"\s*$", _re.IGNORECASE,
+        )
+        candidates = []
+        try:
+            candidates.append(page.locator("mat-option", has_text=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.get_by_role("option", name=rx))
+        except Exception:
+            pass
+        chosen = None
+        for cand in candidates:
+            try:
+                if cand is not None and cand.count() > 0:
+                    chosen = cand.first
+                    break
+            except Exception:
+                continue
+        if chosen is None:
+            # List the available labels for the failure diagnostic.
+            try:
+                seen_labels = page.evaluate(
+                    "() => Array.from(document.querySelectorAll("
+                    "'mat-option')).slice(0, 20).map(o => "
+                    "(o.textContent || '').trim())"
+                )
+            except Exception:
+                seen_labels = []
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=(
+                        f"option_not_available: {resolved_label!r} not "
+                        f"in surfaced options"
+                    ),
+                    error_kind="option_not_available",
+                    error_details={
+                        "requested": resolved_label,
+                        "available": seen_labels,
+                    },
+                ),
+                0,
+            )
+        try:
+            chosen.click(timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"option click failed: {e}",
+                    error_kind="select_option_pick_click_failed",
+                ),
+                0,
+            )
+        # WI-18: cascading dependency wait, if declared.
+        if step.dependency_chain is not None:
+            dep = step.dependency_chain
+            if dep.option_source_request is not None:
+                from .skill_models import ExpectedSignals as _ES
+                self._wait_for_page_settle(
+                    expected=_ES(network=[dep.option_source_request])
+                )
+        shot = self._screenshot(
+            f"step_{step.index}_select_option_mat_open_pick"
+        )
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=(
+                f"select_option(mat_open_pick={resolved_label!r}) "
                 f"[{LEVEL_LABELS[level]}]"
             ),
             screenshot_path=shot,

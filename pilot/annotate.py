@@ -3163,6 +3163,10 @@ def _build_set_selection_spec(
                 if atag == "cdk-virtual-scroll-viewport":
                     # Construct a minimal fingerprint for the viewport
                     # so downstream readers can identify the "open" anchor.
+                    # Also stamp the className so the param-name fallback
+                    # below can derive a name (e.g. ``left-viewport`` /
+                    # ``cdkWrap`` -> ``transfer_items_left``).
+                    cls = anc.get("className") or ""
                     cluster_open_widget_fp = ElementFingerprint(
                         tag="cdk-virtual-scroll-viewport",
                         test_id=(
@@ -3174,6 +3178,22 @@ def _build_set_selection_spec(
                             anc.get("id")
                             if isinstance(anc.get("id"), str)
                             else None
+                        ),
+                        # Stash a side-hint by reusing aria_label so the
+                        # param-name pass can pick it up without changing
+                        # the schema.
+                        aria_label=(
+                            "left_items"
+                            if isinstance(cls, str) and (
+                                "Lft" in cls or "left" in cls.lower()
+                            )
+                            else (
+                                "right_items"
+                                if isinstance(cls, str) and (
+                                    "Rgt" in cls or "right" in cls.lower()
+                                )
+                                else None
+                            )
                         ),
                     )
                     break
@@ -3213,6 +3233,53 @@ def _build_set_selection_spec(
                     re.sub(r"[^a-zA-Z0-9_]+", "_", raw).strip("_").lower()
                     or None
                 )
+        # For cdk-virtual-scroll: try the viewport's test_id (data-role)
+        # before falling back to row labels (which are PII / data, not
+        # widget identity).
+        if not pname and cluster_open_widget_fp is not None:
+            otag = (cluster_open_widget_fp.tag or "").lower()
+            if otag == "cdk-virtual-scroll-viewport":
+                # 1. viewport's own test_id / element_id (data-role).
+                tid = (
+                    cluster_open_widget_fp.test_id
+                    or cluster_open_widget_fp.element_id
+                    or cluster_open_widget_fp.aria_label
+                    or ""
+                )
+                # data-role values are "left-viewport" / "right-viewport"
+                # / "left-rows"; strip the side suffix when present.
+                tid_norm = tid.replace("-viewport", "_items").replace(
+                    "-rows", "_items"
+                )
+                pname = (
+                    re.sub(r"[^a-zA-Z0-9_]+", "_", tid_norm)
+                    .strip("_").lower()
+                    or None
+                )
+                # 2. Fallback: a row's element_id family. E.g.
+                # ``mat-checkbox-left-0`` -> ``left_items``;
+                # ``mat-checkbox-right-3`` -> ``right_items``. Walk the
+                # cluster for a row click and split the id.
+                if not pname:
+                    for raw_id in cluster.raw_event_ids:
+                        ce = by_id.get(raw_id)
+                        if ce is None or ce.kind != "click":
+                            continue
+                        ceid = (
+                            ce.fingerprint.element_id
+                            if ce.fingerprint
+                            else None
+                        )
+                        if not ceid:
+                            continue
+                        # ``mat-checkbox-left-0`` -> ``left``;
+                        # ``mat-checkbox-row-5`` -> ``row``.
+                        m = re.match(
+                            r"^mat-checkbox-([a-zA-Z]+)-\d+$", ceid
+                        )
+                        if m:
+                            pname = f"{m.group(1).lower()}_items"
+                            break
         if not pname and cluster_first_event is not None:
             fpe = cluster_first_event.fingerprint
             if fpe is not None:
@@ -3322,44 +3389,64 @@ def _build_set_selection_spec(
                     e.event_id
                     and e.event_id == cluster.primary_target_event_id
                 ):
-                    # The chip text reflects the picked label. Take the
-                    # current_value on the NEXT event after this one --
-                    # because at THIS click, the chip hasn't updated.
-                    # Search by_id for the next click in the cluster
-                    # whose current_value is different.
-                    picked_label = (efp.current_value or "").strip()
-                    # If the picked_label is the placeholder text
-                    # ("Choose Country/Region"), the chip hadn't updated
-                    # yet. Look at subsequent cluster events for the
-                    # FIRST root-click whose current_value differs.
-                    if (
-                        picked_label
-                        and (
-                            "choose" in picked_label.lower()
-                            or picked_label == (
-                                open_fp.current_value if open_fp else ""
-                            )
-                        )
-                    ):
-                        for later_eid in cluster.raw_event_ids:
-                            later_e = by_id.get(later_eid)
-                            if (
-                                later_e is None
-                                or later_e.event_id == e.event_id
-                                or later_e.kind != "click"
-                            ):
-                                continue
-                            later_fp = later_e.fingerprint
-                            if later_fp is None:
-                                continue
-                            lcv = (later_fp.current_value or "").strip()
-                            if (
-                                lcv
-                                and "choose" not in lcv.lower()
-                                and lcv != picked_label
-                            ):
-                                picked_label = lcv
-                                break
+                    # Derive the picked label. Strategy in order:
+                    #   1. current_value on a LATER cluster click whose
+                    #      value is non-placeholder and differs from
+                    #      this event's;
+                    #   2. THIS event's ``text`` minus the placeholder /
+                    #      open-click text (the operator's row click
+                    #      bubbles to the root, so the text field
+                    #      typically contains both the placeholder and
+                    #      the just-picked chip label, e.g.
+                    #      'Choose Country/Region Canada');
+                    #   3. THIS event's current_value when it differs
+                    #      from the open click's.
+                    picked_label = ""
+                    open_cv = (
+                        (open_fp.current_value or "").strip()
+                        if open_fp is not None
+                        else ""
+                    )
+                    open_text = (
+                        (open_fp.text or "").strip()
+                        if open_fp is not None
+                        else ""
+                    )
+                    # (1) Look ahead within the cluster.
+                    for later_eid in cluster.raw_event_ids:
+                        later_e = by_id.get(later_eid)
+                        if (
+                            later_e is None
+                            or later_e.event_id == e.event_id
+                            or later_e.kind != "click"
+                        ):
+                            continue
+                        later_fp = later_e.fingerprint
+                        if later_fp is None:
+                            continue
+                        lcv = (later_fp.current_value or "").strip()
+                        if lcv and "choose" not in lcv.lower() and lcv != open_cv:
+                            picked_label = lcv
+                            break
+                    # (2) Text diff: take what's new since the open
+                    # click's text. The row-click event's ``text`` often
+                    # carries placeholder + chip label; strip the
+                    # placeholder + " x" close-mark to get the label.
+                    if not picked_label:
+                        this_text = (efp.text or "").strip()
+                        if this_text and open_text and this_text.startswith(open_text):
+                            diff = this_text[len(open_text):].strip()
+                            if diff:
+                                # Strip trailing " x" (the chip close
+                                # affordance).
+                                diff = diff.rstrip("x").strip()
+                                if diff:
+                                    picked_label = diff
+                    # (3) Fallback to current_value if it differs.
+                    if not picked_label:
+                        cv = (efp.current_value or "").strip()
+                        if cv and cv != open_cv and "choose" not in cv.lower():
+                            picked_label = cv
                     if picked_label and "choose" not in picked_label.lower():
                         item_id = picked_label
                         if item_id in target_items:
