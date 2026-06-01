@@ -3291,6 +3291,12 @@ def _build_set_selection_spec(
         pname = pname or "items"
 
     open_fp: Optional[ElementFingerprint] = None
+    # 2026-06-02 final-batch item 1: inner click target for ng-multiselect
+    # -dropdown. open_fp carries the labeled outer widget root (for
+    # accessible_name / known_options), inner_fp carries the actual
+    # button-shaped descendant the operator hit. Threaded from the
+    # anchor click's TraceEvent.inner_click_fp.
+    inner_fp: Optional[ElementFingerprint] = None
     search_fp: Optional[ElementFingerprint] = None
     checkbox_template_fp: Optional[ElementFingerprint] = None
     target_items: list[str] = []
@@ -3337,6 +3343,13 @@ def _build_set_selection_spec(
         role = _multiselect_role(e.fingerprint)
         if role == "toggle" and e.kind == "click" and open_fp is None:
             open_fp = e.fingerprint
+            # 2026-06-02 final-batch item 1: pull the grabber-captured
+            # inner_click_fp through if present. For legacy MultiSelect.jsx
+            # clusters there's no inner-click distinction; the field is
+            # None and the runner falls back to open_picker_fp as before.
+            icf = getattr(e, "inner_click_fp", None)
+            if icf is not None and inner_fp is None:
+                inner_fp = icf
         elif role == "search" and search_fp is None:
             search_fp = e.fingerprint
         elif role in ("checkbox", "item") and e.kind == "click":
@@ -3376,6 +3389,14 @@ def _build_set_selection_spec(
             if etag in ("ng-multiselect-dropdown", "ng-select"):
                 if open_fp is None:
                     open_fp = efp
+                    # 2026-06-02 final-batch item 1: thread the grabber-
+                    # captured inner_click_fp (.dropdown-btn descendant)
+                    # so the runner can click the inner button-shaped
+                    # element at replay. Outer custom element clicks miss
+                    # above the inner button on real portals.
+                    icf = getattr(e, "inner_click_fp", None)
+                    if icf is not None and inner_fp is None:
+                        inner_fp = icf
                 # Subsequent root clicks: the grabber lifts row clicks
                 # to the labeled widget root, so a root click that's
                 # NOT the first one is an option pick OR the close
@@ -3580,6 +3601,7 @@ def _build_set_selection_spec(
         mode="replace",
         param=pname,
         open_picker_fp=open_fp,
+        inner_click_fp=inner_fp,
         search_fp=search_fp,
         checkbox_template_fp=checkbox_template_fp,
         commit_fp=None,  # toggle close uses same open_fp

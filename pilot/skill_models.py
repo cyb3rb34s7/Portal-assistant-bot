@@ -2388,6 +2388,18 @@ class SetSelectionSpec(BaseModel):
     open_picker_fp: Optional[ElementFingerprint] = None
     """Click target to open the dropdown. Optional -- some pickers stay
     open between actions, in which case this can be omitted."""
+    inner_click_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 final-batch item 1: for widgets whose outer custom
+    element isn't a reliable click target (notably
+    ``ng-multiselect-dropdown`` -- the operator clicks the inner
+    ``.dropdown-btn``, and Playwright's centroid-on-outer click sometimes
+    lands above the button), this carries the inner button-shaped
+    descendant's fingerprint captured at record time. The runner uses
+    this for the open-picker click when set, falling back to
+    ``open_picker_fp`` otherwise. ``open_picker_fp`` still carries the
+    outer widget root so that runtime widget discovery (find the labeled
+    widget) works the same way; ``inner_click_fp`` is purely the click
+    target."""
     search_fp: Optional[ElementFingerprint] = None
     """Input inside the picker to filter the list. Optional -- some
     pickers don't have search and just display all options at once."""
@@ -3496,6 +3508,21 @@ class TraceEvent(BaseModel):
     picked. None for legacy traces (which only captured ``file_name``);
     annotator falls back to a single FileMetadata derived from
     ``file_name`` in that case."""
+
+    inner_click_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 final-batch item 1: for click events on widgets whose
+    outer custom element isn't reliably click-targetable as a unit
+    (notably ``ng-multiselect-dropdown`` -- the operator actually clicks
+    the inner ``.dropdown-btn``), the grabber records the inner
+    button-shaped click target's fingerprint here. The outer widget's
+    fingerprint stays on ``fingerprint`` (so the labeled-widget root
+    carries ``accessible_name`` for the annotator). The annotator threads
+    this into the set_selection cluster's ``SetSelectionSpec.inner_click_fp``
+    so the runner can click the inner element at replay -- avoids the
+    Playwright centroid-click-misses-above-the-button gap that left the
+    country picker unreachable in the 2026-06-02 e2e. None for plain
+    HTML / mat-select / mat-checkbox clicks where the outer element
+    accepts a centroid click cleanly."""
 
     options_seen: Optional[list[OptionSnapshot]] = None
     """id+label sprint (2026-05-28): the full set of option rows

@@ -2119,9 +2119,16 @@ class SkillRunner:
             )
 
         # Open picker if a fingerprint was recorded for it.
-        if spec.open_picker_fp:
+        # 2026-06-02 final-batch item 1: prefer ``inner_click_fp`` when
+        # present (ng-multiselect-dropdown: the outer custom element's
+        # centroid sometimes misses above the inner .dropdown-btn). The
+        # inner fingerprint is the actual button-shaped descendant the
+        # operator hit at record time. Falls back to ``open_picker_fp``
+        # for legacy skills and for widgets where the outer click is fine.
+        click_fp_for_open = spec.inner_click_fp or spec.open_picker_fp
+        if click_fp_for_open:
             try:
-                loc = self._locate_via_template(spec.open_picker_fp, {})
+                loc = self._locate_via_template(click_fp_for_open, {})
                 if loc:
                     self._robust_click(loc, timeout=4000)
                     self._wait_for_page_settle(max_ms=2000)

@@ -2509,6 +2509,15 @@
     function (e) {
       var target = closestInteractable(e.target);
       if (!target) return;
+      // 2026-06-02 final-batch item 1: remember the inner-click target
+      // BEFORE lifting to the semantic widget root, so that for widgets
+      // whose outer custom element isn't clickable as a unit (notably
+      // ng-multiselect-dropdown -- the operator actually clicks the
+      // inner .dropdown-btn), the runner can re-target the inner
+      // element at replay. For plain HTML / mat-select / mat-checkbox
+      // this stays unused (those widgets accept a centroid click on
+      // the outer element fine).
+      var preResolveTarget = target;
       // 2026-06-02 B1: lift the click target to the nearest semantic
       // widget root for Material / hand-authored custom widgets. The
       // resolver is a no-op on plain HTML; on a mat-select inner-div
@@ -2664,6 +2673,50 @@
         var matOpts = _collectMatSelectOptions(target);
         if (matOpts && matOpts.length) clickOptionsSeen = matOpts;
       }
+      // 2026-06-02 final-batch item 1: compute inner_click_fp for
+      // ng-multiselect-dropdown. The outer custom element receives the
+      // fingerprint (so the labeled-widget root carries the
+      // accessible_name), but the actual button-shaped click target is
+      // the inner .dropdown-btn. Playwright's centroid click on the
+      // outer element sometimes lands above the button and misses; the
+      // runner uses inner_click_fp at replay when present to click the
+      // exact button-shaped descendant. Falls back to the outer
+      // fingerprint when inner_click_fp is None (legacy skills).
+      var innerClickFp = null;
+      try {
+        var rTag = (target.tagName || "").toLowerCase();
+        if (rTag === "ng-multiselect-dropdown" || rTag === "ng-select") {
+          // Look for the most button-shaped descendant the operator
+          // actually hit. Prefer the closest ancestor walk from the
+          // pre-resolve target (the operator's actual e.target).
+          var inner = null;
+          // 1. If preResolveTarget itself is the .dropdown-btn or a
+          //    descendant of it, walk up to the .dropdown-btn.
+          var probe = preResolveTarget;
+          var d2 = 0;
+          while (probe && probe !== target && d2 < 6) {
+            var cls = (probe.className && typeof probe.className === "string")
+              ? probe.className : "";
+            if (/(^|\s)(dropdown-btn|multiselect-dropdown)(\s|$)/.test(cls)) {
+              inner = probe;
+              break;
+            }
+            probe = probe.parentElement;
+            d2++;
+          }
+          // 2. Otherwise look inside the outer element for a
+          //    .dropdown-btn / .multiselect-dropdown descendant.
+          if (!inner) {
+            inner = target.querySelector(".dropdown-btn")
+              || target.querySelector(".multiselect-dropdown");
+          }
+          if (inner && inner !== target) {
+            innerClickFp = fingerprint(inner);
+          }
+        }
+      } catch (eInner) {
+        if (DEBUG) console.warn("[cp] inner_click_fp compute failed", eInner);
+      }
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
@@ -2674,6 +2727,7 @@
         target_state_before: targetStateBefore,
         options_seen: (clickOptionsSeen && clickOptionsSeen.length)
           ? clickOptionsSeen : null,
+        inner_click_fp: innerClickFp,
       }, attr);
       // WI-14: schedule the after-state snapshot on the microtask the
       // same way _emitWithStateSnapshot defers page_state_after. The
