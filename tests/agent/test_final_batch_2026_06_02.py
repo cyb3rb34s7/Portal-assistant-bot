@@ -411,6 +411,69 @@ def test_clarify_questions_skip_when_param_is_provided() -> None:
     assert qs == []
 
 
+def test_clarify_questions_respects_cascading_order() -> None:
+    """When ``model`` depends on ``year`` + ``make``, the planner asks
+    year + make FIRST (in topological order), and skips the model
+    question until those parents are resolved."""
+    from pilot.agent.planner import _build_clarify_questions_for_missing_params
+    from pilot.agent.schemas.skill import SkillFile, SkillParameter
+
+    skill = SkillFile(
+        id="cascading",
+        name="cascading",
+        description="cascading params",
+        parameters=[
+            # Declared in reverse-dependency order to verify topological sort.
+            SkillParameter(
+                name="target_model",
+                type="enum",
+                required=True,
+                semantic="target_model",
+                accessible_name="Target Model",
+                label_options=["23_X_Y"],
+                depends_on=["year", "target_make"],
+            ),
+            SkillParameter(
+                name="target_make",
+                type="enum",
+                required=True,
+                semantic="target_make",
+                accessible_name="Make",
+                label_options=["Samsung", "LG"],
+            ),
+            SkillParameter(
+                name="year",
+                type="enum",
+                required=True,
+                semantic="year",
+                accessible_name="Year",
+                label_options=["2023", "2024"],
+            ),
+        ],
+    )
+    # No params provided — child question is skipped, parents emitted.
+    qs = _build_clarify_questions_for_missing_params(
+        skill=skill, provided_params={},
+    )
+    asked = [q.question for q in qs]
+    # Year + Make are asked; model is NOT (depends on unresolved parents).
+    assert any("year" in q.lower() for q in asked)
+    assert any("make" in q.lower() for q in asked)
+    assert not any("model" in q.lower() for q in asked)
+    # Order: year and make come before model (which is absent here),
+    # and year (no deps) comes before nothing -- just check parents
+    # are present.
+    assert len(qs) == 2
+
+    # Once parents are provided, the model question surfaces.
+    qs2 = _build_clarify_questions_for_missing_params(
+        skill=skill,
+        provided_params={"year": "2023", "target_make": "Samsung"},
+    )
+    assert len(qs2) == 1
+    assert "model" in qs2[0].question.lower()
+
+
 def test_clarify_questions_allow_custom_when_options_large() -> None:
     """When known_options > 15, allow_custom_answer is True and the
     question hints the operator can type a custom value."""
