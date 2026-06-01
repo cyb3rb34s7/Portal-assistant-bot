@@ -2695,7 +2695,42 @@
         } catch (e3) {
           payload.target_state_after = null;
         }
-        post(payload);
+        // 2026-06-02 B4: re-probe mat-options after the page's click
+        // handler has had a chance to mount the cdk-overlay-pane. Some
+        // Material runtimes create the panel synchronously, some defer
+        // it to a microtask, and our capture-phase listener fires
+        // BEFORE either. Re-collecting here gives the panel a chance
+        // to exist. We only overwrite if we found NEW options to avoid
+        // clobbering an already-captured set.
+        // 2026-06-02 B4: defer the mat-options probe to a setTimeout
+        // task. queueMicrotask runs at the end of the CURRENT task --
+        // which is the event-dispatch task -- and the page's bubble
+        // handler that mounts the cdk-overlay-pane may itself defer the
+        // mount to a setTimeout / animation frame. A 0-ms timeout
+        // schedules a fresh task that runs AFTER any pending bubble
+        // handler work, so the pane is reliably in the DOM by then.
+        // If options were already captured before the microtask, we
+        // post immediately; otherwise we wait and then post.
+        if (!payload.options_seen &&
+            (target.tagName || "").toLowerCase() === "mat-select") {
+          setTimeout(function () {
+            try {
+              var lateOpts = _collectMatSelectOptions(target);
+              if (DEBUG) {
+                console.log("[cp] late mat-select options probe:",
+                  lateOpts && lateOpts.length, "found");
+              }
+              if (lateOpts && lateOpts.length) {
+                payload.options_seen = lateOpts;
+              }
+            } catch (e4) {
+              if (DEBUG) console.warn("[cp] late options probe failed", e4);
+            }
+            post(payload);
+          }, 0);
+        } else {
+          post(payload);
+        }
       });
     },
     true
