@@ -1569,8 +1569,8 @@
         }
       }
       var container = _findFieldContainer(el);
-      if (container && container.parentElement) {
-        var sibLabel = _findPrecedingSiblingLabel(container);
+      if (container) {
+        var sibLabel = _findPrecedingSiblingLabel(container, el);
         if (sibLabel) {
           var sibText = trim(sibLabel.textContent || "");
           if (sibText) return sibText;
@@ -1629,30 +1629,43 @@
   }
 
   // 2026-06-02 B2: find a preceding-sibling <label> for a field
-  // container. Returns the first previous element sibling that IS a
-  // <label> or contains a <label>. Stops at the first non-empty
-  // previous sibling (so a label two siblings away through a comment /
-  // text node still resolves).
-  function _findPrecedingSiblingLabel(container) {
-    if (!container || !container.parentElement) return null;
+  // container. Two real-world shapes to handle:
+  //   Shape A: the container is the wrapping div that holds BOTH the
+  //     label and the field as direct children
+  //     (<div><label>X</label><mat-form-field/></div>). We look INSIDE
+  //     the container for the closest direct-child <label> that is NOT
+  //     an ancestor of ``origEl``.
+  //   Shape B: the container IS the field (e.g. <mat-form-field>) and
+  //     its previousElementSibling is the <label>:
+  //     <label>X</label><mat-form-field>... So we walk
+  //     previousElementSibling up to 3 hops.
+  // origEl is the element the operator clicked -- needed for Shape A
+  // so we don't return an ancestor-of-el as the "sibling" label.
+  function _findPrecedingSiblingLabel(container, origEl) {
+    if (!container) return null;
+    // Shape A: a child <label> NOT containing origEl.
+    if (container.children) {
+      for (var i = 0; i < container.children.length; i++) {
+        var c = container.children[i];
+        if (c.tagName && c.tagName.toLowerCase() === "label"
+            && (!origEl || !c.contains(origEl))) {
+          return c;
+        }
+      }
+    }
+    // Shape B: previousElementSibling chain.
     var prev = container.previousElementSibling;
     var hops = 0;
     while (prev && hops < 3) {
       if (prev.tagName && prev.tagName.toLowerCase() === "label") return prev;
-      // Some hand-authored markup wraps the label in a span. Look inside.
+      // Hand-authored markup sometimes wraps a label in a span. Peek in.
       if (prev.querySelector) {
         var nested = prev.querySelector("label");
-        if (nested) return nested;
+        if (nested && (!origEl || !nested.contains(origEl))) return nested;
       }
       prev = prev.previousElementSibling;
       hops++;
     }
-    // Also handle the "<label> <mat-form-field>" pattern when the label
-    // is the previous sibling of the container's PARENT (the structure
-    // in page-filled.html:265-358 has the <label> and <mat-form-field>
-    // as siblings inside the same wrapper div -- _findFieldContainer
-    // returned the mat-form-field, so its previousElementSibling IS
-    // the label). That case is handled by the prev-sibling walk above.
     return null;
   }
 
@@ -3663,4 +3676,25 @@
   );
 
   if (DEBUG) console.log("[cp] grabber installed on", location.href);
+
+  // 2026-06-02 test bridge. Unit tests under tests/agent/
+  // test_angular_label_capture.py load grabber.js into a jsdom Window
+  // and need access to the IIFE-private helpers (getAccessibleName,
+  // _resolveSemanticTarget, _currentDisplayValue, _collectMatSelectOptions,
+  // _isSearchLikeInput, fingerprint). Gate behind a flag so a real
+  // browser running the grabber doesn't leak these into the page global.
+  if (window.__cp_test_bridge) {
+    window.__cp_helpers = {
+      getAccessibleName: getAccessibleName,
+      resolveSemanticTarget: _resolveSemanticTarget,
+      currentDisplayValue: _currentDisplayValue,
+      collectMatSelectOptions: _collectMatSelectOptions,
+      isSearchLikeInput: _isSearchLikeInput,
+      fingerprint: fingerprint,
+      findFieldContainer: _findFieldContainer,
+      findPrecedingSiblingLabel: _findPrecedingSiblingLabel,
+      SEARCH_INPUT_DEBOUNCE_MS: SEARCH_INPUT_DEBOUNCE_MS,
+      INPUT_DEBOUNCE_MS: INPUT_DEBOUNCE_MS,
+    };
+  }
 })();
