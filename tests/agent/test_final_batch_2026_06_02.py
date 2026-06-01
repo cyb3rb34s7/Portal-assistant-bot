@@ -474,6 +474,163 @@ def test_clarify_questions_respects_cascading_order() -> None:
     assert "model" in qs2[0].question.lower()
 
 
+def test_cli_clarify_prompts_for_missing_param_with_numbered_choice(
+    tmp_path,
+) -> None:
+    """Item 5: the CLI's ``run-skill`` interactive clarify prompts the
+    operator with a numbered list when label_options are present.
+    Picking '1' resolves to the first label."""
+    import json as _json
+    from pilot.cli import _prompt_clarify_for_missing_params
+
+    skill = {
+        "id": "year_test",
+        "name": "year_test",
+        "schema_version": 2,
+        "params": [
+            {
+                "name": "year",
+                "type": "enum",
+                "required": True,
+                "accessible_name": "Year",
+                "label_options": ["2023", "2024", "2025"],
+            },
+        ],
+        "steps": [],
+    }
+    skill_path = tmp_path / "year.skill.json"
+    skill_path.write_text(_json.dumps(skill), encoding="utf-8")
+
+    fake_inputs = iter(["2"])  # pick the 2nd option (2024)
+
+    def _input(prompt: str) -> str:
+        return next(fake_inputs)
+
+    out_log: list[str] = []
+
+    def _out(msg: str) -> None:
+        out_log.append(str(msg))
+
+    resolved = _prompt_clarify_for_missing_params(
+        skill_path, {}, input_fn=_input, output=_out
+    )
+    assert resolved["year"] == "2024"
+    # Prompt mentioned Year.
+    assert any("year" in s.lower() for s in out_log)
+
+
+def test_cli_clarify_skips_when_param_already_provided(tmp_path) -> None:
+    """When --param has been passed, the clarify prompt does NOT ask
+    for that param again."""
+    import json as _json
+    from pilot.cli import _prompt_clarify_for_missing_params
+
+    skill = {
+        "id": "y",
+        "name": "y",
+        "schema_version": 2,
+        "params": [
+            {
+                "name": "year",
+                "type": "enum",
+                "required": True,
+                "label_options": ["2023", "2024"],
+            },
+        ],
+        "steps": [],
+    }
+    skill_path = tmp_path / "y.skill.json"
+    skill_path.write_text(_json.dumps(skill), encoding="utf-8")
+
+    def _input(prompt: str) -> str:
+        raise AssertionError("input should not be called")
+
+    resolved = _prompt_clarify_for_missing_params(
+        skill_path,
+        {"year": "2023"},
+        input_fn=_input,
+        output=lambda msg: None,
+    )
+    assert resolved["year"] == "2023"
+
+
+def test_cli_clarify_string_list_wraps_answer_as_list(tmp_path) -> None:
+    """For string_list (multi-select) params, the clarify answer is
+    wrapped as a 1-element list so the runner's set_selection consumes
+    it correctly."""
+    import json as _json
+    from pilot.cli import _prompt_clarify_for_missing_params
+
+    skill = {
+        "id": "c",
+        "name": "c",
+        "schema_version": 2,
+        "params": [
+            {
+                "name": "country_region",
+                "type": "string_list",
+                "required": True,
+                "label_options": ["Brazil", "Canada", "Mexico"],
+            },
+        ],
+        "steps": [],
+    }
+    skill_path = tmp_path / "c.skill.json"
+    skill_path.write_text(_json.dumps(skill), encoding="utf-8")
+
+    resolved = _prompt_clarify_for_missing_params(
+        skill_path,
+        {},
+        input_fn=lambda prompt: "1",  # pick "Brazil"
+        output=lambda msg: None,
+    )
+    assert resolved["country_region"] == ["Brazil"]
+
+
+def test_cli_clarify_falls_back_to_step_known_options(tmp_path) -> None:
+    """When the param doesn't declare label_options at the top level
+    but the set_selection step carries known_options, the prompt still
+    surfaces the available labels."""
+    import json as _json
+    from pilot.cli import _prompt_clarify_for_missing_params
+
+    skill = {
+        "id": "c",
+        "name": "c",
+        "schema_version": 2,
+        "params": [
+            {
+                "name": "country_region",
+                "type": "string_list",
+                "required": True,
+            },
+        ],
+        "steps": [
+            {
+                "action": "set_selection",
+                "set_selection": {
+                    "param": "country_region",
+                    "mode": "replace",
+                    "known_options": [
+                        {"value": "br", "label": "Brazil"},
+                        {"value": "ca", "label": "Canada"},
+                    ],
+                },
+            },
+        ],
+    }
+    skill_path = tmp_path / "c.skill.json"
+    skill_path.write_text(_json.dumps(skill), encoding="utf-8")
+
+    resolved = _prompt_clarify_for_missing_params(
+        skill_path,
+        {},
+        input_fn=lambda prompt: "Canada",  # typed label
+        output=lambda msg: None,
+    )
+    assert resolved["country_region"] == ["Canada"]
+
+
 def test_clarify_questions_allow_custom_when_options_large() -> None:
     """When known_options > 15, allow_custom_answer is True and the
     question hints the operator can type a custom value."""
