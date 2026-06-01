@@ -3597,6 +3597,35 @@ def _build_set_selection_spec(
             search_fp = discovered
             select_strategy = "search"
 
+    # 2026-06-02 final batch item 3: rename cdk-virtual-scroll param from
+    # the sibling search input's label context when the default naming
+    # ended up at the fallback ("left_items" / "right_items" / "items").
+    # The viewport's data-role doesn't carry domain meaning ("left-rows"
+    # is structural, not semantic); the search input's accessible_name
+    # / aria_label / preceding <label> typically does (e.g. "Source
+    # Artworks Search" -> param "source_artworks"). Operators reading
+    # the skill see a domain-meaningful name; planner clarify UX gets a
+    # human-friendly label.
+    open_tag_now = (open_fp.tag or "").lower() if open_fp is not None else ""
+    fallback_names = {"items", "left_items", "right_items", "rows", "checkbox"}
+    if (
+        open_tag_now == "cdk-virtual-scroll-viewport"
+        and pname in fallback_names
+        and search_fp is not None
+    ):
+        candidate_label = (
+            search_fp.accessible_name
+            or search_fp.aria_label
+            or ""
+        ).strip()
+        # Strip a trailing " Search" / " search" suffix so "Source
+        # Artworks Search" -> "Source Artworks".
+        if candidate_label:
+            clean = re.sub(r"\s*search\s*$", "", candidate_label, flags=re.I)
+            renamed = _snake_from_label(clean) if clean else None
+            if renamed and renamed not in fallback_names:
+                pname = renamed
+
     spec = SetSelectionSpec(
         mode="replace",
         param=pname,
