@@ -1557,23 +1557,35 @@
     //   .form-field, or a generic div that contains both the element
     //   and a sibling <label>). Cap the walk at 4 levels so non-
     //   Material portals don't pay for an unbounded climb.
+    // SKIP entirely for <button> / <a> elements. Per WAI-ARIA, a
+    // button's accessible name is its own innerText (handled by the
+    // textContent fallback below). The field-container heuristic was
+    // designed for inputs / mat-select / mat-checkbox and falsely
+    // claims a sibling-area <label> for buttons that sit next to
+    // section headings (e.g. <label>Source Artwork:</label>
+    // <button>Transfer Right</button> -- the button's name is
+    // "Transfer Right", not "Source Artwork:").
+    var elTagLow = (el.tagName || "").toLowerCase();
+    var isButtonish = (elTagLow === "button" || elTagLow === "a");
     try {
-      var matFormField = el.closest && el.closest("mat-form-field");
-      if (matFormField) {
-        var inner = matFormField.querySelector(
-          "mat-label, .mat-form-field-label"
-        );
-        if (inner && !inner.classList.contains("mat-select-value-text")) {
-          var inText = trim(inner.textContent || "");
-          if (inText) return inText;
+      if (!isButtonish) {
+        var matFormField = el.closest && el.closest("mat-form-field");
+        if (matFormField) {
+          var inner = matFormField.querySelector(
+            "mat-label, .mat-form-field-label"
+          );
+          if (inner && !inner.classList.contains("mat-select-value-text")) {
+            var inText = trim(inner.textContent || "");
+            if (inText) return inText;
+          }
         }
-      }
-      var container = _findFieldContainer(el);
-      if (container) {
-        var sibLabel = _findPrecedingSiblingLabel(container, el);
-        if (sibLabel) {
-          var sibText = trim(sibLabel.textContent || "");
-          if (sibText) return sibText;
+        var container = _findFieldContainer(el);
+        if (container) {
+          var sibLabel = _findPrecedingSiblingLabel(container, el);
+          if (sibLabel) {
+            var sibText = trim(sibLabel.textContent || "");
+            if (sibText) return sibText;
+          }
         }
       }
     } catch (eLab) {
@@ -1700,6 +1712,7 @@
     var cur = el;
     var depth = 0;
     var hit = null;
+    var buttonHit = null;  // lower-priority fallback
     var preferredOrder = ["mat-select", "mat-checkbox", "mat-radio-button",
       "mat-slide-toggle", "ng-multiselect-dropdown", "mat-form-field"];
     while (cur && cur.nodeType === 1 && depth < 6) {
@@ -1719,6 +1732,16 @@
           }
         }
       } else {
+        // 2026-06-02 final batch: lift clicks on inner spans / icons /
+        // text to the containing <button>. Without this, a click on the
+        // span inside <button>Transfer Right</button> records as a
+        // tag=span fingerprint with accessible_name pulled from the
+        // nearest <label> ancestor (often a label that names a
+        // SIBLING area, not this button). At replay the L2 fallback
+        // matches the wrong element.
+        if (!buttonHit && (tag === "button" || tag === "a")) {
+          buttonHit = cur;
+        }
         var cls = (cur.className && typeof cur.className === "string")
           ? cur.className : "";
         for (var i = 0; i < _SEMANTIC_CLASSES.length; i++) {
@@ -1734,7 +1757,8 @@
       cur = cur.parentElement;
       depth++;
     }
-    return hit || el;
+    // Material widget wins over plain button; button beats raw inner span.
+    return hit || buttonHit || el;
   }
 
   // 2026-06-02 B3: capture a human-readable display value for the

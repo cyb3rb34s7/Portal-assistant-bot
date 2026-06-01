@@ -457,6 +457,34 @@ def _detect_search_box_for_list(
             v = anc.get(key)
             if v:
                 list_chain_ids.add(str(v))
+    # 2026-06-02 final batch: when the list is a cdk-virtual-scroll
+    # viewport, REJECT any search input that lives inside an
+    # ng-multiselect-dropdown / ng-select — those belong to a DIFFERENT
+    # picker (the country dropdown) and false-matching them onto the
+    # left-rows cluster makes the e2e step 5/6 use the wrong search
+    # field. Likewise reject mat-select-internal search inputs.
+    def _input_inside_foreign_widget(fp: ElementFingerprint) -> bool:
+        for anc in (fp.ancestor_chain or []):
+            if not isinstance(anc, dict):
+                continue
+            atag = (anc.get("tag") or "").lower()
+            if atag in (
+                "ng-multiselect-dropdown",
+                "ng-select",
+                "mat-select",
+            ):
+                # Foreign widget ancestor -- only acceptable if the list
+                # itself ALSO sits inside the same widget.
+                # Look for the same tag in list_fp's ancestor chain.
+                for lanc in (list_fp.ancestor_chain or []):
+                    if not isinstance(lanc, dict):
+                        continue
+                    if (lanc.get("tag") or "").lower() == atag:
+                        return False
+                # The list isn't inside this widget -- reject.
+                return True
+        return False
+
     # Walk events looking for a search-style input whose chain shares
     # an ancestor identity with the list.
     for ev in events:
@@ -468,6 +496,9 @@ def _detect_search_box_for_list(
         # The input itself should be DIFFERENT from the list (separate
         # element).
         if fp.test_id and list_fp.test_id and fp.test_id == list_fp.test_id:
+            continue
+        # Reject inputs that belong to a different custom widget.
+        if _input_inside_foreign_widget(fp):
             continue
         # If they share a chain ancestor identity, accept.
         if list_chain_ids:
