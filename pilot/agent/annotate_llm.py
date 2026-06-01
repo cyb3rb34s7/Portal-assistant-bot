@@ -105,7 +105,19 @@ class _LlmAnnotation(BaseModel):
 
 
 def _build_step_summary(steps: list[dict[str, Any]]) -> list[str]:
-    """One short line per step for the prompt."""
+    """One short line per step for the prompt.
+
+    2026-06-02 batch 2/B2.7: include the batch-1 grabber's new
+    semantic fields so the LLM can reason about labeled widgets
+    rather than relying on testid alone:
+
+      - ``accessible_name`` (the human label like "Target Model*:");
+      - ``current_value`` (the displayed value on the widget,
+        the strongest disambiguator two unlabeled mat-selects can
+        carry);
+      - ``known_options`` (top labels seen at record time, capped
+        at 50, so the LLM can infer the param's domain).
+    """
     out: list[str] = []
     for s in steps:
         idx = s.get("index", "?")
@@ -114,15 +126,56 @@ def _build_step_summary(steps: list[dict[str, Any]]) -> list[str]:
         binding = (s.get("param_binding") or {}).get("name") or ""
         fp = s.get("fingerprint") or {}
         test_id = fp.get("test_id") or ""
+        acc_name = fp.get("accessible_name") or ""
+        current_value = fp.get("current_value") or ""
         bits = [f"step {idx}", action]
         if label:
             bits.append(f"label={label}")
         if test_id:
             bits.append(f"testid={test_id}")
+        if acc_name:
+            bits.append(f"acc_name={acc_name!r}")
+        if current_value:
+            bits.append(f"current={current_value!r}")
         if binding:
             bits.append(f"binds={binding}")
+        # Surface known_options (labels only, capped) when the step is
+        # a select_option / set_selection so the LLM sees the domain.
+        ko_labels = _step_known_option_labels(s)
+        if ko_labels:
+            sample = ", ".join(ko_labels[:10])
+            more = "" if len(ko_labels) <= 10 else f" +{len(ko_labels) - 10}"
+            bits.append(f"options=[{sample}{more}]")
         out.append(" ".join(bits))
     return out
+
+
+def _step_known_option_labels(step: dict[str, Any]) -> list[str]:
+    """Return the labels visible in the step's known-options surfaces.
+
+    Looks at:
+      - ``set_selection.known_options`` (multi-select labels);
+      - ``select_option.known_options`` (mat-select option labels;
+        2026-06-02 batch 2/B2.2 union from options_seen).
+
+    Capped at 50 labels for prompt budget. Returns an empty list when
+    the step has no known options.
+    """
+    labels: list[str] = []
+    seen: set[str] = set()
+    for key in ("set_selection", "select_option"):
+        spec = step.get(key) or {}
+        for opt in spec.get("known_options") or []:
+            if not isinstance(opt, dict):
+                continue
+            lbl = opt.get("label")
+            if not lbl or lbl in seen:
+                continue
+            seen.add(lbl)
+            labels.append(lbl)
+            if len(labels) >= 50:
+                return labels
+    return labels
 
 
 async def annotate_skill(
@@ -159,6 +212,13 @@ async def annotate_skill(
     # known_options live on the step's set_selection spec, keyed by the
     # spec's ``param`` (which equals the v1 param name for the list).
     known_options_by_param: dict[str, list[dict[str, str]]] = {}
+    # 2026-06-02 batch 2/B2.7: also map each labeled-widget param to its
+    # accessible_name + current_value + known_options (from select_option
+    # specs), so the LLM sees the human label + the displayed value
+    # alongside the param name. Critical for distinguishing two
+    # structurally-identical mat-selects (e.g. Year vs Model -- same
+    # tag, same null role, but distinct labels and displayed values).
+    widget_meta_by_param: dict[str, dict[str, Any]] = {}
     for s in steps_v1:
         ss = s.get("set_selection") or {}
         pname = ss.get("param")
@@ -169,6 +229,28 @@ async def annotate_skill(
                 for o in ko
                 if isinstance(o, dict)
             ]
+        # select_option (mat-select / native) -- known_options is the
+        # universe of mat-option labels seen at the panel-open click.
+        so = s.get("select_option") or {}
+        so_ko = so.get("known_options") or []
+        bind = (s.get("param_binding") or {}).get("name")
+        if bind and so_ko:
+            known_options_by_param.setdefault(bind, [
+                {"id": o.get("value"), "label": o.get("label")}
+                for o in so_ko
+                if isinstance(o, dict)
+            ])
+        # Labeled-widget param meta: accessible_name + current_value
+        # surface for every click step that bound a param.
+        fp = s.get("fingerprint") or {}
+        if bind:
+            acc = fp.get("accessible_name")
+            cv = fp.get("current_value")
+            if acc or cv:
+                widget_meta_by_param.setdefault(bind, {
+                    "accessible_name": acc,
+                    "current_value": cv,
+                })
 
     def _params_summary_line(p: dict) -> str:
         line = (
@@ -176,6 +258,15 @@ async def annotate_skill(
             f"example={p.get('example', '')!r}  "
             f"required={p.get('required', True)}"
         )
+        # B2.7: surface the label + current_value when they're
+        # available from the recording. These ground the LLM's
+        # semantic_name proposal in the actual UI shape.
+        meta = widget_meta_by_param.get(p["name"])
+        if meta:
+            if meta.get("accessible_name"):
+                line += f"  label={meta['accessible_name']!r}"
+            if meta.get("current_value"):
+                line += f"  recorded_value={meta['current_value']!r}"
         ko = known_options_by_param.get(p["name"])
         if ko:
             # Surface the id+label universe so the LLM reads real labels
@@ -215,7 +306,19 @@ async def annotate_skill(
         "   apply, publish, delete, archive). The operator's plan-approval "
         "   step is the gate; you only flag what's destructive, you don't "
         "   block on it.\n"
-        "5. Don't invent parameters that aren't in the input list.\n"
+        "5. Don't invent parameters that aren't in the input list. The "
+        "   ONLY way to introduce structural insight is via the existing "
+        "   params -- never reference a new param name in the output.\n"
+        "6. When a param carries label= (the human label from the page) "
+        "   and/or recorded_value= (the displayed value at record time), "
+        "   GROUND your semantic_name in the label. E.g. 'Target Model*: ' "
+        "   becomes 'target_model'; 'Year' becomes 'year'. The recorded "
+        "   value is a strong disambiguator when two params would otherwise "
+        "   collide.\n"
+        "7. When a param carries multiselect_options= or option labels, "
+        "   the operator-facing replay value is a LABEL (e.g. 'Argentina'), "
+        "   not an opaque id ('ar'). Examples in your description should "
+        "   read in labels.\n"
     )
     user_prompt = (
         f"Skill name: {v1_skill.get('name', '?')}\n"
