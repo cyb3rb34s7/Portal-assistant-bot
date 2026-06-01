@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Frame TV Sample Portal (Angular Material)</title>
+<style>
+  body { margin: 0; font-family: Roboto, Arial, sans-serif; color: #222; }
+  .mainWrapper { padding: 0; }
+  .headerWrap { background: #3a3a3a; color: #fff; padding: 12px 24px;
+                display: flex; align-items: center; gap: 24px; }
+  .mainHeading { margin: 0; font-size: 20px; }
+  .toolBarWrap { display: flex; gap: 8px; }
+  .mat-button { color: #fff; background: transparent; border: 0;
+                padding: 8px 16px; cursor: pointer; font-size: 14px; }
+  .mat-button:hover { background: rgba(255,255,255,0.1); }
+  .ccMapWrap { padding: 20px; max-width: 1600px; }
+  .filter { display: flex; flex-wrap: wrap; align-items: flex-start;
+            gap: 16px; margin-bottom: 16px; }
+  .disInline { display: inline-block; vertical-align: top; }
+  .mr20 { margin-right: 20px; }
+  .ml20 { margin-left: 20px; }
+  .mt10 { margin-top: 10px; }
+  .red-text { color: #d32f2f; }
+  /* Material form-field styling */
+  .mat-form-field { display: inline-block; position: relative; }
+  .mat-form-field-wrapper { position: relative; }
+  .mat-form-field-flex { display: flex; align-items: center;
+                         border: 1px solid #ccc; border-radius: 4px;
+                         padding: 4px 8px; background: #fff; min-width: 180px; }
+  .mat-form-field-infix { flex: 1; padding: 4px 0; min-width: 160px; }
+  .mat-form-field-outline,
+  .mat-form-field-outline-thick,
+  .mat-form-field-outline-start,
+  .mat-form-field-outline-gap,
+  .mat-form-field-outline-end { display: none; }
+  /* mat-select trigger */
+  mat-select { display: inline-block; width: 100%; cursor: pointer;
+               outline: none; }
+  .mat-select-trigger { display: flex; align-items: center;
+                        justify-content: space-between; cursor: pointer; }
+  .mat-select-value { flex: 1; }
+  .mat-select-value-text { font-size: 14px; color: #222; }
+  .mat-select-arrow-wrapper { width: 12px; }
+  .mat-select-arrow { width: 0; height: 0;
+                      border-left: 5px solid transparent;
+                      border-right: 5px solid transparent;
+                      border-top: 5px solid #888; }
+  /* The "panel" overlay */
+  .cdk-overlay-container { position: fixed; top: 0; left: 0;
+                           width: 100%; height: 100%; pointer-events: none;
+                           z-index: 1000; }
+  .cdk-overlay-pane { position: absolute; pointer-events: auto;
+                      background: #fff; border: 1px solid #ddd;
+                      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                      min-width: 180px; max-height: 280px; overflow: auto; }
+  .mat-select-panel { background: #fff; }
+  .mat-option { display: block; padding: 8px 16px; cursor: pointer;
+                font-size: 14px; }
+  .mat-option:hover { background: #f0f0f0; }
+  .mat-option.mat-selected { background: #e3f2fd; }
+  /* ng-multiselect-dropdown */
+  ng-multiselect-dropdown { display: inline-block; min-width: 220px; }
+  .multiselect-dropdown { position: relative; }
+  .dropdown-btn { display: block; border: 1px solid #ccc;
+                  border-radius: 4px; padding: 8px 12px; background: #fff;
+                  min-width: 200px; cursor: pointer; font-size: 14px; }
+  .dropdown-down { display: inline-block; border-left: 5px solid transparent;
+                   border-right: 5px solid transparent;
+                   border-top: 5px solid #888; }
+  .dropdown-list { position: absolute; top: 100%; left: 0;
+                   background: #fff; border: 1px solid #ddd;
+                   width: 320px; max-height: 280px; overflow: auto;
+                   box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; }
+  .dropdown-list ul { list-style: none; margin: 0; padding: 0; }
+  .filter-textbox input { width: 96%; padding: 6px;
+                          border: 1px solid #ddd; margin: 6px; }
+  .multiselect-item-checkbox { padding: 6px 12px; cursor: pointer; }
+  .multiselect-item-checkbox:hover { background: #f4f4f4; }
+  .multiselect-item-checkbox input { margin-right: 6px; }
+  .selected-item { display: inline-block; background: #1976d2; color: #fff;
+                   padding: 2px 8px; border-radius: 12px; margin-right: 4px;
+                   font-size: 12px; }
+  .selected-item a { cursor: pointer; padding-left: 6px; }
+  /* show-data button */
+  .copyrightbtn { padding: 8px 16px; background: #fff; color: #1976d2;
+                  border: 1px solid #1976d2; border-radius: 4px;
+                  cursor: pointer; font-size: 14px; }
+  .copyrightbtn:hover { background: #e3f2fd; }
+  .copyrightbtn[disabled] { opacity: 0.5; cursor: not-allowed; }
+  /* Source / Target artwork panes */
+  .gridWrap { display: flex; align-items: flex-start; gap: 16px; }
+  .ccMapWLft, .ccMapWRgt { flex: 1; padding: 12px;
+                          border: 1px solid #ddd; border-radius: 4px;
+                          background: #fafafa; }
+  .lblArt { display: block; font-weight: 600; margin-bottom: 8px; }
+  .mat-input-element { padding: 6px; border: 1px solid #ccc;
+                       border-radius: 4px; width: 60%; font-size: 14px; }
+  .artWrklist { margin-top: 8px; }
+  .artWlist { width: 100%; }
+  .tblHeader { background: #eee; padding: 8px;
+               border-bottom: 1px solid #ccc; display: flex;
+               align-items: center; gap: 8px; }
+  .cdkWrap { height: 360px; overflow: auto;
+             border: 1px solid #ddd; background: #fff; position: relative; }
+  .cdk-virtual-scroll-content-wrapper { position: relative; top: 0; left: 0;
+                                        right: 0; will-change: transform; }
+  .cdk-virtual-scroll-spacer { width: 1px; }
+  .cdkRow { display: flex; align-items: center;
+            padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
+  .firstCol { margin-right: 12px; }
+  /* mat-checkbox */
+  mat-checkbox { display: inline-block; cursor: pointer; }
+  .mat-checkbox-layout { display: inline-flex; align-items: center;
+                         cursor: pointer; }
+  .mat-checkbox-inner-container { display: inline-block;
+                                  width: 16px; height: 16px;
+                                  position: relative; margin-right: 6px; }
+  .mat-checkbox-input { position: absolute; opacity: 0;
+                        width: 16px; height: 16px; cursor: pointer;
+                        margin: 0; }
+  .mat-checkbox-frame { width: 16px; height: 16px;
+                        border: 2px solid #888; border-radius: 2px;
+                        background: #fff; box-sizing: border-box; }
+  .mat-checkbox-background { display: none; width: 16px; height: 16px;
+                             position: absolute; top: 0; left: 0;
+                             background: #1976d2; border-radius: 2px;
+                             align-items: center; justify-content: center; }
+  .mat-checkbox-checked .mat-checkbox-background { display: flex; }
+  .mat-checkbox-checkmark { width: 12px; height: 12px;
+                            stroke: #fff; }
+  .greyText { color: #888; }
+  .smallFont { font-size: 11px; }
+  .elps { margin: 0; }
+  .m0 { margin: 0; }
+  .tblFooter { padding: 6px 8px; background: #f0f0f0;
+               border-top: 1px solid #ccc; font-size: 12px; }
+  .lbMulti { font-weight: 600; }
+  .floatLeft { display: inline-block; vertical-align: top; }
+  .multiWr { margin-left: 8px; }
+  /* Login overlay */
+  #loginOverlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                  background: rgba(0,0,0,0.4);
+                  display: flex; align-items: center; justify-content: center;
+                  z-index: 5000; }
+  #loginOverlay form { background: #fff; padding: 24px;
+                       border-radius: 6px; width: 320px; }
+  #loginOverlay h2 { margin-top: 0; }
+  #loginOverlay input { width: 100%; padding: 8px; margin: 6px 0;
+                        border: 1px solid #ccc; border-radius: 4px;
+                        box-sizing: border-box; }
+  #loginOverlay button { width: 100%; padding: 10px; background: #1976d2;
+                        color: #fff; border: 0; border-radius: 4px;
+                        cursor: pointer; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div class="mdWrapper">
+    <app-root class="ng-version-mock" ng-version="8.2.14">
+      <div class="mainWrapper">
+        <app-header>
+          <div class="headerWrap" color="primary">
+            <h1 class="mainHeading">Frame 2.0</h1>
+            <mat-toolbar class="toolBarWrap mat-toolbar mat-primary">
+              <mat-toolbar-row class="mat-toolbar-row">
+                <button class="mat-button mat-button-base" data-testid="nav-user-menu">
+                  <span class="mat-button-wrapper">tech@parallelloop.ai</span>
+                </button>
+              </mat-toolbar-row>
+            </mat-toolbar>
+          </div>
+        </app-header>
+
+        <main>
+          <div class="ccMapWrap" data-page="/transfer-artwork">
+            <!-- The filter row: year + make + model + country/region + show data -->
+            <div class="filter">
+              <!-- Year (mirrors page-filled.html 263-359) -->
+              <div class="disInline mr20">
+                <label>Year<span class="red-text">*</span>: </label>
+                <mat-form-field appearance="outline"
+                  class="mat-form-field mat-primary mat-form-field-type-mat-select mat-form-field-appearance-outline">
+                  <div class="mat-form-field-wrapper">
+                    <div class="mat-form-field-flex">
+                      <div class="mat-form-field-outline">
+                        <div class="mat-form-field-outline-start"></div>
+                        <div class="mat-form-field-outline-gap"></div>
+                        <div class="mat-form-field-outline-end"></div>
+                      </div>
+                      <div class="mat-form-field-infix">
+                        <mat-select id="mat-select-year"
+                          class="mat-select"
+                          role="listbox"
+                          tabindex="0"
+                          aria-required="false"
+                          aria-disabled="false"
+                          aria-multiselectable="false"
+                          data-widget-kind="year">
+                          <div class="mat-select-trigger" aria-hidden="true">
+                            <div class="mat-select-value">
+                              <span class="mat-select-value-text"
+                                ><span data-display="year">2024</span></span>
+                            </div>
+                            <div class="mat-select-arrow-wrapper">
+                              <div class="mat-select-arrow"></div>
+                            </div>
+                          </div>
+                        </mat-select>
+                      </div>
+                    </div>
+                  </div>
+                </mat-form-field>
+              </div>
+
+              <!-- Target Make (mirrors Year structure) -->
+              <div class="disInline mr20">
+                <label>Target Make<span class="red-text">*</span>: </label>
+                <mat-form-field appearance="outline"
+                  class="mat-form-field mat-primary mat-form-field-type-mat-select mat-form-field-appearance-outline">
+                  <div class="mat-form-field-wrapper">
+                    <div class="mat-form-field-flex">
+                      <div class="mat-form-field-outline">
+                        <div class="mat-form-field-outline-start"></div>
+                        <div class="mat-form-field-outline-gap"></div>
+                        <div class="mat-form-field-outline-end"></div>
+                      </div>
+                      <div class="mat-form-field-infix">
+                        <mat-select id="mat-select-make"
+                          class="mat-select"
+                          role="listbox"
+                          tabindex="0"
+                          data-widget-kind="make">
+                          <div class="mat-select-trigger" aria-hidden="true">
+                            <div class="mat-select-value">
+                              <span class="mat-select-value-text"
+                                ><span data-display="make">Samsung</span></span>
+                            </div>
+                            <div class="mat-select-arrow-wrapper">
+                              <div class="mat-select-arrow"></div>
+                            </div>
+                          </div>
+                        </mat-select>
+                      </div>
+                    </div>
+                  </div>
+                </mat-form-field>
+              </div>
+
+              <!-- Target Model (mirrors page-filled.html 360-455) -->
+              <div class="disInline mr20">
+                <label>Target Model<span class="red-text">*</span>: </label>
+                <mat-form-field appearance="outline"
+                  class="mat-form-field mat-primary mat-form-field-type-mat-select mat-form-field-appearance-outline">
+                  <div class="mat-form-field-wrapper">
+                    <div class="mat-form-field-flex">
+                      <div class="mat-form-field-outline">
+                        <div class="mat-form-field-outline-start"></div>
+                        <div class="mat-form-field-outline-gap"></div>
+                        <div class="mat-form-field-outline-end"></div>
+                      </div>
+                      <div class="mat-form-field-infix">
+                        <mat-select id="mat-select-model"
+                          class="mat-select"
+                          role="listbox"
+                          tabindex="0"
+                          data-widget-kind="model">
+                          <div class="mat-select-trigger" aria-hidden="true">
+                            <div class="mat-select-value">
+                              <span class="mat-select-value-text"
+                                ><span data-display="model">24_BOMRB_8K</span></span>
+                            </div>
+                            <div class="mat-select-arrow-wrapper">
+                              <div class="mat-select-arrow"></div>
+                            </div>
+                          </div>
+                        </mat-select>
+                      </div>
+                    </div>
+                  </div>
+                </mat-form-field>
+              </div>
+
+              <!-- Country/Region multi-select (mirrors page-filled.html 626-810) -->
+              <div class="disInline mr20">
+                <label class="floatLeft lbMulti ml20"
+                  >Country/Region<span class="red-text">*</span>: </label>
+                <div class="floatLeft multiWr">
+                  <ng-multiselect-dropdown
+                    class="ng-untouched ng-valid ng-dirty"
+                    data-widget-kind="country">
+                    <div class="multiselect-dropdown" tabindex="0">
+                      <div>
+                        <span class="dropdown-btn" tabindex="-1"
+                          data-role="country-trigger">
+                          <span class="placeholder-text"
+                            data-role="country-placeholder"
+                            >Choose Country/Region</span>
+                          <span style="float:right;padding-right:4px;">
+                            <span class="dropdown-down"></span>
+                          </span>
+                        </span>
+                      </div>
+                      <div class="dropdown-list" hidden>
+                        <ul class="item1">
+                          <li class="filter-textbox">
+                            <input
+                              aria-label="multiselect-search"
+                              type="text"
+                              placeholder="Search"
+                              class="country-search-input"
+                              data-role="country-search" />
+                          </li>
+                        </ul>
+                        <ul class="item2" data-role="country-options"
+                          style="max-height: 197px"></ul>
+                      </div>
+                    </div>
+                  </ng-multiselect-dropdown>
+                </div>
+              </div>
+
+              <!-- Show Data button (mirrors page-filled.html 811-824) -->
+              <button class="copyrightbtn ml20 mt10 mat-stroked-button mat-button-base mat-primary"
+                color="primary"
+                mat-stroked-button=""
+                data-action="show-data"
+                disabled>
+                <span class="mat-button-wrapper">Show Data</span>
+              </button>
+            </div>
+
+            <!-- Source / Target panes -->
+            <div class="gridWrap posRel">
+              <!-- LEFT: Source -->
+              <div class="ccMapWLft disInline wid40 mt10">
+                <label class="lblArt">Source Artwork:</label>
+                <mat-form-field appearance="outline"
+                  class="ml20 mat-form-field mat-primary mat-form-field-type-mat-input mat-form-field-appearance-outline"
+                  floatlabel="never">
+                  <div class="mat-form-field-wrapper">
+                    <div class="mat-form-field-flex">
+                      <div class="mat-form-field-outline">
+                        <div class="mat-form-field-outline-start"></div>
+                        <div class="mat-form-field-outline-gap"></div>
+                        <div class="mat-form-field-outline-end"></div>
+                      </div>
+                      <div class="mat-form-field-infix">
+                        <input autocomplete="off"
+                          class="mat-input-element mat-form-field-autofill-control"
+                          placeholder="Search"
+                          id="mat-input-left"
+                          data-role="left-search"
+                          aria-invalid="false"
+                          aria-required="false" />
+                      </div>
+                    </div>
+                  </div>
+                </mat-form-field>
+                <div class="artWrklist mt10">
+                  <div class="artWlist floatLeft">
+                    <div class="tblHeader">
+                      <div class="disInline slWrap">
+                        <mat-checkbox class="mat-checkbox mat-primary"
+                          color="primary"
+                          id="mat-checkbox-left-all"
+                          data-role="left-select-all">
+                          <label class="mat-checkbox-layout"
+                            for="mat-checkbox-left-all-input">
+                            <div class="mat-checkbox-inner-container">
+                              <input class="mat-checkbox-input cdk-visually-hidden"
+                                type="checkbox"
+                                id="mat-checkbox-left-all-input"
+                                tabindex="0"
+                                aria-checked="false" />
+                              <div class="mat-checkbox-frame"></div>
+                              <div class="mat-checkbox-background">
+                                <svg class="mat-checkbox-checkmark"
+                                  viewBox="0 0 24 24">
+                                  <path d="M4.1,12.7 9,17.6 20.3,6.3"
+                                    fill="none" stroke="white"></path>
+                                </svg>
+                              </div>
+                            </div>
+                            <span class="mat-checkbox-label"
+                              ><span style="display:none">&nbsp;</span></span>
+                          </label>
+                        </mat-checkbox>
+                      </div>
+                      <div class="disInline">Source Artwork</div>
+                    </div>
+                    <cdk-virtual-scroll-viewport
+                      class="cdkWrap cdk-virtual-scroll-viewport cdk-virtual-scroll-orientation-vertical"
+                      data-role="left-viewport">
+                      <div class="cdk-virtual-scroll-content-wrapper"
+                        data-role="left-rows"
+                        style="transform: translateY(0px);"></div>
+                      <div class="cdk-virtual-scroll-spacer"
+                        data-role="left-spacer"
+                        style="height: 0px;"></div>
+                    </cdk-virtual-scroll-viewport>
+                    <div class="tblFooter" data-role="left-footer">0 of 0 artworks selected</div>
+                  </div>
+                </div>
+                <button class="copyrightbtn mat-stroked-button mat-button-base mat-primary"
+                  color="primary"
+                  mat-stroked-button=""
+                  data-action="transfer-right">
+                  <span class="mat-button-wrapper">Transfer Right</span>
+                </button>
+              </div>
+
+              <!-- RIGHT: Target -->
+              <div class="ccMapWRgt disInline wid45 mt10">
+                <label class="lblArt">Target Artwork:</label>
+                <mat-form-field appearance="outline"
+                  class="ml20 mat-form-field mat-primary mat-form-field-type-mat-input mat-form-field-appearance-outline"
+                  floatlabel="never">
+                  <div class="mat-form-field-wrapper">
+                    <div class="mat-form-field-flex">
+                      <div class="mat-form-field-outline">
+                        <div class="mat-form-field-outline-start"></div>
+                        <div class="mat-form-field-outline-gap"></div>
+                        <div class="mat-form-field-outline-end"></div>
+                      </div>
+                      <div class="mat-form-field-infix">
+                        <input autocomplete="off"
+                          class="mat-input-element mat-form-field-autofill-control"
+                          placeholder="Search"
+                          id="mat-input-right"
+                          data-role="right-search"
+                          aria-invalid="false"
+                          aria-required="false" />
+                      </div>
+                    </div>
+                  </div>
+                </mat-form-field>
+                <div class="artWrklist mt10">
+                  <div class="artWlist floatLeft">
+                    <div class="tblHeader">
+                      <div class="disInline">Target Artwork</div>
+                    </div>
+                    <cdk-virtual-scroll-viewport
+                      class="cdkWrap cdk-virtual-scroll-viewport cdk-virtual-scroll-orientation-vertical"
+                      data-role="right-viewport">
+                      <div class="cdk-virtual-scroll-content-wrapper"
+                        data-role="right-rows"
+                        style="transform: translateY(0px);"></div>
+                      <div class="cdk-virtual-scroll-spacer"
+                        data-role="right-spacer"
+                        style="height: 0px;"></div>
+                    </cdk-virtual-scroll-viewport>
+                    <div class="tblFooter" data-role="right-footer">0 transferred</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </app-root>
+  </div>
+
+  <!-- The cdk-overlay-container that mat-select panels render into -->
+  <div class="cdk-overlay-container" id="cdk-overlay-container"></div>
+
+  <!-- Login overlay (initially shown) -->
+  <div id="loginOverlay" data-testid="login-form">
+    <form id="loginForm">
+      <h2>Sign in</h2>
+      <input id="loginUser" placeholder="Username" value="tech@parallelloop.ai" />
+      <input id="loginPass" placeholder="Password" type="password" value="demo" />
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
