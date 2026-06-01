@@ -1564,6 +1564,36 @@ class SelectOptionSpec(BaseModel):
     -- is structurally impossible under exact_only / alias /
     current_options. Only legacy_fuzzy retains the dangerous path."""
 
+    known_options: list["OptionSnapshot"] = Field(default_factory=list)
+    """2026-06-02 batch 2/B2.2: the full universe of options seen at
+    record time, unioned from every contributing event's
+    ``TraceEvent.options_seen``. For Angular mat-select clusters the
+    grabber emits options_seen on the panel-open click; the annotator
+    folds them here so a planner/LLM clarify step can offer the labels
+    seen at record time, and so the runner can validate operator
+    inputs against the known universe. Separate from ``options_snapshot``
+    (which lives on the native <select> fingerprint) -- this is the
+    custom-widget (mat-select / cdk-overlay) universe captured ACROSS
+    events. Empty for legacy skills."""
+
+    search_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 batch 2/B2.4: input element inside the picker / panel
+    that filters the option list. Captured when the picker exposes a
+    search box (mat-select with mat-autocomplete, mat-select with a
+    `searchable` panel). When ``require_search`` is True, the runner
+    MUST search-by-label-then-click for replay rather than clicking the
+    recorded option id-template; this avoids the brittle id-templated
+    click when the option's label changed but the row text is stable."""
+
+    require_search: bool = False
+    """2026-06-02 batch 2/B2.4: when True, the runner enforces the
+    mandatory-search reach path (type the LABEL into ``search_fp``,
+    wait for the row, click). The annotator sets this when a search
+    input was observed in the cluster OR when the picker DOM exposes a
+    search box. With ``require_search=True`` and no ``search_fp``, the
+    runner FAILS the step with ``error_kind='search_required_no_search_fp'``
+    rather than silently falling back to direct-click."""
+
 
 class DependencyChain(BaseModel):
     """WI-18: declares a chain of parent->child select dependencies.
@@ -2477,6 +2507,37 @@ class SetSelectionSpec(BaseModel):
     leaf), the path from root to this picker. Audit-only -- describes
     the structural relationship for operator review UI. Empty for flat
     pickers."""
+
+    require_search: bool = False
+    """2026-06-02 batch 2/B2.4: when True, the runner enforces the
+    mandatory-search reach path on this picker -- type the LABEL into
+    ``search_fp``, wait for the row, click. The annotator sets this
+    when ANY of these hold:
+      - the cluster contains ``input_change`` events on a ``Search`` input
+        (operator searched);
+      - the picker's DOM exposes a search box (``search_fp`` is not None);
+      - the picker is an ``ng-multiselect-dropdown`` (server-side filter);
+      - the picker is a virtualized list (``cdk-virtual-scroll-viewport``
+        fronted by a sibling search bar -- the Angular Show Data results
+        pattern).
+    With ``require_search=True`` and no ``search_fp``, the runner FAILS
+    the step with ``error_kind='search_required_no_search_fp'`` rather
+    than silently falling back to direct/scroll. No magic waits, no
+    silent fallback past the mandatory-search gate."""
+
+    depends_on_params: list[str] = Field(default_factory=list)
+    """2026-06-02 batch 2/B2.6: multi-parent cascading dependencies.
+
+    For pickers whose option set depends on MULTIPLE prior selections
+    (e.g. ``Country/Region`` options depend on both ``target_make`` and
+    ``target_model``), this is the ordered list of parent param names.
+    Supersedes the single-parent ``depends_on`` field when set; the
+    annotator's ``_detect_cascading_select`` emits this when a child
+    picker's network request carries query parameters bound to multiple
+    prior selections.
+
+    The runner waits for ALL parent params to be set before reconciling
+    this picker. Empty for flat / single-parent pickers."""
 
 
 class SkillStep(BaseModel):
