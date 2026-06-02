@@ -285,6 +285,133 @@ class PlannerOutput(BaseModel):
     notes: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# 2026-06-02 final batch item 4: clarify questions with available values
+# ---------------------------------------------------------------------------
+
+# Cap the per-question option list. Above this, switch to allow_custom_answer
+# and offer a sample so the operator can either pick or type.
+_CLARIFY_OPTIONS_CAP = 15
+
+
+def _build_clarify_questions_for_missing_params(
+    *,
+    skill: SkillFile,
+    provided_params: dict[str, Any],
+) -> list[ClarifyQuestion]:
+    """Generate one ClarifyQuestion per required skill param whose value
+    is missing or invalid.
+
+    Item 4 contract:
+      - The question text uses the param's accessible_name (the human
+        widget label captured at record time) when present, falling
+        back to ``semantic`` / ``name``.
+      - When the param has ``label_options`` (mat-select known_options
+        or set_selection captured option labels), each label becomes a
+        ClarifyOption(value=label, label=label).
+      - When more than _CLARIFY_OPTIONS_CAP options exist, the question
+        sets ``allow_custom_answer=True`` and the operator can type a
+        custom value the runner will reconcile against live options
+        (refresh_options_after path, item 2).
+      - Cascading params (declared ``depends_on=[parent1, parent2, ...]``)
+        are queued AFTER their parents in the returned list so the
+        operator answers in topological order. Parents missing in
+        ``provided_params`` block their child's question -- the planner
+        re-asks the child once the parent is filled.
+
+    Returns an empty list when no required param needs clarifying.
+    """
+    if not skill.parameters:
+        return []
+
+    # Sort topologically so parents come first (cycles broken by stable
+    # insertion order).
+    ordered: list[tuple[int, Any]] = []
+    seen: set[str] = set()
+
+    def _emit(p: Any) -> None:
+        if p.name in seen:
+            return
+        # Parents first.
+        for parent in (p.depends_on or []):
+            parent_p = next(
+                (x for x in skill.parameters if x.name == parent), None
+            )
+            if parent_p is not None and parent_p.name not in seen:
+                _emit(parent_p)
+        seen.add(p.name)
+        ordered.append((len(ordered), p))
+
+    for p in skill.parameters:
+        _emit(p)
+
+    out: list[ClarifyQuestion] = []
+    for _, p in ordered:
+        if not p.required:
+            continue
+        # Skip when the operator already provided a value AND it's
+        # non-empty.
+        provided = provided_params.get(p.name)
+        if provided not in (None, "", [], {}):
+            # If label_options are declared and the provided value
+            # isn't in them, the planner could re-ask -- but for v1 we
+            # respect the operator's pick and let the runner's
+            # refresh-after path consult live options (item 2). Stay
+            # silent here so we don't double-ask.
+            continue
+
+        # Don't ask BEFORE the parents are resolved. Cascading model
+        # picks depend on year+make; the planner queues the model
+        # question for after year+make are answered.
+        unresolved_parents = [
+            parent for parent in (p.depends_on or [])
+            if provided_params.get(parent) in (None, "", [], {})
+        ]
+        if unresolved_parents:
+            # Skip on this round; once parents are filled the planner
+            # will re-emit the child.
+            continue
+
+        # Question text. Prefer accessible_name (captured at record
+        # time -- 'Year', 'Target Model*:') then semantic (description)
+        # then the bare param name.
+        label = (
+            getattr(p, "accessible_name", None)
+            or p.semantic
+            or p.name.replace("_", " ").title()
+        )
+        # Strip required-marker ("*:" -> "").
+        import re as _re
+        label_clean = _re.sub(r"[*:\s]+$", "", label).strip()
+        question_text = f"Which {label_clean}?"
+
+        # Options from label_options (item 4 contract).
+        label_options = list(p.label_options or [])
+        capped = label_options[:_CLARIFY_OPTIONS_CAP]
+        allow_custom = (
+            len(label_options) > _CLARIFY_OPTIONS_CAP
+            or len(label_options) == 0
+        )
+        if allow_custom and label_options:
+            question_text = (
+                f"Which {label_clean}? Pick one or type your own."
+            )
+
+        options = [
+            ClarifyOption(value=lbl, label=lbl) for lbl in capped
+        ]
+        out.append(
+            ClarifyQuestion(
+                id=f"q-{uuid.uuid4().hex[:6]}",
+                question=question_text,
+                options=options,
+                allow_custom_answer=allow_custom,
+                priority="high",
+            )
+        )
+    return out
+
+
 def _build_destructive_actions(
     plan_steps: list[PlanStep], skills_by_id: dict[str, SkillFile]
 ) -> list[DestructiveAction]:
@@ -379,10 +506,46 @@ def _validate_planner_output(
         )
 
     if coverage_misses:
-        # The plan is unusable as-is — at least one step is missing
-        # required input. Demote to a clarify question naming exactly
-        # what's missing, so the operator sees the gap before approval
-        # instead of after a runtime crash.
+        # 2026-06-02 final batch item 4: instead of a generic "needs
+        # values for X" question with no options, surface a per-param
+        # ClarifyQuestion whose options enumerate the captured
+        # label_options. The operator picks from the recorded universe
+        # (e.g. "Which Year? [2023, 2024, ...]") rather than typing
+        # blind. Cascading params (depends_on) are queued after their
+        # parents; child questions skipped until parents are answered.
+        targeted: list[ClarifyQuestion] = []
+        seen_questions: set[str] = set()
+        for step_i, skill_id, missing in coverage_misses:
+            skill_obj = skills_by_id.get(skill_id)
+            if skill_obj is None:
+                continue
+            qs = _build_clarify_questions_for_missing_params(
+                skill=skill_obj,
+                # Per-step params for THIS skill's coverage check.
+                provided_params=(
+                    candidate.plan_steps[step_i - 1].params
+                    if step_i - 1 < len(candidate.plan_steps)
+                    else {}
+                ),
+            )
+            for q in qs:
+                # Dedupe by question text in case multiple steps share
+                # the same param.
+                if q.question in seen_questions:
+                    continue
+                seen_questions.add(q.question)
+                targeted.append(q)
+
+        if targeted:
+            # Cap at 5 (per the protocol budget) — most-important first.
+            return (
+                None,
+                targeted[:5],
+                "; ".join(rejected) if rejected else None,
+            )
+
+        # Fallback: no label_options anywhere -- emit the generic
+        # description so the operator at least sees what's missing.
         lines: list[str] = []
         for step_i, skill_id, missing in coverage_misses:
             lines.append(

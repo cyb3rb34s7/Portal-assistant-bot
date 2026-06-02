@@ -311,6 +311,444 @@ def infer_param_binding(ev: TraceEvent, label: str) -> Optional[ParamBinding]:
     return ParamBinding(name=name, type="string", mode="whole")
 
 
+# ---- 2026-06-02 batch 2/B2.1: labeled widget -> param ---------------------
+
+
+def _snake_from_label(label: Optional[str]) -> Optional[str]:
+    """Derive a snake_case param name from a human label like
+    ``"Target Model*: "`` -> ``target_model``.
+
+    Strips trailing punctuation (``:``, ``*``, ``?``) and whitespace,
+    then maps non-alphanumeric runs to ``_`` and lowercases. Empty /
+    None input returns None so callers can skip the binding.
+    """
+    if not label:
+        return None
+    s = str(label).strip()
+    # Strip trailing required-marker / punctuation runs.
+    s = re.sub(r"[\s\*:\?,;]+$", "", s)
+    # Strip leading punctuation too just in case.
+    s = re.sub(r"^[\s\*:\?,;]+", "", s)
+    if not s:
+        return None
+    # Snake-case: non-alnum runs -> _.
+    out = re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_").lower()
+    return out or None
+
+
+_LABELED_WIDGET_TAGS: frozenset[str] = frozenset({
+    "mat-select",
+    "mat-checkbox",
+    "mat-slide-toggle",
+    "mat-radio-button",
+    "mat-radio-group",
+    "ng-multiselect-dropdown",
+    "ng-select",
+})
+
+
+def _is_labeled_widget_root(fp: Optional[ElementFingerprint]) -> bool:
+    """Return True iff the fingerprint targets one of the Angular /
+    custom-widget semantic roots that the batch-1 grabber lifts clicks
+    onto. These widgets are the candidates for B2.1's
+    ``one-param-per-labeled-widget`` rule.
+    """
+    if fp is None:
+        return False
+    tag = (fp.tag or "").lower()
+    return tag in _LABELED_WIDGET_TAGS
+
+
+_SEARCH_HINT_RE = re.compile(r"\bsearch\b", re.I)
+
+
+def _looks_like_search_input(fp: Optional[ElementFingerprint]) -> bool:
+    """Heuristic: this input element is a SEARCH-style filter field.
+
+    Signals (any one suffices):
+      - placeholder contains "Search" (most common);
+      - aria_label / accessible_name contains "search";
+      - test_id / element_id / name carries "search" (rare but seen);
+      - className-style hints aren't on the fingerprint, but a `-search`
+        suffix in the testid is the recorded grabber convention.
+
+    Used by B2.4 (require_search detection on set_selection / select_option
+    clusters) and B2.5 (search-near-list detection for virtualized lists).
+    """
+    if fp is None:
+        return False
+    placeholder = (fp.placeholder or "").strip()
+    if placeholder and _SEARCH_HINT_RE.search(placeholder):
+        return True
+    aria = (fp.aria_label or "").strip()
+    if aria and _SEARCH_HINT_RE.search(aria):
+        return True
+    acc = (fp.accessible_name or "").strip()
+    if acc and _SEARCH_HINT_RE.search(acc):
+        return True
+    for cand in (fp.test_id, fp.element_id, fp.name):
+        if cand and _SEARCH_HINT_RE.search(str(cand)):
+            return True
+    return False
+
+
+_VIRTUAL_LIST_TAGS: frozenset[str] = frozenset({
+    "cdk-virtual-scroll-viewport",
+})
+
+_VIRTUAL_LIST_CLASS_HINTS: tuple[str, ...] = (
+    "cdk-virtual-scroll",
+    "dropdown-list",
+)
+
+
+def _fp_is_virtualized_list(fp: Optional[ElementFingerprint]) -> bool:
+    """Return True iff the fingerprint targets a virtualized list shell
+    (cdk-virtual-scroll-viewport, or a [role=listbox] / dropdown-list
+    container with virtual-scroll hints in the chain).
+    """
+    if fp is None:
+        return False
+    tag = (fp.tag or "").lower()
+    if tag in _VIRTUAL_LIST_TAGS:
+        return True
+    # Walk the ancestor chain for virtual-scroll hints.
+    for anc in (fp.ancestor_chain or []):
+        if not isinstance(anc, dict):
+            continue
+        atag = (anc.get("tag") or "").lower()
+        if atag in _VIRTUAL_LIST_TAGS:
+            return True
+        cls = anc.get("className") or ""
+        if isinstance(cls, str):
+            for hint in _VIRTUAL_LIST_CLASS_HINTS:
+                if hint in cls:
+                    return True
+    return False
+
+
+def _detect_search_box_for_list(
+    list_fp: Optional[ElementFingerprint],
+    events: list[TraceEvent],
+) -> Optional[ElementFingerprint]:
+    """B2.5: 'search-near-list' detection.
+
+    Given a fingerprint that targets (or is inside) a virtualized list
+    / [role=listbox] / dropdown-list, scan the recorded events for a
+    SEPARATE search-style input whose ancestor chain shares an ancestor
+    with the list's chain (a sibling/wrapper search bar). Returns the
+    matched search input's fingerprint, or None.
+
+    Used by B2.5 to mark set_selection specs as ``require_search=True``
+    even when the operator never touched the search box (mandatory at
+    replay, because the cdk-virtual-scroll list re-renders top rows on
+    each filter and direct/scroll-into-view can't reach an unrendered
+    target).
+    """
+    if list_fp is None:
+        return None
+    # Collect ancestor identities of the list (className snippets +
+    # tag/role markers) so we can find a sibling input.
+    list_chain_ids: set[str] = set()
+    for anc in (list_fp.ancestor_chain or []):
+        if not isinstance(anc, dict):
+            continue
+        for key in ("testId", "id"):
+            v = anc.get(key)
+            if v:
+                list_chain_ids.add(str(v))
+    # 2026-06-02 final batch: when the list is a cdk-virtual-scroll
+    # viewport, REJECT any search input that lives inside an
+    # ng-multiselect-dropdown / ng-select — those belong to a DIFFERENT
+    # picker (the country dropdown) and false-matching them onto the
+    # left-rows cluster makes the e2e step 5/6 use the wrong search
+    # field. Likewise reject mat-select-internal search inputs.
+    def _input_inside_foreign_widget(fp: ElementFingerprint) -> bool:
+        for anc in (fp.ancestor_chain or []):
+            if not isinstance(anc, dict):
+                continue
+            atag = (anc.get("tag") or "").lower()
+            if atag in (
+                "ng-multiselect-dropdown",
+                "ng-select",
+                "mat-select",
+            ):
+                # Foreign widget ancestor -- only acceptable if the list
+                # itself ALSO sits inside the same widget.
+                # Look for the same tag in list_fp's ancestor chain.
+                for lanc in (list_fp.ancestor_chain or []):
+                    if not isinstance(lanc, dict):
+                        continue
+                    if (lanc.get("tag") or "").lower() == atag:
+                        return False
+                # The list isn't inside this widget -- reject.
+                return True
+        return False
+
+    # Walk events looking for a search-style input whose chain shares
+    # an ancestor identity with the list.
+    for ev in events:
+        fp = ev.fingerprint
+        if fp is None:
+            continue
+        if not _looks_like_search_input(fp):
+            continue
+        # The input itself should be DIFFERENT from the list (separate
+        # element).
+        if fp.test_id and list_fp.test_id and fp.test_id == list_fp.test_id:
+            continue
+        # Reject inputs that belong to a different custom widget.
+        if _input_inside_foreign_widget(fp):
+            continue
+        # If they share a chain ancestor identity, accept.
+        if list_chain_ids:
+            for anc in (fp.ancestor_chain or []):
+                if not isinstance(anc, dict):
+                    continue
+                for key in ("testId", "id"):
+                    v = anc.get(key)
+                    if v and str(v) in list_chain_ids:
+                        return fp
+        else:
+            # No usable ancestor IDs on the list -- accept the search
+            # input whose own className mentions virtual-scroll OR which
+            # sits inside the list's tag class hint.
+            for anc in (fp.ancestor_chain or []):
+                if not isinstance(anc, dict):
+                    continue
+                cls = anc.get("className") or ""
+                if isinstance(cls, str):
+                    for hint in _VIRTUAL_LIST_CLASS_HINTS + (
+                        "dropdown-list", "multiselect-dropdown",
+                    ):
+                        if hint in cls:
+                            return fp
+    return None
+
+
+def _widget_param_type_and_codec(
+    fp: Optional[ElementFingerprint],
+) -> tuple[str, str]:
+    """Pick a (type, codec) pair for a labeled-widget param.
+
+    - ``mat-checkbox`` / ``mat-slide-toggle``: boolean.
+    - ``mat-radio-*``: enum (single choice).
+    - ``mat-select``: enum when options_seen exists, else string.
+    - ``ng-multiselect-dropdown`` / ``ng-select`` (multi): string_list.
+    - default: string.
+    """
+    if fp is None:
+        return ("string", "raw")
+    tag = (fp.tag or "").lower()
+    if tag in ("mat-checkbox", "mat-slide-toggle"):
+        return ("boolean", "boolean")
+    if tag in ("mat-radio-button", "mat-radio-group"):
+        return ("enum", "enum_label")
+    if tag == "mat-select":
+        return ("enum", "enum_label")
+    if tag in ("ng-multiselect-dropdown", "ng-select"):
+        return ("string_list", "raw")
+    return ("string", "raw")
+
+
+def _declare_labeled_widget_params(
+    steps: list[SkillStep],
+    declared_params: dict[str, SkillParam],
+    *,
+    events: Optional[list[TraceEvent]] = None,
+    console: Optional[Console] = None,
+) -> None:
+    """B2.1 + B2.2 + B2.3: declare a SkillParam for every CLICKED labeled
+    widget (mat-select / mat-checkbox / ng-multiselect-dropdown root)
+    that isn't already absorbed by a specialized spec.
+
+    Walks the constructed steps in order so a later click on the same
+    widget overwrites the example with the LATEST captured
+    ``current_value`` (B2.3 -- the displayed value after the operator
+    picked an option). Param name is derived from
+    ``fingerprint.accessible_name`` via :func:`_snake_from_label`.
+
+    Specialized clusters that ALREADY own the click (set_selection,
+    select_option, select_autocomplete, fill_submit) are skipped --
+    those clusters already declared their own params.
+    """
+    _SKIP_ACTIONS = frozenset({
+        "set_selection",
+        "select_option",
+        "select_autocomplete",
+        "fill_submit",
+        "change",
+        "upload",
+        "submit",
+        "date_select",
+        "slider_set",
+        "rich_text_set",
+        "shortcut",
+        "drag_drop",
+        "scroll_until",
+        "navigate",
+        "key",
+        "download",
+        "toggle_state",
+    })
+    # Track widget identity -> the latest current_value seen so multiple
+    # clicks on the SAME widget (open + close + pick) collapse onto the
+    # most recent display value.
+    latest_value_by_widget: dict[str, Optional[str]] = {}
+    binding_by_widget: dict[str, str] = {}
+
+    def _widget_identity(fp: ElementFingerprint) -> str:
+        return (
+            fp.test_id
+            or fp.element_id
+            or fp.name
+            or (fp.css_path or fp.xpath or fp.tag or "widget")
+        ) or "widget"
+
+    for step in steps:
+        if step.action in _SKIP_ACTIONS:
+            continue
+        if step.action != "click":
+            continue
+        fp = step.fingerprint
+        if fp is None or not _is_labeled_widget_root(fp):
+            continue
+        # Need a label to derive a stable, semantic param name.
+        pname = _snake_from_label(fp.accessible_name)
+        if not pname:
+            # Try aria_label / placeholder as secondary fallbacks --
+            # both are also stable, semantic signals when accessible_name
+            # is missing.
+            pname = _snake_from_label(fp.aria_label) or _snake_from_label(
+                fp.placeholder
+            )
+        if not pname:
+            continue
+        # Avoid colliding with an existing binding (e.g. set_selection
+        # 'country' param would conflict with a labeled
+        # ng-multiselect-dropdown's 'country_region'). Both are valid
+        # surfaces; the set_selection one wins because it has the
+        # full reach mechanism. Use the param name verbatim when free;
+        # else suffix _widget to make it visible.
+        if pname in declared_params and not declared_params[pname].provenance:
+            # Already declared. We MAY still want to update the example
+            # with the latest current_value (B2.3). Read the existing
+            # param and update its example if currently empty.
+            if fp.current_value:
+                existing = declared_params[pname]
+                if not existing.example:
+                    existing.example = fp.current_value
+            continue
+        widget_id = _widget_identity(fp)
+        # Latest current_value wins (B2.3): a later click on the SAME
+        # widget reflects the post-pick display value.
+        if fp.current_value:
+            latest_value_by_widget[widget_id] = fp.current_value
+        # If we haven't bound this widget yet (first click), seed the
+        # binding.
+        if widget_id not in binding_by_widget:
+            binding_by_widget[widget_id] = pname
+        # Stamp a param binding on the step so the runner knows this
+        # click is bound to a param.
+        if step.param_binding is None:
+            step.param_binding = ParamBinding(
+                name=pname,
+                type=(
+                    "file_path"
+                    if (fp.input_type or "") == "file"
+                    else "string"
+                ),
+                mode="whole",
+            )
+
+    # Now declare params for each widget binding with the latest
+    # current_value as the example.
+    seen_widgets: set[str] = set()
+    for step in steps:
+        if step.action != "click":
+            continue
+        fp = step.fingerprint
+        if fp is None or not _is_labeled_widget_root(fp):
+            continue
+        widget_id = _widget_identity(fp)
+        if widget_id in seen_widgets:
+            continue
+        pname = binding_by_widget.get(widget_id)
+        if not pname:
+            continue
+        seen_widgets.add(widget_id)
+        if pname in declared_params:
+            # Update example with the latest current_value (B2.3).
+            existing = declared_params[pname]
+            cv = latest_value_by_widget.get(widget_id)
+            if cv and not existing.example:
+                existing.example = cv
+            continue
+        ptype, pcodec = _widget_param_type_and_codec(fp)
+        # Build enum_options from the step's known sources:
+        # 1. set_selection spec's known_options when this click anchors
+        #    a set_selection cluster (handled elsewhere).
+        # 2. fingerprint.options_snapshot (native <select>; unlikely on
+        #    a mat-select click but harmless).
+        # 3. cluster-derived options (mat-select options_seen folded by
+        #    select_option spec when present).
+        # 4. union of options_seen across every raw event mapped to this
+        #    step (mat-select panel-open clicks where the cluster did
+        #    NOT fire -- e.g. a single click on a labeled mat-select with
+        #    options_seen populated by the batch-1 grabber).
+        enum_options: Optional[list[OptionSnapshot]] = None
+        if step.select_option is not None and step.select_option.known_options:
+            enum_options = list(step.select_option.known_options)
+        elif fp.options_snapshot:
+            enum_options = list(fp.options_snapshot)
+        elif events is not None and step.provenance is not None:
+            # Union options_seen across the step's raw events.
+            wanted_ids = set(step.provenance.raw_event_ids or [])
+            seen_map: dict[str, str] = {}
+            for ev in events:
+                if not ev.event_id or ev.event_id not in wanted_ids:
+                    continue
+                for opt in (getattr(ev, "options_seen", None) or []):
+                    oid = getattr(opt, "value", None) if not isinstance(opt, dict) else opt.get("value")
+                    olabel = getattr(opt, "label", None) if not isinstance(opt, dict) else opt.get("label")
+                    if oid is None:
+                        continue
+                    oid = str(oid)
+                    olabel = str(olabel).strip() if olabel else ""
+                    if oid not in seen_map or (not seen_map[oid] and olabel):
+                        seen_map[oid] = olabel or oid
+            if seen_map:
+                enum_options = [
+                    OptionSnapshot(value=v, label=l or v)
+                    for v, l in seen_map.items()
+                ]
+        # B2.3: example is the latest current_value when present, else
+        # the step's recorded text (a click on a checkbox carries the
+        # row's visible label as text).
+        cv = latest_value_by_widget.get(widget_id)
+        example = cv or fp.text or None
+        if ptype == "boolean":
+            # For checkboxes / toggles, normalize "true"/"false" examples
+            # (current_value carries the aria-checked boolean text).
+            if example and example.lower() in ("true", "false", "1", "0"):
+                example = "true" if example.lower() in ("true", "1") else "false"
+            else:
+                example = "false"
+        declared_params[pname] = SkillParam(
+            name=pname,
+            type=ptype,  # type: ignore[arg-type]
+            codec=pcodec,  # type: ignore[arg-type]
+            description=(
+                f"Labeled widget parameter for step {step.index}: "
+                f"{step.semantic_label or fp.accessible_name or fp.tag}"
+            ),
+            example=example,
+            required=True,
+            enum_options=enum_options,
+        )
+    _ = console  # reserved -- could log a summary for non-auto mode
+
+
 def infer_gate(label: str, ev: TraceEvent) -> bool:
     if GATE_KEYWORDS.search(label or ""):
         return True
@@ -1596,28 +2034,110 @@ def _build_select_autocomplete_spec(
     return spec, query_value, query_input_fp
 
 
+def _is_mat_select_root_fp(fp: Optional[ElementFingerprint]) -> bool:
+    """B3 (2026-06-02): True iff the fingerprint targets an Angular
+    Material ``mat-select`` widget root (resolved by the grabber's
+    semantic-root pass) -- the panel-open click.
+
+    Recognized by tag=='mat-select' (the strongest signal; the grabber's
+    widget-root resolver maps clicks anywhere inside the trigger to the
+    mat-select itself). A role='listbox' fallback is intentionally NOT
+    used here because plain role=listbox is too broad (Bootstrap pickers,
+    custom comboboxes) -- we want the Angular pattern specifically.
+    """
+    if fp is None:
+        return False
+    tag = (fp.tag or "").lower()
+    return tag == "mat-select"
+
+
+def _is_mat_option_click_fp(fp: Optional[ElementFingerprint]) -> bool:
+    """B3 (2026-06-02): True iff the fingerprint targets a mat-option row
+    (or an element INSIDE one, e.g. the inner ``<span>`` carrying the
+    option text). The grabber's widget-root resolver doesn't lift the
+    click onto the mat-option itself, so we look at the ancestor chain
+    for a ``mat-option`` parent or an element_id matching ``mat-option-*``.
+    """
+    if fp is None:
+        return False
+    tag = (fp.tag or "").lower()
+    if tag == "mat-option":
+        return True
+    # css_path heuristic: e.g. ``mat-option#mat-option-3 > span``.
+    cp = (fp.css_path or "").lower()
+    if "mat-option" in cp:
+        return True
+    # element_id pattern: ``mat-option-3``.
+    eid = fp.element_id or ""
+    if eid.startswith("mat-option-"):
+        return True
+    # Walk the ancestor chain for a mat-option ancestor.
+    for anc in (fp.ancestor_chain or []):
+        if not isinstance(anc, dict):
+            continue
+        atag = (anc.get("tag") or "").lower()
+        if atag == "mat-option":
+            return True
+        aid = anc.get("id") or ""
+        if isinstance(aid, str) and aid.startswith("mat-option-"):
+            return True
+    return False
+
+
+def _mat_option_id_from_fp(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Extract the ``mat-option-N`` id from a click fingerprint.
+
+    Looks at the fingerprint itself first (the option container), then the
+    nearest mat-option ancestor (when the click landed on an inner span).
+    """
+    if fp is None:
+        return None
+    if fp.element_id and fp.element_id.startswith("mat-option-"):
+        return fp.element_id
+    for anc in (fp.ancestor_chain or []):
+        if not isinstance(anc, dict):
+            continue
+        aid = anc.get("id")
+        if isinstance(aid, str) and aid.startswith("mat-option-"):
+            return aid
+    return None
+
+
+def _mat_select_identity(fp: Optional[ElementFingerprint]) -> Optional[str]:
+    """Stable identity for a mat-select widget root -- its element_id
+    when present (e.g. ``mat-select-year``), else the accessible_name."""
+    if fp is None:
+        return None
+    return fp.element_id or fp.accessible_name
+
+
 def _detect_select_option_clusters(
     events: list[TraceEvent],
     causality: dict[str, Any],
     consumed: set[str],
 ) -> list[SemanticCluster]:
-    """WI-17: detect a native <select> change with options_snapshot
-    captured at record time -> ONE select_option cluster.
+    """WI-17 + B3 (2026-06-02): detect a single-select-option change.
 
-    The grabber's WI-03 control_kind ``select_single`` + the
-    options_snapshot on the fingerprint give us everything we need.
-    The detector matches input_change events whose fingerprint declares
-    ``select_single`` (a single-select native control) AND carries a
-    non-empty options_snapshot.
+    Two cluster shapes:
 
-    Cascading parent select (WI-18) is detected separately because it
-    needs the child-options-refresh-after-request causal pattern.
-    Plain native selects with no causal-network signal land here.
+      (a) Native ``<select>``: an input_change whose fingerprint declares
+          ``control_kind=select_single`` AND carries a non-empty
+          options_snapshot. Single event -> single cluster.
+
+      (b) Angular ``mat-select`` (B3): a click on the mat-select widget
+          root (tag='mat-select') followed by the IMMEDIATE NEXT click on
+          a mat-option row (or an inner span/text). The grabber captures
+          ``options_seen`` on the panel-open click; the option-click
+          carries the option's accessible_name as the chosen label.
+
+    Cascading parent select (WI-18) is detected separately -- it needs
+    the child-options-refresh-after-request causal pattern.
     """
     by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
     user_actions: set[str] = set(causality.get("user_actions") or [])
     clusters: list[SemanticCluster] = []
 
+    # ---- (a) Native <select> single-select.
     for ev in events:
         if ev.event_id is None or ev.event_id in consumed:
             continue
@@ -1626,14 +2146,10 @@ def _detect_select_option_clusters(
         fp = ev.fingerprint
         if fp is None:
             continue
-        # Only fold when the recording marked it a native single-select
-        # AND captured an option snapshot. select_multiple goes through
-        # the set_selection detector (WI-19).
         if fp.control_kind != "select_single":
             continue
         if not fp.options_snapshot:
             continue
-        # Consume the single event into the cluster.
         consumed.add(ev.event_id)
         clusters.append(
             SemanticCluster(
@@ -1644,6 +2160,83 @@ def _detect_select_option_clusters(
                 alternatives_considered=["single_event"],
             )
         )
+
+    # ---- (b) Angular mat-select + mat-option panel-click pattern.
+    #
+    # Anchor on a click whose fingerprint resolves to tag='mat-select'.
+    # Find the IMMEDIATE NEXT non-observed event; accept it only if it's
+    # a click on a mat-option. If the next non-observed event is a
+    # different action (the operator closed the panel via outside click /
+    # navigated away), the open click stays uncollapsed -- the
+    # labeled-widget pass will still surface it as a param.
+    i = 0
+    n = len(events)
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.kind != "click"
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+        if not _is_mat_select_root_fp(ev.fingerprint):
+            i += 1
+            continue
+        # Look ahead for the option-click. Skip observed events
+        # (dom_mutation / network) -- those are the page's reaction to
+        # the panel-open and are part of THIS cluster's audit trail.
+        option_click: Optional[TraceEvent] = None
+        observed_between: list[str] = []
+        j = i + 1
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                observed_between.append(ne.event_id)
+                j += 1
+                continue
+            # Next non-observed event. Decide whether it's an
+            # option-click on this select's panel.
+            if (
+                ne.kind == "click"
+                and ne.event_id not in consumed
+                and _is_mat_option_click_fp(ne.fingerprint)
+            ):
+                option_click = ne
+            break
+        if option_click is None:
+            # Operator didn't pick an option after opening the panel
+            # (or the next event was something else). Leave the open
+            # click for the labeled-widget pass to surface as a param.
+            i += 1
+            continue
+        # Build the cluster. raw_event_ids: open click + observed events
+        # + option click, in causal order.
+        raw_ids: list[str] = [ev.event_id]
+        for oid in observed_between:
+            if oid not in raw_ids:
+                raw_ids.append(oid)
+        if option_click.event_id and option_click.event_id not in raw_ids:
+            raw_ids.append(option_click.event_id)
+        for rid in raw_ids:
+            consumed.add(rid)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="select_option",
+                # The OPTION click is the primary target -- the cluster
+                # represents picking THAT option; the open click is the
+                # gesture that revealed the panel.
+                primary_target_event_id=option_click.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+        i = j + 1 if option_click is not None else i + 1
     return clusters
 
 
@@ -1720,6 +2313,89 @@ def _detect_cascading_select(
     return chains
 
 
+# ---- 2026-06-02 batch 2/B2.6: multi-parent cascading detection -----------
+
+
+def _detect_multi_parent_dependencies(
+    events: list[TraceEvent],
+    causality: dict[str, Any],
+    child_event_id: str,
+    *,
+    parent_value_by_pname: dict[str, str],
+) -> tuple[list[str], Optional[str], Optional[TraceEvent]]:
+    """B2.6: detect MULTIPLE prior selections whose values appear as
+    query parameters of the network request that refreshed the child
+    picker's options.
+
+    Walks the events list looking for a network_request whose URL was
+    fired just before ``child_event_id`` and whose query string
+    contains values that match prior parent params'
+    (param_name, recorded_value) pairs.
+
+    Returns ``(depends_on_params, url_pattern, request_event)``.
+    - depends_on_params: ordered list of parent param names whose values
+      are URL query params for this child's option request (preserves
+      append order to keep the recorded sequence stable across runs);
+    - url_pattern: the request URL path stripped of query (the
+      ``option_source.url_pattern`` for the spec);
+    - request_event: the network_request itself.
+
+    Empty list + None when no multi-parent network request is found.
+    """
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    event_index = {
+        ev.event_id: i for i, ev in enumerate(events) if ev.event_id
+    }
+    child_i = event_index.get(child_event_id)
+    if child_i is None:
+        return ([], None, None)
+
+    # Walk BACKWARD from the child event looking for a network_request
+    # whose URL is closest in time and whose query string carries
+    # parent param values. Stop at the prior user_action (we don't want
+    # to cross interaction boundaries).
+    for j in range(child_i - 1, -1, -1):
+        ev = events[j]
+        if ev.kind not in ("network_request", "network_response"):
+            continue
+        if not ev.url:
+            continue
+        try:
+            path_only, _, query = ev.url.partition("?")
+        except Exception:
+            continue
+        if "=" not in (query or ""):
+            continue
+        # Parse query params as a flat dict of param_value strings.
+        observed_values: list[str] = []
+        for tok in (query or "").split("&"):
+            if "=" not in tok:
+                continue
+            _, _, val = tok.partition("=")
+            if val:
+                from urllib.parse import unquote
+                try:
+                    observed_values.append(unquote(val).strip())
+                except Exception:
+                    observed_values.append(val.strip())
+        if not observed_values:
+            continue
+        # Find which parent params' recorded values appear in the
+        # observed query values.
+        matched: list[str] = []
+        for pname, pval in parent_value_by_pname.items():
+            if not pval:
+                continue
+            for ov in observed_values:
+                if ov == pval or ov.lower() == pval.lower():
+                    if pname not in matched:
+                        matched.append(pname)
+                    break
+        if len(matched) >= 1:
+            return (matched, path_only, ev)
+    return ([], None, None)
+
+
 def _build_select_option_spec(
     cluster: SemanticCluster,
     events: list[TraceEvent],
@@ -1735,8 +2411,12 @@ def _build_select_option_spec(
     match_mode defaults to ``value`` (the safe default -- no fuzzy
     fallback). The annotator does NOT auto-populate aliases; aliases
     are operator-declared.
+
+    2026-06-02 batch 2/B2.2: also union every contributing event's
+    ``options_seen`` into ``known_options`` so the planner / runner
+    have the full universe seen at record time (mat-select panels
+    rendered while the operator browsed).
     """
-    _ = cluster
     _ = events
     _ = causality
     fp = ev.fingerprint
@@ -1749,12 +2429,96 @@ def _build_select_option_spec(
             if opt.value == recorded_value:
                 recorded_label = opt.label
                 break
+
+    # B3 (2026-06-02): mat-select cluster path -- the primary target is
+    # the mat-option click, which carries the option's label as
+    # accessible_name / text, and the option id (``mat-option-N``) in the
+    # fingerprint's element_id or ancestor chain. Lift these so the spec
+    # has both the recorded id (value) and the visible label.
+    if ev.kind == "click" and _is_mat_option_click_fp(fp):
+        opt_id = _mat_option_id_from_fp(fp)
+        opt_label = None
+        if fp is not None:
+            opt_label = (fp.accessible_name or fp.text or "").strip() or None
+        if opt_id and not recorded_value:
+            recorded_value = opt_id
+        if opt_label and not recorded_label:
+            recorded_label = opt_label
+        # For mat-select the match is label-indexed at replay -- the
+        # runner clicks the row whose visible text equals the label, not
+        # an opaque id template. Set match_mode="label" so the runner
+        # picks the right strategy.
+        _mat_select_match_mode = "label"
+    else:
+        _mat_select_match_mode = None
+
+    # B2.2: union options_seen across every event in this cluster (the
+    # mat-select panel-open clicks each carry the full rendered option
+    # list at that moment). First-label-wins so a later partial render
+    # doesn't overwrite a complete one.
+    by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
+    known_options_map: dict[str, str] = {}
+    for eid in cluster.raw_event_ids:
+        e = by_id.get(eid)
+        if e is None:
+            continue
+        seen = getattr(e, "options_seen", None) or []
+        for opt in seen:
+            oid = getattr(opt, "value", None) if not isinstance(opt, dict) else opt.get("value")
+            olabel = getattr(opt, "label", None) if not isinstance(opt, dict) else opt.get("label")
+            if oid is None:
+                continue
+            oid = str(oid)
+            olabel = str(olabel).strip() if olabel else ""
+            if oid not in known_options_map or (
+                not known_options_map[oid] and olabel
+            ):
+                known_options_map[oid] = olabel or oid
+    known_options = [
+        OptionSnapshot(value=oid, label=olabel or oid)
+        for oid, olabel in known_options_map.items()
+    ]
+    # If the option-click's recorded_label is still None but the
+    # current_value on the widget after the click matches one of the
+    # known_options' labels, lift that label as the recorded one.
+    if recorded_label is None and fp is not None:
+        cv = (fp.current_value or "").strip() if fp.current_value else ""
+        if cv:
+            for opt in known_options:
+                if (opt.label or "").strip() == cv:
+                    recorded_label = opt.label
+                    if not recorded_value:
+                        recorded_value = opt.value
+                    break
+
+    # B2.4: detect require_search from any search-input event in the
+    # cluster (mat-select with mat-autocomplete pattern: operator typed
+    # to filter the option list before clicking).
+    require_search = False
+    for eid in cluster.raw_event_ids:
+        e = by_id.get(eid)
+        if e is None or e.kind != "input_change":
+            continue
+        ifp = e.fingerprint
+        if ifp is None:
+            continue
+        if _looks_like_search_input(ifp):
+            require_search = True
+            break
+
     return SelectOptionSpec(
         recorded_value=recorded_value,
         recorded_label=recorded_label,
         options_snapshot=options_snapshot,
-        match_mode="value",
+        # B3 (2026-06-02): mat-select rows are label-indexed (the runner
+        # types the LABEL into the panel-search or finds the row by
+        # visible text). Default ``value`` for native <select>; ``label``
+        # for mat-select clusters where we know the row identity is the
+        # human-visible name.
+        match_mode=(_mat_select_match_mode or "value"),  # type: ignore[arg-type]
         aliases={},
+        known_options=known_options,
+        require_search=require_search,
     )
 
 
@@ -1978,6 +2742,322 @@ def _detect_set_selection_clusters(
             )
         )
         i = j
+
+    # ---- B3 (2026-06-02): ng-multiselect-dropdown pattern.
+    #
+    # Anchor: click whose fingerprint tag is ``ng-multiselect-dropdown``
+    # (or a CSS path containing it). Followed by any combination of:
+    #   - input_change events on a search-style input inside the same
+    #     widget (server-side filter),
+    #   - clicks on option ROWS (li.multiselect-item-checkbox, mat-
+    #     checkbox row, or any non-toggle click whose ancestor chain has
+    #     ng-multiselect-dropdown -- accessible_name carries the chosen
+    #     option label),
+    # terminated by either:
+    #   - another click on the widget root (close), OR
+    #   - a click whose ancestor chain does NOT include
+    #     ng-multiselect-dropdown (the operator moved on / outside click).
+    #
+    # The closing click and intervening observed events are folded for
+    # audit; the primary target is the LAST option-row click.
+    def _is_ng_multiselect_root_fp(fp: Optional[ElementFingerprint]) -> bool:
+        if fp is None:
+            return False
+        tag = (fp.tag or "").lower()
+        if tag in ("ng-multiselect-dropdown", "ng-select"):
+            return True
+        cp = (fp.css_path or "").lower()
+        # Anchor on a path that targets the widget root (not an inner
+        # descendant). Endswith heuristic keeps it from matching an
+        # interior search-input click that happens to share the path.
+        if cp.endswith("ng-multiselect-dropdown") or cp.endswith("ng-select"):
+            return True
+        return False
+
+    def _fp_inside_ng_multiselect(fp: Optional[ElementFingerprint]) -> bool:
+        if fp is None:
+            return False
+        if _is_ng_multiselect_root_fp(fp):
+            return True
+        cp = (fp.css_path or "").lower()
+        if "ng-multiselect-dropdown" in cp or "ng-select" in cp:
+            return True
+        for anc in (fp.ancestor_chain or []):
+            if not isinstance(anc, dict):
+                continue
+            atag = (anc.get("tag") or "").lower()
+            if atag in ("ng-multiselect-dropdown", "ng-select"):
+                return True
+        return False
+
+    i = 0
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+        if ev.kind != "click" or not _is_ng_multiselect_root_fp(ev.fingerprint):
+            i += 1
+            continue
+        # Anchor: the open click on the picker root.
+        # Real-portal pattern (Angular sample): the option-row click
+        # bubbles to the widget root because the grabber's widget-root
+        # resolver lifts inside-clicks to the labeled widget. So a
+        # cluster sequence looks like:
+        #
+        #   click(root)            -- open
+        #   input_change(search)   -- type query (optional)
+        #   click(root)            -- option-row click (lifted to root)
+        #   ... maybe more searches + picks ...
+        #   click(root)            -- close (re-click on root) OR
+        #   click(outside)         -- close-via-outside (terminates)
+        #
+        # To differentiate the "open" click from the "row-pick" click,
+        # we use a simple rule: the FIRST click on the root is the
+        # opener; SUBSEQUENT root clicks (in the same cluster window)
+        # are either option picks or the closer. We treat all but the
+        # final root click as picks; the final one as the closer.
+        # ``current_value`` / ``text`` are NOT used because they can
+        # be stale relative to the actual click target.
+        cluster_events: list[TraceEvent] = [ev]
+        root_click_indices_in_cluster: list[int] = [0]  # 0 = open click
+        j = i + 1
+        # B3 fix: a "fresh open" event invalidates the open click in
+        # the previous cluster window. Stop walking when we hit:
+        #   - a click OUTSIDE the picker (operator moved on), OR
+        #   - any non-observed event whose fingerprint isn't related to
+        #     the picker.
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                cluster_events.append(ne)
+                j += 1
+                continue
+            # input_change inside the picker (search field) -- absorb.
+            if (
+                ne.kind == "input_change"
+                and _fp_inside_ng_multiselect(ne.fingerprint)
+            ):
+                cluster_events.append(ne)
+                j += 1
+                continue
+            if ne.kind == "click":
+                # Option ROW click: NOT the root, but inside the widget
+                # (legacy / unlifted grabber path).
+                if (
+                    not _is_ng_multiselect_root_fp(ne.fingerprint)
+                    and _fp_inside_ng_multiselect(ne.fingerprint)
+                ):
+                    cluster_events.append(ne)
+                    j += 1
+                    continue
+                # Click on the SAME widget root -- could be a row-pick
+                # (grabber lifted the row click to the widget root) OR
+                # the closing click. Either way, include in the cluster.
+                if (
+                    _is_ng_multiselect_root_fp(ne.fingerprint)
+                    and _mat_select_identity(ne.fingerprint)
+                    == _mat_select_identity(ev.fingerprint)
+                ):
+                    cluster_events.append(ne)
+                    root_click_indices_in_cluster.append(
+                        len(cluster_events) - 1
+                    )
+                    j += 1
+                    continue
+                # Click on a DIFFERENT element -- the operator moved on
+                # / outside click. Terminate.
+                break
+            # Other user events (key, submit) terminate.
+            break
+
+        # B3: classify the cluster:
+        # - If there's at least ONE root-click AFTER the open click,
+        #   treat the LAST root-click as the close and any intermediate
+        #   ones as option-row picks (one of them is the user's last
+        #   chosen option).
+        # - If only the open click exists, it's a bare-open (no pick) --
+        #   leave for the labeled-widget pass.
+        # - If there were inner option-row clicks (not lifted to root)
+        #   the legacy branch already absorbed them as option picks.
+        last_option_event: Optional[TraceEvent] = None
+        # First, look for an explicit inner-row click (legacy non-lifted
+        # grabber path).
+        for ce in cluster_events:
+            if (
+                ce.kind == "click"
+                and not _is_ng_multiselect_root_fp(ce.fingerprint)
+                and _fp_inside_ng_multiselect(ce.fingerprint)
+            ):
+                last_option_event = ce
+        if last_option_event is None and len(root_click_indices_in_cluster) >= 2:
+            # Lifted-row-click path: the SECOND-to-LAST root click is
+            # the row pick; the LAST is the close (or the row click
+            # itself if there's no closer). Pick the one BEFORE the
+            # final close-click when there are 3+ root clicks; pick the
+            # SECOND when there are exactly 2 (the second IS the pick;
+            # the picker auto-closes).
+            if len(root_click_indices_in_cluster) >= 3:
+                pick_idx = root_click_indices_in_cluster[-2]
+            else:
+                pick_idx = root_click_indices_in_cluster[-1]
+            last_option_event = cluster_events[pick_idx]
+
+        if last_option_event is None or last_option_event.event_id is None:
+            i += 1
+            continue
+
+        raw_ids = []
+        for e in cluster_events:
+            if e.event_id and e.event_id not in raw_ids:
+                raw_ids.append(e.event_id)
+                consumed.add(e.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="set_selection",
+                primary_target_event_id=last_option_event.event_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+        i = j
+
+    # ---- B3 (2026-06-02): cdk-virtual-scroll-viewport + sibling search.
+    #
+    # The Show Data results list pattern: a virtualized container with
+    # a SEPARATE search-style input above it. Detection:
+    #   - the cluster's option-row clicks target mat-checkbox elements
+    #     inside a cdk-virtual-scroll-viewport,
+    #   - there's a search input event in the same recording window
+    #     whose ancestor chain shares an id with the viewport's chain.
+    #
+    # Anchor on the FIRST mat-checkbox click inside a cdk viewport; scan
+    # forward absorbing further row clicks + the search input_changes.
+    def _is_mat_checkbox_row_click(fp: Optional[ElementFingerprint]) -> bool:
+        if fp is None:
+            return False
+        tag = (fp.tag or "").lower()
+        if tag in ("mat-checkbox", "input"):
+            # input type=checkbox inside a mat-checkbox row.
+            if tag == "input" and (fp.input_type or "").lower() != "checkbox":
+                return False
+            return True
+        # cdkRow / label inside the mat-checkbox.
+        return False
+
+    def _fp_in_cdk_viewport(fp: Optional[ElementFingerprint]) -> bool:
+        if fp is None:
+            return False
+        tag = (fp.tag or "").lower()
+        if tag == "cdk-virtual-scroll-viewport":
+            return True
+        for anc in (fp.ancestor_chain or []):
+            if not isinstance(anc, dict):
+                continue
+            atag = (anc.get("tag") or "").lower()
+            if atag == "cdk-virtual-scroll-viewport":
+                return True
+            cls = anc.get("className") or ""
+            if isinstance(cls, str) and "cdk-virtual-scroll" in cls:
+                return True
+        return False
+
+    i = 0
+    while i < n:
+        ev = events[i]
+        if (
+            ev.event_id is None
+            or ev.event_id in consumed
+            or ev.event_id not in user_actions
+        ):
+            i += 1
+            continue
+        if ev.kind != "click":
+            i += 1
+            continue
+        fp = ev.fingerprint
+        if not _fp_in_cdk_viewport(fp) or not _is_mat_checkbox_row_click(fp):
+            i += 1
+            continue
+        # Anchor: first row-checkbox click inside the viewport.
+        # Look BACKWARD for the search input_change events that drove the
+        # current rendering of the list.
+        search_event_ids: list[str] = []
+        for k in range(i - 1, -1, -1):
+            ce = events[k]
+            if ce.event_id is None or ce.event_id in consumed:
+                continue
+            if ce.kind == "input_change":
+                cfp = ce.fingerprint
+                if cfp is None:
+                    continue
+                if _looks_like_search_input(cfp):
+                    search_event_ids.append(ce.event_id)
+                    continue
+            if ce.kind == "click" and ce.event_id in user_actions:
+                # Reached a prior user action -- stop.
+                break
+        # Scan FORWARD absorbing additional mat-checkbox row clicks +
+        # any further search input_changes on the same search input.
+        cluster_events = [ev]
+        last_checkbox_id = ev.event_id
+        j = i + 1
+        while j < n:
+            ne = events[j]
+            if ne.event_id is None:
+                j += 1
+                continue
+            if ne.kind in _OBSERVED_EVENT_KINDS:
+                cluster_events.append(ne)
+                j += 1
+                continue
+            if (
+                ne.kind == "input_change"
+                and _looks_like_search_input(ne.fingerprint)
+            ):
+                cluster_events.append(ne)
+                j += 1
+                continue
+            if (
+                ne.kind == "click"
+                and _fp_in_cdk_viewport(ne.fingerprint)
+                and _is_mat_checkbox_row_click(ne.fingerprint)
+            ):
+                cluster_events.append(ne)
+                last_checkbox_id = ne.event_id
+                j += 1
+                continue
+            # Any other event terminates.
+            break
+        # Include the prior search events (in reverse) at the head of
+        # raw_ids so the cluster carries them.
+        raw_ids = []
+        for sid in reversed(search_event_ids):
+            if sid not in raw_ids:
+                raw_ids.append(sid)
+                consumed.add(sid)
+        for e in cluster_events:
+            if e.event_id and e.event_id not in raw_ids:
+                raw_ids.append(e.event_id)
+                consumed.add(e.event_id)
+        clusters.append(
+            SemanticCluster(
+                raw_event_ids=raw_ids,
+                cluster_kind="set_selection",
+                primary_target_event_id=last_checkbox_id,
+                confidence=1.0,
+                alternatives_considered=["single_event"],
+            )
+        )
+        i = j
     return clusters
 
 
@@ -2083,13 +3163,171 @@ def _build_set_selection_spec(
     _ = events
     by_id: dict[str, TraceEvent] = causality.get("by_id") or {}
     prefix = _multiselect_prefix(ev.fingerprint)
-    # Compute the param name from the prefix: drop a 'multiselect-'
-    # head if present; replace '-' with '_'.
-    pname_base = prefix or "items"
-    pname_base = re.sub(r"^multiselect[-_]?", "", pname_base, flags=re.I)
-    pname = re.sub(r"[^a-zA-Z0-9_]+", "_", pname_base).strip("_").lower() or "items"
+
+    # B3 (2026-06-02): clusters built from the Angular detection paths
+    # (ng-multiselect-dropdown / cdk-virtual-scroll) have NO
+    # testid-prefix family. Walk the cluster's events to identify the
+    # open click (root widget) and pick a param name from its label.
+    cluster_first_event: Optional[TraceEvent] = None
+    cluster_open_widget_fp: Optional[ElementFingerprint] = None
+    if prefix is None:
+        for eid in cluster.raw_event_ids:
+            e = by_id.get(eid)
+            if e is None or e.kind not in ("click", "input_change"):
+                continue
+            if cluster_first_event is None:
+                cluster_first_event = e
+            efp = e.fingerprint
+            if efp is None:
+                continue
+            tag = (efp.tag or "").lower()
+            if tag in ("ng-multiselect-dropdown", "ng-select"):
+                cluster_open_widget_fp = efp
+                break
+            # For cdk-virtual-scroll cluster the "open" anchor is the
+            # FIRST row click; the widget root is the viewport itself.
+            # Walk the ancestor chain for the viewport.
+            for anc in (efp.ancestor_chain or []):
+                if not isinstance(anc, dict):
+                    continue
+                atag = (anc.get("tag") or "").lower()
+                if atag == "cdk-virtual-scroll-viewport":
+                    # Construct a minimal fingerprint for the viewport
+                    # so downstream readers can identify the "open" anchor.
+                    # Also stamp the className so the param-name fallback
+                    # below can derive a name (e.g. ``left-viewport`` /
+                    # ``cdkWrap`` -> ``transfer_items_left``).
+                    cls = anc.get("className") or ""
+                    cluster_open_widget_fp = ElementFingerprint(
+                        tag="cdk-virtual-scroll-viewport",
+                        test_id=(
+                            anc.get("testId")
+                            if isinstance(anc.get("testId"), str)
+                            else None
+                        ),
+                        element_id=(
+                            anc.get("id")
+                            if isinstance(anc.get("id"), str)
+                            else None
+                        ),
+                        # Stash a side-hint by reusing aria_label so the
+                        # param-name pass can pick it up without changing
+                        # the schema.
+                        aria_label=(
+                            "left_items"
+                            if isinstance(cls, str) and (
+                                "Lft" in cls or "left" in cls.lower()
+                            )
+                            else (
+                                "right_items"
+                                if isinstance(cls, str) and (
+                                    "Rgt" in cls or "right" in cls.lower()
+                                )
+                                else None
+                            )
+                        ),
+                    )
+                    break
+            if cluster_open_widget_fp is not None:
+                break
+
+    # Compute the param name. Order of preference:
+    #   1. prefix-based (legacy MultiSelect.jsx pattern),
+    #   2. accessible_name from the open widget (B3: Angular pattern),
+    #   3. element_id / test_id from the open widget,
+    #   4. "items" fallback.
+    if prefix:
+        pname_base = re.sub(r"^multiselect[-_]?", "", prefix, flags=re.I)
+        pname = (
+            re.sub(r"[^a-zA-Z0-9_]+", "_", pname_base).strip("_").lower()
+            or "items"
+        )
+    else:
+        # Try the open widget's accessible_name (snake-cased).
+        pname = None
+        if cluster_open_widget_fp is not None:
+            label = (
+                cluster_open_widget_fp.accessible_name
+                or cluster_open_widget_fp.aria_label
+                or cluster_open_widget_fp.placeholder
+            )
+            if label:
+                pname = _snake_from_label(label)
+            if not pname:
+                # Fall back to element_id / test_id.
+                raw = (
+                    cluster_open_widget_fp.element_id
+                    or cluster_open_widget_fp.test_id
+                    or ""
+                )
+                pname = (
+                    re.sub(r"[^a-zA-Z0-9_]+", "_", raw).strip("_").lower()
+                    or None
+                )
+        # For cdk-virtual-scroll: try the viewport's test_id (data-role)
+        # before falling back to row labels (which are PII / data, not
+        # widget identity).
+        if not pname and cluster_open_widget_fp is not None:
+            otag = (cluster_open_widget_fp.tag or "").lower()
+            if otag == "cdk-virtual-scroll-viewport":
+                # 1. viewport's own test_id / element_id (data-role).
+                tid = (
+                    cluster_open_widget_fp.test_id
+                    or cluster_open_widget_fp.element_id
+                    or cluster_open_widget_fp.aria_label
+                    or ""
+                )
+                # data-role values are "left-viewport" / "right-viewport"
+                # / "left-rows"; strip the side suffix when present.
+                tid_norm = tid.replace("-viewport", "_items").replace(
+                    "-rows", "_items"
+                )
+                pname = (
+                    re.sub(r"[^a-zA-Z0-9_]+", "_", tid_norm)
+                    .strip("_").lower()
+                    or None
+                )
+                # 2. Fallback: a row's element_id family. E.g.
+                # ``mat-checkbox-left-0`` -> ``left_items``;
+                # ``mat-checkbox-right-3`` -> ``right_items``. Walk the
+                # cluster for a row click and split the id.
+                if not pname:
+                    for raw_id in cluster.raw_event_ids:
+                        ce = by_id.get(raw_id)
+                        if ce is None or ce.kind != "click":
+                            continue
+                        ceid = (
+                            ce.fingerprint.element_id
+                            if ce.fingerprint
+                            else None
+                        )
+                        if not ceid:
+                            continue
+                        # ``mat-checkbox-left-0`` -> ``left``;
+                        # ``mat-checkbox-row-5`` -> ``row``.
+                        m = re.match(
+                            r"^mat-checkbox-([a-zA-Z]+)-\d+$", ceid
+                        )
+                        if m:
+                            pname = f"{m.group(1).lower()}_items"
+                            break
+        if not pname and cluster_first_event is not None:
+            fpe = cluster_first_event.fingerprint
+            if fpe is not None:
+                label = (
+                    fpe.accessible_name or fpe.aria_label or fpe.placeholder
+                )
+                if label:
+                    pname = _snake_from_label(label)
+        pname = pname or "items"
 
     open_fp: Optional[ElementFingerprint] = None
+    # 2026-06-02 final-batch item 1: inner click target for ng-multiselect
+    # -dropdown. open_fp carries the labeled outer widget root (for
+    # accessible_name / known_options), inner_fp carries the actual
+    # button-shaped descendant the operator hit. Threaded from the
+    # anchor click's TraceEvent.inner_click_fp.
+    inner_fp: Optional[ElementFingerprint] = None
     search_fp: Optional[ElementFingerprint] = None
     checkbox_template_fp: Optional[ElementFingerprint] = None
     target_items: list[str] = []
@@ -2136,6 +3374,13 @@ def _build_set_selection_spec(
         role = _multiselect_role(e.fingerprint)
         if role == "toggle" and e.kind == "click" and open_fp is None:
             open_fp = e.fingerprint
+            # 2026-06-02 final-batch item 1: pull the grabber-captured
+            # inner_click_fp through if present. For legacy MultiSelect.jsx
+            # clusters there's no inner-click distinction; the field is
+            # None and the runner falls back to open_picker_fp as before.
+            icf = getattr(e, "inner_click_fp", None)
+            if icf is not None and inner_fp is None:
+                inner_fp = icf
         elif role == "search" and search_fp is None:
             search_fp = e.fingerprint
         elif role in ("checkbox", "item") and e.kind == "click":
@@ -2166,6 +3411,164 @@ def _build_set_selection_spec(
                 # template pass).
                 if checkbox_template_fp is None:
                     checkbox_template_fp = e.fingerprint
+        elif prefix is None and e.kind == "click" and e.fingerprint is not None:
+            # B3 (2026-06-02): no MultiSelect.jsx prefix; this is the
+            # Angular cluster path. Classify by the click's tag /
+            # ancestor chain.
+            efp = e.fingerprint
+            etag = (efp.tag or "").lower()
+            if etag in ("ng-multiselect-dropdown", "ng-select"):
+                if open_fp is None:
+                    open_fp = efp
+                    # 2026-06-02 final-batch item 1: thread the grabber-
+                    # captured inner_click_fp (.dropdown-btn descendant)
+                    # so the runner can click the inner button-shaped
+                    # element at replay. Outer custom element clicks miss
+                    # above the inner button on real portals.
+                    icf = getattr(e, "inner_click_fp", None)
+                    if icf is not None and inner_fp is None:
+                        inner_fp = icf
+                # Subsequent root clicks: the grabber lifts row clicks
+                # to the labeled widget root, so a root click that's
+                # NOT the first one is an option pick OR the close
+                # click. The cluster's primary_target_event_id (set by
+                # the detector) is the picked option's click. When THIS
+                # event's id matches the primary target, it IS the
+                # picked-option event -- lift its post-click
+                # ``current_value`` (the picker's displayed chip text)
+                # as the picked label.
+                if (
+                    e.event_id
+                    and e.event_id == cluster.primary_target_event_id
+                ):
+                    # Derive the picked label. Strategy in order:
+                    #   1. current_value on a LATER cluster click whose
+                    #      value is non-placeholder and differs from
+                    #      this event's;
+                    #   2. THIS event's ``text`` minus the placeholder /
+                    #      open-click text (the operator's row click
+                    #      bubbles to the root, so the text field
+                    #      typically contains both the placeholder and
+                    #      the just-picked chip label, e.g.
+                    #      'Choose Country/Region Canada');
+                    #   3. THIS event's current_value when it differs
+                    #      from the open click's.
+                    picked_label = ""
+                    open_cv = (
+                        (open_fp.current_value or "").strip()
+                        if open_fp is not None
+                        else ""
+                    )
+                    open_text = (
+                        (open_fp.text or "").strip()
+                        if open_fp is not None
+                        else ""
+                    )
+                    # (1) Look ahead within the cluster.
+                    for later_eid in cluster.raw_event_ids:
+                        later_e = by_id.get(later_eid)
+                        if (
+                            later_e is None
+                            or later_e.event_id == e.event_id
+                            or later_e.kind != "click"
+                        ):
+                            continue
+                        later_fp = later_e.fingerprint
+                        if later_fp is None:
+                            continue
+                        lcv = (later_fp.current_value or "").strip()
+                        if lcv and "choose" not in lcv.lower() and lcv != open_cv:
+                            picked_label = lcv
+                            break
+                    # (2) Text diff: take what's new since the open
+                    # click's text. The row-click event's ``text`` often
+                    # carries placeholder + chip label; strip the
+                    # placeholder + " x" close-mark to get the label.
+                    if not picked_label:
+                        this_text = (efp.text or "").strip()
+                        if this_text and open_text and this_text.startswith(open_text):
+                            diff = this_text[len(open_text):].strip()
+                            if diff:
+                                # Strip trailing " x" (the chip close
+                                # affordance).
+                                diff = diff.rstrip("x").strip()
+                                if diff:
+                                    picked_label = diff
+                    # (3) Fallback to current_value if it differs.
+                    if not picked_label:
+                        cv = (efp.current_value or "").strip()
+                        if cv and cv != open_cv and "choose" not in cv.lower():
+                            picked_label = cv
+                    if picked_label and "choose" not in picked_label.lower():
+                        item_id = picked_label
+                        if item_id in target_items:
+                            target_items.remove(item_id)
+                        else:
+                            target_items.append(item_id)
+                        item_labels[item_id] = picked_label
+                        if (
+                            item_id not in known_options_map
+                            or not known_options_map[item_id]
+                        ):
+                            known_options_map[item_id] = picked_label
+                        if checkbox_template_fp is None:
+                            checkbox_template_fp = efp
+                continue
+            # Option row click (mat-checkbox row inside cdk viewport,
+            # or li.multiselect-item-checkbox inside ng-multiselect).
+            inside_ngms = False
+            inside_cdk = False
+            for anc in (efp.ancestor_chain or []):
+                if not isinstance(anc, dict):
+                    continue
+                atag = (anc.get("tag") or "").lower()
+                if atag in ("ng-multiselect-dropdown", "ng-select"):
+                    inside_ngms = True
+                if atag == "cdk-virtual-scroll-viewport":
+                    inside_cdk = True
+            if not (inside_ngms or inside_cdk):
+                # Click inside the cluster but not an option row --
+                # ignore.
+                continue
+            # Choose an id key. Prefer element_id (e.g. mat-checkbox-N
+            # row); else accessible_name; else css_path-derived id.
+            item_id = (
+                efp.element_id
+                or (efp.accessible_name or "").strip()
+                or None
+            )
+            if not item_id:
+                continue
+            # Toggle semantics: if the operator clicked the same row
+            # twice, the second click un-toggles. Track xor presence.
+            if item_id in target_items:
+                target_items.remove(item_id)
+            else:
+                target_items.append(item_id)
+            label = (efp.accessible_name or efp.text or efp.aria_label or item_id).strip()
+            item_labels[item_id] = label
+            if (
+                item_id not in known_options_map
+                or not known_options_map[item_id]
+            ):
+                known_options_map[item_id] = label
+            if checkbox_template_fp is None:
+                checkbox_template_fp = efp
+        elif prefix is None and e.kind == "input_change":
+            # B3: a search input INSIDE the cluster -- the ng-multiselect
+            # filter or the cdk-list sibling search.
+            efp = e.fingerprint
+            if efp is None:
+                continue
+            if _looks_like_search_input(efp) and search_fp is None:
+                search_fp = efp
+
+    # B3 (2026-06-02): if the cluster didn't surface an explicit open
+    # click (cdk-virtual-scroll case: there's no separate "open"
+    # gesture, the viewport is already visible), use the synthesized
+    # widget fp from the cluster_open_widget_fp derivation above.
+    if open_fp is None and cluster_open_widget_fp is not None:
+        open_fp = cluster_open_widget_fp
 
     # Real-portal case B: when the picker exposes a search box (a search
     # role event was observed in the cluster) we ALWAYS prefer
@@ -2190,10 +3593,75 @@ def _build_set_selection_spec(
         for oid, olabel in known_options_map.items()
     ]
 
+    # B2.4 / B2.5: require_search detection. True when ANY of:
+    #   - the operator actually searched (cluster carries an input_change
+    #     on a search-like input) -- search_fp will be non-None already;
+    #   - the picker is ng-multiselect-dropdown / ng-select (server-side
+    #     filter pattern -- mandatory search at replay);
+    #   - the picker is a virtualized list (cdk-virtual-scroll viewport)
+    #     fronted by a separate search bar (Show Data results pattern);
+    #   - the picker DOM exposes a search input even though the operator
+    #     never searched (e.g. they clicked the FIRST surfaced row -- the
+    #     server still filters by search input on replay).
+    require_search = False
+    open_tag = (open_fp.tag or "").lower() if open_fp is not None else ""
+    if search_fp is not None:
+        require_search = True
+    elif open_tag in ("ng-multiselect-dropdown", "ng-select"):
+        require_search = True
+        # If we don't have a search_fp from the cluster, try to discover
+        # one via the search-near-list pass.
+        if search_fp is None:
+            discovered = _detect_search_box_for_list(open_fp, events)
+            if discovered is not None:
+                search_fp = discovered
+                select_strategy = "search"
+    elif open_fp is not None and (
+        _fp_is_virtualized_list(open_fp)
+        or _fp_is_virtualized_list(checkbox_template_fp)
+    ):
+        discovered = _detect_search_box_for_list(
+            open_fp or checkbox_template_fp, events
+        )
+        if discovered is not None:
+            require_search = True
+            search_fp = discovered
+            select_strategy = "search"
+
+    # 2026-06-02 final batch item 3: rename cdk-virtual-scroll param from
+    # the sibling search input's label context when the default naming
+    # ended up at the fallback ("left_items" / "right_items" / "items").
+    # The viewport's data-role doesn't carry domain meaning ("left-rows"
+    # is structural, not semantic); the search input's accessible_name
+    # / aria_label / preceding <label> typically does (e.g. "Source
+    # Artworks Search" -> param "source_artworks"). Operators reading
+    # the skill see a domain-meaningful name; planner clarify UX gets a
+    # human-friendly label.
+    open_tag_now = (open_fp.tag or "").lower() if open_fp is not None else ""
+    fallback_names = {"items", "left_items", "right_items", "rows", "checkbox"}
+    if (
+        open_tag_now == "cdk-virtual-scroll-viewport"
+        and pname in fallback_names
+        and search_fp is not None
+    ):
+        candidate_label = (
+            search_fp.accessible_name
+            or search_fp.aria_label
+            or ""
+        ).strip()
+        # Strip a trailing " Search" / " search" suffix so "Source
+        # Artworks Search" -> "Source Artworks".
+        if candidate_label:
+            clean = re.sub(r"\s*search\s*$", "", candidate_label, flags=re.I)
+            renamed = _snake_from_label(clean) if clean else None
+            if renamed and renamed not in fallback_names:
+                pname = renamed
+
     spec = SetSelectionSpec(
         mode="replace",
         param=pname,
         open_picker_fp=open_fp,
+        inner_click_fp=inner_fp,
         search_fp=search_fp,
         checkbox_template_fp=checkbox_template_fp,
         commit_fp=None,  # toggle close uses same open_fp
@@ -2218,6 +3686,7 @@ def _build_set_selection_spec(
         select_strategy=select_strategy,  # type: ignore[arg-type]
         option_list_selector=option_list_selector,
         final_equality_assertion=True,  # WI-19 safe default
+        require_search=require_search,
     )
     # id+label sprint: return the human LABELS of the selected items (not
     # ids) so the declared param's example/enum reads "Argentina", and
@@ -3999,6 +5468,62 @@ def build_skill(
                             parent_pname, set_selection_param_name,
                         ]
 
+            # B2.6: multi-parent cascading detection. Walk the trace for
+            # a network_request whose query string carries values of
+            # MULTIPLE prior selections (e.g. ``/api/models?make=X&year=Y``
+            # depends on BOTH make and year, not just one). When found,
+            # record depends_on_params + option_source so the runner waits
+            # for all parents before reconciling.
+            if set_selection_spec is not None and ev.event_id:
+                # Collect prior (param_name -> recorded_value) pairs from
+                # what we've accumulated so far this loop.
+                prior_values: dict[str, str] = {}
+                for pname, pval in params_seen:
+                    if pname and pval:
+                        prior_values[pname] = pval
+                # Also include any labeled-widget params declared as we
+                # iterate (the example carries the latest current_value).
+                for dp_name, dp_param in declared_params.items():
+                    if dp_param.example:
+                        prior_values.setdefault(dp_name, str(dp_param.example))
+                if prior_values:
+                    multi_parents, url_pattern, req_ev = (
+                        _detect_multi_parent_dependencies(
+                            events, causality, ev.event_id,
+                            parent_value_by_pname=prior_values,
+                        )
+                    )
+                    if len(multi_parents) >= 2 or (
+                        len(multi_parents) == 1
+                        and set_selection_spec.depends_on is None
+                    ):
+                        set_selection_spec.depends_on_params = multi_parents
+                        # If we don't yet have an option_source, populate
+                        # from the discovered request.
+                        if (
+                            set_selection_spec.option_source is None
+                            and req_ev is not None
+                            and url_pattern
+                        ):
+                            method = (req_ev.method or "GET").upper()
+                            if method not in (
+                                "GET", "POST", "PATCH", "PUT", "DELETE"
+                            ):
+                                method = "GET"
+                            set_selection_spec.option_source = NetworkExpectation(
+                                url_pattern=url_pattern,
+                                method=method,  # type: ignore[arg-type]
+                                optional=False,
+                            )
+                        # If the single legacy depends_on is None but we
+                        # have one detected parent, set depends_on too
+                        # for back-compat with runners that read it.
+                        if (
+                            set_selection_spec.depends_on is None
+                            and len(multi_parents) >= 1
+                        ):
+                            set_selection_spec.depends_on = multi_parents[0]
+
         # WI-17: build the SelectOptionSpec for select_option cluster
         # steps. The recording's options_snapshot is captured on the
         # fingerprint; we lift it into the spec so the runner has
@@ -4012,6 +5537,70 @@ def build_skill(
             select_option_spec = _build_select_option_spec(
                 cluster_here, events, causality, ev
             )
+            # B3 (2026-06-02): mat-select cluster path -- the primary
+            # target is the mat-option click which has no value-binding
+            # path (infer_param_binding only handles input_change).
+            # Synthesize a param binding from the cluster's OPEN click
+            # (the mat-select widget root) so the step declares a param
+            # whose name is the widget's accessible_name (e.g. ``year``).
+            # The labeled-widget pass would also surface this, but only
+            # if the open-click step still existed -- the cluster fold
+            # consumed it. Declare here so the spec + param ship together.
+            if binding is None:
+                by_id_evt = causality.get("by_id") or {}
+                so_pname: Optional[str] = None
+                so_open_fp: Optional[ElementFingerprint] = None
+                for raw_id in cluster_here.raw_event_ids:
+                    e = by_id_evt.get(raw_id)
+                    if e is None or e.kind != "click":
+                        continue
+                    efp = e.fingerprint
+                    if efp is None:
+                        continue
+                    if _is_mat_select_root_fp(efp):
+                        so_open_fp = efp
+                        so_pname = _snake_from_label(
+                            efp.accessible_name
+                            or efp.aria_label
+                            or efp.placeholder
+                        )
+                        break
+                if so_pname:
+                    binding = ParamBinding(
+                        name=so_pname, type="string", mode="whole",
+                    )
+                    # Stamp into declared_params (or update example).
+                    if so_pname not in declared_params:
+                        # Build enum_options from known_options.
+                        enum_opts = (
+                            list(select_option_spec.known_options)
+                            if select_option_spec.known_options
+                            else None
+                        )
+                        # Example: the recorded_label (what the operator
+                        # picked) -- this matches the labeled-widget
+                        # pass's B2.3 latest-value semantics.
+                        example = (
+                            select_option_spec.recorded_label
+                            or (
+                                so_open_fp.current_value
+                                if so_open_fp is not None
+                                else None
+                            )
+                        )
+                        declared_params[so_pname] = SkillParam(
+                            name=so_pname,
+                            type="enum" if enum_opts else "string",  # type: ignore[arg-type]
+                            codec="enum_label" if enum_opts else "raw",  # type: ignore[arg-type]
+                            description=(
+                                f"Mat-select option for step "
+                                f"{len(steps)}: "
+                                f"{(so_open_fp.accessible_name if so_open_fp else so_pname)}"
+                            ),
+                            example=example,
+                            required=True,
+                            enum_options=enum_opts,
+                        )
 
         # WI-18: cascading-select dependency. If this select is a
         # parent in a detected chain, attach a DependencyChain. The
@@ -4452,6 +6041,27 @@ def build_skill(
             )
         if ev.event_id and binding:
             binding_name_by_event_id[ev.event_id] = binding.name
+
+    # B2.1 + B2.3: bind every CLICKED labeled widget as a param.
+    #
+    # Today: an <input> / <mat-select> click with accessible_name=None is
+    # dropped from the param surface, and an accessible_name="Target Model*:"
+    # click never gets bound either (infer_param_binding only handles
+    # input_change / file_selected). With the batch-1 grabber lifting
+    # clicks to the semantic widget root + reading preceding-sibling
+    # <label>s, EVERY click on a labeled mat-select / mat-checkbox /
+    # ng-multiselect-dropdown / mat-radio carries enough signal to
+    # become a param.
+    #
+    # We iterate steps in order (so a later click on the same widget
+    # overwrites the example with the LATER current_value -- the post-
+    # option-click display value, per B2.3). Skips steps already absorbed
+    # by a specialized cluster (fill_submit, set_selection, select_option,
+    # select_autocomplete) -- those declared their own params.
+    _declare_labeled_widget_params(
+        steps, declared_params, events=events,
+        console=console if not auto else None,
+    )
 
     if skipped and not auto:
         console.print(f"[dim]Skipped {skipped} event(s) marked as noise.[/dim]")

@@ -1,0 +1,119 @@
+# Portal context file for the Angular-Material-style sample portal at
+# portals/angular_sample/.
+#
+# This sample is a static-HTML replica that mirrors the DOM produced by
+# the real Frame TV / Frame 2.0 admin portal's "Country Content
+# Mapping" page (tmp/portaldata/page-filled.html). The grabber only
+# sees the DOM, so behaviorally it is indistinguishable from the
+# real Angular Material build for label-capture purposes.
+#
+# Schema: pilot/agent/schemas/portal_context.py :: PortalContext
+
+schema_version: 1
+
+portal_id: angular_sample
+name: "Angular Material Frame-TV Sample Portal"
+base_url: "http://localhost:5189"
+external_llm_enabled: true
+
+glossary:
+  - term: "year"
+    meaning: >
+      The TV model year (2018-2026). Combined with Make, determines
+      which Model SKUs are available in the cascading picker.
+    aliases: ["model year", "source year"]
+
+  - term: "make"
+    meaning: >
+      TV brand / manufacturer (Samsung, LG, Sony, Hisense, TCL,
+      Panasonic). Combined with Year, gates the Model list.
+    aliases: ["brand", "target make"]
+
+  - term: "model"
+    meaning: >
+      Specific TV SKU. Codes follow the pattern YY_BRAND_FAMILY (e.g.
+      24_BOMRB_8K, 23_LG_OLED77). The Model picker depends on the
+      selected Make + Year.
+    aliases: ["target model", "sku"]
+
+  - term: "country / country/region"
+    meaning: >
+      Sales region for the target TV. Multi-select via the Country/Region
+      picker; server-side search filters the ~100-country list.
+    aliases: ["region", "market"]
+
+  - term: "artwork"
+    meaning: >
+      A piece of Frame TV artwork tracked by a SAM-F NNNNNN identifier.
+      The Source list is paged via cdk-virtual-scroll-viewport.
+      Transfer Right moves checked rows from Source to Target.
+    aliases: ["asset", "image"]
+
+page_map:
+  - path: "/transfer-artwork"
+    role: "primary_workflow"
+    notes: >
+      Country Content Mapping page. Cascading filters
+      (Year -> Make -> Model -> Country) gate the Show Data button.
+      Show Data populates the LEFT (Source) virtualized list. The
+      operator checks rows then clicks Transfer Right to move them
+      to the RIGHT (Target) list.
+
+  - path: "/login"
+    role: "auth"
+    notes: >
+      Modal overlay shown on first load. Any non-empty username +
+      password authenticates; the bearer token persists in the
+      session-cookie-less in-memory store.
+
+field_conventions:
+  - field: "year"
+    format: "YYYY"
+    examples: ["2024", "2023", "2018"]
+
+  - field: "make"
+    format: "vendor name"
+    examples: ["Samsung", "LG", "Sony"]
+
+  - field: "model"
+    format: "YY_BRAND_FAMILY"
+    examples: ["24_BOMRB_8K", "23_LG_OLED77", "18_KANTM2_8K"]
+
+  - field: "country"
+    format: "country name (display label)"
+    examples: ["Canada", "Germany", "India"]
+
+destructive_actions:
+  - "transfer_right"   # moves artwork between Source and Target lists
+
+session:
+  login_url: "/login"
+  session_duration_minutes: 60
+  sso_provider: "none"
+  notes: >
+    Bearer-token auth via /api/auth/login. Token issued on first
+    successful login; subsequent /api/* calls require
+    Authorization: Bearer <tok>.
+
+auth_signal:
+  logged_in_when_visible:
+    - "[data-testid='nav-user-menu']"
+  logged_out_when_visible:
+    - "[data-testid='login-form']"
+  probe_timeout_ms: 4000
+
+network_ignore: []
+
+# Idempotency capability. The mock backend doesn't cache the way
+# sample_portal/mock_backend.js does, but the runner should still
+# inject Idempotency-Key headers on POST against /api/transfer so
+# replay-time retries dedupe.
+idempotency:
+  enabled: true
+  header_name: "Idempotency-Key"
+  endpoint_patterns:
+    - "/api/transfer"
+  method_patterns: ["POST", "PUT", "PATCH", "DELETE"]
+  key_components: ["session", "step_index", "method", "url_path", "body_hash"]
+  body_hash_fields: []
+  allow_existing_header: false

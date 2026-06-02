@@ -45,14 +45,33 @@ class SkillParameter(BaseModel):
     label_options: list[str] | None = Field(
         default=None,
         description=(
-            "id+label sprint: for multi-select (string_list) params, the "
-            "human option LABELS seen at record time (from the "
-            "set_selection spec's known_options). Replay values are these "
-            "LABELS -- the runner resolves each label to its id "
-            "internally. A planner clarify step consumes this list to "
-            "offer the operator the seen options; the interactive UX is "
-            "not built here, only the data is surfaced. None for "
-            "non-multiselect params."
+            "id+label sprint: for multi-select (string_list) AND "
+            "single-select (enum) params, the human option LABELS seen "
+            "at record time (from the set_selection / select_option "
+            "spec's known_options). Replay values are these LABELS -- "
+            "the runner resolves each label to its id internally. The "
+            "planner's clarify step (2026-06-02 final batch item 4) "
+            "consumes this list to offer the operator the seen options. "
+            "None for free-form params (string / number / date / etc.)."
+        ),
+    )
+    accessible_name: str | None = Field(
+        default=None,
+        description=(
+            "2026-06-02 final batch item 4: the human-readable label "
+            "the widget displayed at record time (e.g. 'Year', "
+            "'Target Model*:'). Used as the question text when the "
+            "planner emits a ClarifyQuestion for a missing required "
+            "param. Falls back to ``semantic`` / ``name`` when absent."
+        ),
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description=(
+            "2026-06-02 final batch item 4: param names this one depends "
+            "on (e.g. target_model depends on [year, target_make]). The "
+            "planner asks parents FIRST, then children. Empty for flat "
+            "params."
         ),
     )
 

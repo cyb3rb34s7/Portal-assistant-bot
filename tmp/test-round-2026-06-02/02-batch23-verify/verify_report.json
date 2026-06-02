@@ -1,0 +1,30 @@
+{
+  "steps": [
+    "year_picked",
+    "make_picked",
+    "model_picked",
+    "country_picked",
+    "show_data_clicked"
+  ],
+  "asserts": [
+    "WARN: failed to validate event: ValidationError: 1 validation error for TraceEvent\nkind\n  Input should be 'click', 'input_change', 'submit', 'file_selected', 'navigate', 'key', 'dragstart', 'dragover', 'drop', 'toast', 'hover', 'network_request', 'network_response', 'dom_mutation', 'popup', 'download', 'visibility_change' or 'modal' [type=literal_error, input_value='page_snapshot', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/literal_error",
+    "declared_params = ['country_region', 'multiselect_search', 'target_make', 'target_model', 'year']",
+    "year_param=year example=2024 enum_count=9",
+    "make_param=target_make example=Samsung",
+    "model_param=target_model example=23_LG_OLED77",
+    "country_param=country_region",
+    "set_selection_step_count=0",
+    "select_option_step_count=0",
+    "PASS runner B3.1 gate: require_search + no search_fp -> search_required_no_search_fp"
+  ],
+  "trace_event_count": 37,
+  "trace_kinds": [
+    "click",
+    "dom_mutation",
+    "input_change",
+    "navigate",
+    "network_request",
+    "network_response",
+    "page_snapshot"
+  ]
+}

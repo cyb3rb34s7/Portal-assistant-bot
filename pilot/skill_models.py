@@ -257,6 +257,18 @@ class ElementFingerprint(BaseModel):
     treats a truncated snapshot as 'do not assume this is exhaustive'
     -- emit a search/filter step (WI-25) instead of declared aliases."""
 
+    # 2026-06-02 diagnosis B3: the human-readable display value of the
+    # widget at recording time. For mat-select this is the trimmed text
+    # of ``.mat-select-value-text`` (e.g. "18_KANTM2_8K"); for
+    # mat-checkbox the boolean string "true"/"false"; for
+    # ng-multiselect-dropdown the joined selected-chip text. null when
+    # the widget exposes no steady-state value (plain buttons / links).
+    # Critical disambiguator for the planner when two structurally
+    # identical mat-selects (same tag, same null role/name post-B1+B2)
+    # nevertheless show distinct on-screen values -- e.g. a Year
+    # dropdown showing "2019" vs a Model dropdown showing "18_KANTM2_8K".
+    current_value: Optional[str] = None
+
     # Alternate fingerprints accumulated by self-heal (L3) over time.
     # On replay, each alternate is tried via L1/L2 BEFORE invoking L3
     # again, so a portal that drifted once stays cheap to re-execute.
@@ -1552,6 +1564,54 @@ class SelectOptionSpec(BaseModel):
     -- is structurally impossible under exact_only / alias /
     current_options. Only legacy_fuzzy retains the dangerous path."""
 
+    known_options: list["OptionSnapshot"] = Field(default_factory=list)
+    """2026-06-02 batch 2/B2.2: the full universe of options seen at
+    record time, unioned from every contributing event's
+    ``TraceEvent.options_seen``. For Angular mat-select clusters the
+    grabber emits options_seen on the panel-open click; the annotator
+    folds them here so a planner/LLM clarify step can offer the labels
+    seen at record time, and so the runner can validate operator
+    inputs against the known universe. Separate from ``options_snapshot``
+    (which lives on the native <select> fingerprint) -- this is the
+    custom-widget (mat-select / cdk-overlay) universe captured ACROSS
+    events. Empty for legacy skills."""
+
+    search_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 batch 2/B2.4: input element inside the picker / panel
+    that filters the option list. Captured when the picker exposes a
+    search box (mat-select with mat-autocomplete, mat-select with a
+    `searchable` panel). When ``require_search`` is True, the runner
+    MUST search-by-label-then-click for replay rather than clicking the
+    recorded option id-template; this avoids the brittle id-templated
+    click when the option's label changed but the row text is stable."""
+
+    require_search: bool = False
+    """2026-06-02 batch 2/B2.4: when True, the runner enforces the
+    mandatory-search reach path (type the LABEL into ``search_fp``,
+    wait for the row, click). The annotator sets this when a search
+    input was observed in the cluster OR when the picker DOM exposes a
+    search box. With ``require_search=True`` and no ``search_fp``, the
+    runner FAILS the step with ``error_kind='search_required_no_search_fp'``
+    rather than silently falling back to direct-click."""
+
+    refresh_options_after: bool = True
+    """2026-06-02 final batch item 2: when True, the runner re-reads
+    the LIVE mat-select panel options at replay BEFORE comparing against
+    the operator's target label.
+
+    Critical for cascading picks (target_model depends on year + make):
+    when the operator replays with different year/make, the model option
+    set fetched from the server differs from ``known_options`` recorded
+    under the original parents. The legacy enum_label codec rejects
+    labels not in known_options; this flag lets the runner consult the
+    live options first and accept any label that matches what's
+    currently surfaced.
+
+    Default True is safe: for non-cascading picks the live options match
+    known_options and the behavior is unchanged. Operators can opt out
+    by setting False on a step where they want strict known_options
+    enforcement (e.g. an enum whose option universe is fixed)."""
+
 
 class DependencyChain(BaseModel):
     """WI-18: declares a chain of parent->child select dependencies.
@@ -2346,6 +2406,18 @@ class SetSelectionSpec(BaseModel):
     open_picker_fp: Optional[ElementFingerprint] = None
     """Click target to open the dropdown. Optional -- some pickers stay
     open between actions, in which case this can be omitted."""
+    inner_click_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 final-batch item 1: for widgets whose outer custom
+    element isn't a reliable click target (notably
+    ``ng-multiselect-dropdown`` -- the operator clicks the inner
+    ``.dropdown-btn``, and Playwright's centroid-on-outer click sometimes
+    lands above the button), this carries the inner button-shaped
+    descendant's fingerprint captured at record time. The runner uses
+    this for the open-picker click when set, falling back to
+    ``open_picker_fp`` otherwise. ``open_picker_fp`` still carries the
+    outer widget root so that runtime widget discovery (find the labeled
+    widget) works the same way; ``inner_click_fp`` is purely the click
+    target."""
     search_fp: Optional[ElementFingerprint] = None
     """Input inside the picker to filter the list. Optional -- some
     pickers don't have search and just display all options at once."""
@@ -2465,6 +2537,37 @@ class SetSelectionSpec(BaseModel):
     leaf), the path from root to this picker. Audit-only -- describes
     the structural relationship for operator review UI. Empty for flat
     pickers."""
+
+    require_search: bool = False
+    """2026-06-02 batch 2/B2.4: when True, the runner enforces the
+    mandatory-search reach path on this picker -- type the LABEL into
+    ``search_fp``, wait for the row, click. The annotator sets this
+    when ANY of these hold:
+      - the cluster contains ``input_change`` events on a ``Search`` input
+        (operator searched);
+      - the picker's DOM exposes a search box (``search_fp`` is not None);
+      - the picker is an ``ng-multiselect-dropdown`` (server-side filter);
+      - the picker is a virtualized list (``cdk-virtual-scroll-viewport``
+        fronted by a sibling search bar -- the Angular Show Data results
+        pattern).
+    With ``require_search=True`` and no ``search_fp``, the runner FAILS
+    the step with ``error_kind='search_required_no_search_fp'`` rather
+    than silently falling back to direct/scroll. No magic waits, no
+    silent fallback past the mandatory-search gate."""
+
+    depends_on_params: list[str] = Field(default_factory=list)
+    """2026-06-02 batch 2/B2.6: multi-parent cascading dependencies.
+
+    For pickers whose option set depends on MULTIPLE prior selections
+    (e.g. ``Country/Region`` options depend on both ``target_make`` and
+    ``target_model``), this is the ordered list of parent param names.
+    Supersedes the single-parent ``depends_on`` field when set; the
+    annotator's ``_detect_cascading_select`` emits this when a child
+    picker's network request carries query parameters bound to multiple
+    prior selections.
+
+    The runner waits for ALL parent params to be set before reconciling
+    this picker. Empty for flat / single-parent pickers."""
 
 
 class SkillStep(BaseModel):
@@ -3423,6 +3526,21 @@ class TraceEvent(BaseModel):
     picked. None for legacy traces (which only captured ``file_name``);
     annotator falls back to a single FileMetadata derived from
     ``file_name`` in that case."""
+
+    inner_click_fp: Optional[ElementFingerprint] = None
+    """2026-06-02 final-batch item 1: for click events on widgets whose
+    outer custom element isn't reliably click-targetable as a unit
+    (notably ``ng-multiselect-dropdown`` -- the operator actually clicks
+    the inner ``.dropdown-btn``), the grabber records the inner
+    button-shaped click target's fingerprint here. The outer widget's
+    fingerprint stays on ``fingerprint`` (so the labeled-widget root
+    carries ``accessible_name`` for the annotator). The annotator threads
+    this into the set_selection cluster's ``SetSelectionSpec.inner_click_fp``
+    so the runner can click the inner element at replay -- avoids the
+    Playwright centroid-click-misses-above-the-button gap that left the
+    country picker unreachable in the 2026-06-02 e2e. None for plain
+    HTML / mat-select / mat-checkbox clicks where the outer element
+    accepts a centroid click cleanly."""
 
     options_seen: Optional[list[OptionSnapshot]] = None
     """id+label sprint (2026-05-28): the full set of option rows

@@ -48,6 +48,7 @@ from .skill_models import (
     ElementFingerprint,
     ExpectedSignals,
     ParamBinding,
+    SelectOptionSpec,
     Skill,
     SkillStep,
     StepAssertion,
@@ -617,26 +618,81 @@ class SkillRunner:
         try:
             value = self._resolved_value(step)
         except ParamValidationError as pve:
-            # WI-05: typed codec / constraint failure. Surface as a
-            # structured error BEFORE the page is touched. The
-            # orchestrator's pause flow shows the operator the
-            # diagnostic and lets them retry/skip/abort.
-            shot = self._screenshot(f"step_{step.index}_param_validation")
-            return (
-                ToolResult(
-                    success=False,
-                    action_taken=f"param validation: {pve.message}",
-                    error=str(pve),
-                    error_kind="param_validation_failed",
-                    error_details={
-                        "param": pve.param_name,
-                        "step_index": step.index,
-                        **pve.details,
-                    },
-                    screenshot_path=shot,
-                ),
-                0,
-            )
+            # 2026-06-02 final batch item 2: cascading enum refresh.
+            # When the step is a select_option / set_selection whose spec
+            # has ``refresh_options_after=True`` (the default for
+            # cascading children), the recorded ``known_options`` is
+            # stale at replay because the parent picks changed. Rather
+            # than fail-fast on the recorded enum, pass the raw operator
+            # value through; the runner's _do_mat_select_open_then_pick
+            # / set_selection search flow consults the LIVE option list
+            # and either matches the label or fails with
+            # cascading_target_not_in_live_options listing the live
+            # universe (no silent fallback).
+            relax = False
+            if step.action == "select_option" and step.select_option is not None:
+                relax = bool(getattr(step.select_option, "refresh_options_after", False))
+            elif step.action == "set_selection" and step.set_selection is not None:
+                # set_selection with depends_on_params is the cascading
+                # case (Country/Region depends on year+make+model).
+                ss_spec = step.set_selection
+                relax = bool(getattr(ss_spec, "depends_on_params", None))
+            if relax and step.param_binding is not None:
+                # Read the raw param value (skip the codec entirely) and
+                # let the action handler reconcile against live options.
+                raw = self.params.get(step.param_binding.name)
+                if raw is not None:
+                    value = raw if not isinstance(raw, list) else None
+                    self._diagnostic(
+                        "runner.cascading_relaxed_codec",
+                        level="warn",
+                        recoverable=True,
+                        step_index=step.index,
+                        param=step.param_binding.name,
+                        raw_value=str(raw)[:120],
+                        reason=str(pve.message)[:200],
+                    )
+                else:
+                    # No raw value -- fall through to standard error.
+                    shot = self._screenshot(
+                        f"step_{step.index}_param_validation"
+                    )
+                    return (
+                        ToolResult(
+                            success=False,
+                            action_taken=f"param validation: {pve.message}",
+                            error=str(pve),
+                            error_kind="param_validation_failed",
+                            error_details={
+                                "param": pve.param_name,
+                                "step_index": step.index,
+                                **pve.details,
+                            },
+                            screenshot_path=shot,
+                        ),
+                        0,
+                    )
+            else:
+                # WI-05: typed codec / constraint failure. Surface as a
+                # structured error BEFORE the page is touched. The
+                # orchestrator's pause flow shows the operator the
+                # diagnostic and lets them retry/skip/abort.
+                shot = self._screenshot(f"step_{step.index}_param_validation")
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken=f"param validation: {pve.message}",
+                        error=str(pve),
+                        error_kind="param_validation_failed",
+                        error_details={
+                            "param": pve.param_name,
+                            "step_index": step.index,
+                            **pve.details,
+                        },
+                        screenshot_path=shot,
+                    ),
+                    0,
+                )
 
         # Allow framework state + effects to settle between steps, and
         # flush any pending async work. When step.expected_signals is
@@ -2118,9 +2174,16 @@ class SkillRunner:
             )
 
         # Open picker if a fingerprint was recorded for it.
-        if spec.open_picker_fp:
+        # 2026-06-02 final-batch item 1: prefer ``inner_click_fp`` when
+        # present (ng-multiselect-dropdown: the outer custom element's
+        # centroid sometimes misses above the inner .dropdown-btn). The
+        # inner fingerprint is the actual button-shaped descendant the
+        # operator hit at record time. Falls back to ``open_picker_fp``
+        # for legacy skills and for widgets where the outer click is fine.
+        click_fp_for_open = spec.inner_click_fp or spec.open_picker_fp
+        if click_fp_for_open:
             try:
-                loc = self._locate_via_template(spec.open_picker_fp, {})
+                loc = self._locate_via_template(click_fp_for_open, {})
                 if loc:
                     self._robust_click(loc, timeout=4000)
                     self._wait_for_page_settle(max_ms=2000)
@@ -2421,6 +2484,14 @@ class SkillRunner:
         Reaching is replay-time logic chosen for robustness, independent
         of how the operator originally reached the option:
 
+          - ``spec.require_search=True`` (2026-06-02 batch 3/B3.1): use
+            ONLY the search path. The annotator declared this picker
+            MUST be searched (ng-multiselect-dropdown, virtualized
+            list, etc.); silently falling back to direct/scroll would
+            click the wrong off-viewport row or fail on a virtualized
+            list that hasn't materialized the target. No fallback past
+            this gate.
+
           - ``select_strategy='search'`` + ``search_fp``: fill the search
             box with the item's LABEL. A replay-time label carried in the
             target param wins; otherwise item_labels.get(item, item) is
@@ -2461,6 +2532,44 @@ class SkillRunner:
                 action_taken=msg,
                 error_kind=error_kind,
                 error_details={"item": item, "label": label},
+            )
+
+        # ---- B3.1: mandatory-search gate ----
+        # When the annotator declared require_search=True, the runner
+        # MUST search-then-click for every option. Silently falling back
+        # to a direct or scroll-into-view click is wrong for:
+        #   - virtualized lists (cdk-virtual-scroll) where the target
+        #     row hasn't materialized;
+        #   - server-side filter pickers (ng-multiselect-dropdown) where
+        #     the candidate options aren't even on the page until the
+        #     search request resolves;
+        #   - pickers where the id template was never reliably
+        #     generalizable (the operator only picked one item, so the
+        #     {item} placeholder isn't established).
+        # No fallback past this gate.
+        if spec.require_search:
+            if spec.search_fp is None:
+                self._diagnostic(
+                    "runner.set_selection_search_required_but_missing",
+                    level="error",
+                    recoverable=False,
+                    item=item,
+                    label=label,
+                    param=spec.param,
+                )
+                return _fail(
+                    "search_required_no_search_fp",
+                    "set_selection: require_search=True but no search_fp "
+                    "declared; operator must re-record or declare search_fp",
+                )
+            clicked = self._search_then_click_option(spec, item, label)
+            if clicked is True:
+                return None
+            return _fail(
+                "set_selection_search_required_failed",
+                f"set_selection: require_search=True; search-then-click "
+                f"failed for item={item!r} label={label!r} "
+                f"(NO direct/scroll fallback past the mandatory-search gate)",
             )
 
         # ---- search-to-narrow path ----
@@ -2640,6 +2749,12 @@ class SkillRunner:
         # Zimbabwe) that was never recorded still reaches correctly. The
         # visibility wait on the row rides out the server spinner with no
         # fixed sleep.
+        #
+        # 2026-06-02 batch 3/B3.3 (virtualized list pattern): when the
+        # surfaced row CONTAINS a mat-checkbox, the row text itself is
+        # not the clickable target -- click handlers live on the
+        # checkbox. Resolve to the row's mat-checkbox child if one
+        # exists; otherwise click the row.
         try:
             row = self._locate_option_row_by_label(spec, label)
             if row is None:
@@ -2648,7 +2763,11 @@ class SkillRunner:
                 state="visible",
                 timeout=self._set_selection_dom_timeout_ms(),
             )
-            self._robust_click(row, timeout=3000)
+            # B3.3: if the row carries a mat-checkbox child, click it
+            # instead of the row -- this is the cdk-virtual-scroll
+            # rows pattern.
+            click_target = self._resolve_row_click_target(row)
+            self._robust_click(click_target, timeout=3000)
         except Exception as e:
             self._diagnostic(
                 "runner.set_selection_search_target_not_visible",
@@ -2667,6 +2786,25 @@ class SkillRunner:
             except Exception:
                 pass
         return True
+
+    def _resolve_row_click_target(self, row):
+        """B3.3: when a surfaced option row contains a mat-checkbox
+        descendant, return the mat-checkbox locator (the row text is
+        not the clickable target in the cdk-virtual-scroll pattern;
+        click handlers live on the checkbox). Otherwise return the
+        row itself.
+
+        Best-effort: any exception walking the row locator falls back
+        to the row -- the caller's robust_click will still attempt to
+        actionability-gate on it.
+        """
+        try:
+            checkbox = row.locator("mat-checkbox").first
+            if checkbox.count() > 0:
+                return checkbox
+        except Exception:
+            pass
+        return row
 
     # ---- click hardening (CDP real-mouse no-op fallback) --------------
     def _robust_click(self, loc, *, timeout: int = 4000, settle_ms: int = 350) -> None:
@@ -3118,15 +3256,126 @@ class SkillRunner:
                 0,
             )
 
+        # B3.2: mandatory-search gate for select_option (mat-select with
+        # mat-autocomplete / search-fronted picker). When the annotator
+        # marked require_search=True, the runner MUST type the LABEL
+        # into the search input and click the surfaced row, NOT call
+        # native <select>.select_option(value) or click an id-templated
+        # mat-option.
+        if spec.require_search:
+            if spec.search_fp is None:
+                self._diagnostic(
+                    "runner.select_option_search_required_but_missing",
+                    level="error",
+                    recoverable=False,
+                    requested=value or spec.recorded_value,
+                )
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option",
+                        error=(
+                            "select_option: require_search=True but no "
+                            "search_fp declared; operator must re-record or "
+                            "declare search_fp"
+                        ),
+                        error_kind="search_required_no_search_fp",
+                    ),
+                    0,
+                )
+            # Resolve the operator-supplied label (replay value), falling
+            # back to the recorded label.
+            resolved_label = (
+                str(value) if value is not None and value != ""
+                else (spec.recorded_label or spec.recorded_value or "")
+            )
+            return self._do_select_option_via_search(
+                step, spec, resolved_label,
+            )
+
         locator, level, heal = self._resolve_locator(step)
         if locator is None:
             ambig = self._consume_ambiguity()
             if ambig is not None:
                 return self._build_ambiguous_result(step, ambig, "select_option")
+            # B3 (2026-06-02): mat-select clusters have the option click
+            # as the primary fingerprint. At replay the panel is closed
+            # so the recorded mat-option-N element doesn't exist. Try
+            # the open-then-click-by-label fallback: walk the step's
+            # provenance for a mat-select widget root, open it, then
+            # click the option-row whose visible text matches the
+            # resolved label.
+            if (
+                spec.match_mode == "label"
+                and step.fingerprint is not None
+                and (step.fingerprint.tag or "").lower() in (
+                    "mat-option", "span"
+                )
+            ):
+                target_label = (
+                    str(value) if value is not None and value != ""
+                    else (spec.recorded_label or "")
+                )
+                if value is not None:
+                    v = str(value)
+                    for opt in spec.known_options:
+                        if opt.value == v:
+                            target_label = opt.label or target_label
+                            break
+                if target_label:
+                    return self._do_mat_select_open_then_pick(
+                        step, spec, target_label,
+                    )
             return self._fallback_human(step, "could not locate select target")
 
         # Operator-resolved value via the param binding (or step.value).
         resolved = value if value is not None else (spec.recorded_value or "")
+
+        # B3 (2026-06-02): when the resolved locator is a mat-select
+        # custom element (not a native <select>), short-circuit to the
+        # open-then-click-by-label path. mat-select has no .options
+        # property and a native .select_option() call fails.
+        try:
+            tag_name = locator.evaluate(
+                "el => (el.tagName || '').toLowerCase()"
+            )
+        except Exception:
+            tag_name = ""
+        # B3 (2026-06-02): for mat-select clusters AND any case where the
+        # resolved locator is NOT a native <select> but the spec is
+        # match_mode=label (set on mat-select clusters), route through
+        # the open-then-pick handler. Without this an L2/L3 heal that
+        # finds a leftover span / mat-option from a prior panel would
+        # crash on the native el.options read.
+        if tag_name == "mat-select" or (
+            spec.match_mode == "label" and tag_name != "select"
+        ):
+            # For mat-select clusters the spec carries enum_options
+            # whose ``value`` is the opaque id (``mat-option-N``) and
+            # ``label`` is the human-readable text. The ``enum_label``
+            # codec converts the operator's input LABEL to its VALUE,
+            # so ``value`` here is typically the opaque id. We need
+            # the LABEL to find the row by visible text. Look it up.
+            target_label = (
+                str(value) if value is not None and value != ""
+                else (spec.recorded_label or "")
+            )
+            # Convert id-shaped value back to label via known_options.
+            if value is not None:
+                v = str(value)
+                for opt in spec.known_options:
+                    if opt.value == v:
+                        target_label = opt.label or target_label
+                        break
+            if target_label:
+                # When the resolved tag is already a mat-select, pass
+                # the locator through; else let the handler find the
+                # right widget on the page.
+                pass_locator = locator if tag_name == "mat-select" else None
+                return self._do_mat_select_open_then_pick(
+                    step, spec, target_label, open_locator=pass_locator,
+                    level=level, heal=heal,
+                )
 
         # Read the current options to validate against. The recording's
         # options_snapshot is the at-record-time view; at replay the
@@ -3343,6 +3592,363 @@ class SkillRunner:
             ),
             screenshot_path=shot,
             unverified_error="select_option: post-action verify failed",
+        )
+
+    def _do_mat_select_open_then_pick(
+        self,
+        step: SkillStep,
+        spec: SelectOptionSpec,
+        resolved_label: str,
+        *,
+        open_locator: Optional[Any] = None,
+        level: int = 1,
+        heal: Optional[Any] = None,
+    ) -> tuple[ToolResult, int]:
+        """B3 (2026-06-02): mat-select panel-open-then-click-by-label.
+
+        Used when the recorded fingerprint is a mat-option (the option
+        click that the operator made AFTER opening the panel). At
+        replay the panel is closed, so the recorded mat-option-N
+        element doesn't exist. We need to:
+          1. find the mat-select widget root (walk the step's provenance
+             raw_event_ids for a mat-select tag),
+          2. click it to open the panel,
+          3. wait for any mat-option to render,
+          4. click the option whose visible text matches the resolved
+             label.
+
+        When ``open_locator`` is provided (the caller already resolved
+        the mat-select widget), use it directly.
+        """
+        page = self.session.page
+        # Locate the open trigger. Prefer ``open_locator``; else try
+        # several heuristics.
+        if open_locator is None:
+            # Heuristic 1: the step's param_binding name often matches
+            # the mat-select id family (e.g. param=year ->
+            # #mat-select-year; param=target_make -> #mat-select-make).
+            if step.param_binding is not None:
+                pname = step.param_binding.name
+                candidates_id: list[str] = [
+                    f"mat-select#mat-select-{pname}",
+                    f"mat-select#mat-select-{pname.split('_')[-1]}",
+                    # 'target_make' -> 'make'
+                ]
+                for sel in candidates_id:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() == 1:
+                            open_locator = loc
+                            break
+                    except Exception:
+                        continue
+
+            # Heuristic 2: walk the page's mat-selects looking for one
+            # whose currently-displayed value matches one of the spec's
+            # known_options labels.
+            if open_locator is None:
+                try:
+                    mat_count = page.locator("mat-select").count()
+                except Exception:
+                    mat_count = 0
+                if mat_count == 1:
+                    open_locator = page.locator("mat-select")
+                elif mat_count > 1:
+                    try:
+                        all_mats = page.locator("mat-select")
+                        known_labels_lower = {
+                            (o.label or "").strip().lower()
+                            for o in spec.known_options
+                            if (o.label or "").strip()
+                        }
+                        known_labels_lower.add(
+                            (spec.recorded_label or "").strip().lower()
+                        )
+                        for i in range(min(mat_count, 12)):
+                            cand = all_mats.nth(i)
+                            try:
+                                txt = (
+                                    cand.evaluate(
+                                        "el => (el.textContent || '').trim()"
+                                    )
+                                    or ""
+                                ).strip().lower()
+                            except Exception:
+                                continue
+                            if txt in known_labels_lower:
+                                open_locator = cand
+                                break
+                    except Exception:
+                        pass
+            if open_locator is None:
+                return (
+                    ToolResult(
+                        success=False,
+                        action_taken="select_option(mat_open_pick)",
+                        error=(
+                            f"could not locate mat-select picker for "
+                            f"label={resolved_label!r}"
+                        ),
+                        error_kind="select_option_picker_not_found",
+                    ),
+                    0,
+                )
+
+        # Click the picker to open the panel.
+        try:
+            open_locator.click(timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"open click failed: {e}",
+                    error_kind="select_option_open_failed",
+                ),
+                0,
+            )
+        # Wait for the panel to surface.
+        try:
+            page.wait_for_selector(
+                ".cdk-overlay-pane mat-option, mat-option", timeout=3000,
+            )
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"panel did not surface: {e}",
+                    error_kind="select_option_panel_no_surface",
+                ),
+                0,
+            )
+
+        # Click the mat-option whose visible text matches the label
+        # (case-insensitive, trimmed exact match).
+        import re as _re
+        rx = _re.compile(
+            r"^\s*" + _re.escape(resolved_label) + r"\s*$", _re.IGNORECASE,
+        )
+        candidates = []
+        try:
+            candidates.append(page.locator("mat-option", has_text=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.get_by_role("option", name=rx))
+        except Exception:
+            pass
+        chosen = None
+        for cand in candidates:
+            try:
+                if cand is not None and cand.count() > 0:
+                    chosen = cand.first
+                    break
+            except Exception:
+                continue
+        if chosen is None:
+            # List the available labels for the failure diagnostic.
+            try:
+                seen_labels = page.evaluate(
+                    "() => Array.from(document.querySelectorAll("
+                    "'mat-option')).slice(0, 20).map(o => "
+                    "(o.textContent || '').trim())"
+                )
+            except Exception:
+                seen_labels = []
+            # 2026-06-02 final batch item 2: when the spec is in
+            # refresh-after mode (cascading), surface the failure as
+            # ``cascading_target_not_in_live_options`` so the operator
+            # sees that their pick wasn't in the FRESHLY-observed
+            # universe. The legacy ``option_not_available`` stays for
+            # non-cascading picks.
+            cascading = bool(getattr(spec, "refresh_options_after", False))
+            err_kind = (
+                "cascading_target_not_in_live_options"
+                if cascading else "option_not_available"
+            )
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=(
+                        f"{err_kind}: {resolved_label!r} not "
+                        f"in surfaced options"
+                    ),
+                    error_kind=err_kind,
+                    error_details={
+                        "requested": resolved_label,
+                        "available": seen_labels,
+                    },
+                ),
+                0,
+            )
+        try:
+            chosen.click(timeout=3000)
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(mat_open_pick)",
+                    error=f"option click failed: {e}",
+                    error_kind="select_option_pick_click_failed",
+                ),
+                0,
+            )
+        # WI-18: cascading dependency wait, if declared.
+        if step.dependency_chain is not None:
+            dep = step.dependency_chain
+            if dep.option_source_request is not None:
+                from .skill_models import ExpectedSignals as _ES
+                self._wait_for_page_settle(
+                    expected=_ES(network=[dep.option_source_request])
+                )
+        shot = self._screenshot(
+            f"step_{step.index}_select_option_mat_open_pick"
+        )
+        return self._build_action_result(
+            success=True,
+            level=level,
+            heal=heal,
+            action_taken=(
+                f"select_option(mat_open_pick={resolved_label!r}) "
+                f"[{LEVEL_LABELS[level]}]"
+            ),
+            screenshot_path=shot,
+            unverified_error="select_option: post-action verify failed",
+        )
+
+    def _do_select_option_via_search(
+        self,
+        step: SkillStep,
+        spec: SelectOptionSpec,
+        resolved_label: str,
+    ) -> tuple[ToolResult, int]:
+        """B3.2: mandatory-search reach for a single-select picker.
+
+        Used when ``spec.require_search=True`` (mat-select with
+        autocomplete, or a single-select fronted by a server-side
+        search). The recorded click target may have been an
+        id-templated mat-option whose id changed at replay; the safe
+        reach is to type the LABEL into the search input, wait for the
+        surfaced row, click it.
+
+        Falls back to the option-list visibility wait + row click; the
+        gate is mandatory so there is NO direct/scroll fallback.
+
+        Parallels :meth:`_search_then_click_option` (used by
+        set_selection) but works on a single picker. Resolves the
+        result row by ``_locate_option_row_by_label`` adapted to use a
+        scoped ``[role='listbox']`` when no explicit list selector.
+        """
+        page = self.session.page
+        try:
+            search_loc = self._locate_via_template(spec.search_fp, {})
+        except Exception as e:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"search input not found: {e}",
+                    error_kind="select_option_search_input_not_found",
+                ),
+                0,
+            )
+        if search_loc is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error="search input not found",
+                    error_kind="select_option_search_input_not_found",
+                ),
+                0,
+            )
+        try:
+            search_loc.fill(resolved_label)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_select_option_search_fill")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"search fill failed: {e}",
+                    error_kind="select_option_search_fill_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+
+        # Wait for the surfaced row whose visible text matches the label.
+        import re as _re
+        rx = _re.compile(
+            r"^\s*" + _re.escape(resolved_label) + r"\s*$", _re.IGNORECASE,
+        )
+        # Try multiple candidate scopes: mat-option (the typical
+        # mat-select panel row), [role='option'], or anywhere on the
+        # page.
+        candidates: list = []
+        try:
+            candidates.append(page.get_by_role("option", name=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.locator("mat-option", has_text=rx))
+        except Exception:
+            pass
+        try:
+            candidates.append(page.get_by_text(rx))
+        except Exception:
+            pass
+        row = None
+        for cand in candidates:
+            try:
+                if cand is not None and cand.count() > 0:
+                    row = cand.first
+                    break
+            except Exception:
+                continue
+        if row is None and candidates:
+            row = candidates[0].first
+        if row is None:
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=(
+                        f"option_not_in_results: label={resolved_label!r} "
+                        f"not surfaced after search"
+                    ),
+                    error_kind="option_not_in_results",
+                    error_details={"label": resolved_label},
+                ),
+                0,
+            )
+        try:
+            row.wait_for(state="visible", timeout=5000)
+            self._robust_click(row, timeout=3000)
+        except Exception as e:
+            shot = self._screenshot(f"step_{step.index}_select_option_search_click")
+            return (
+                ToolResult(
+                    success=False,
+                    action_taken="select_option(search)",
+                    error=f"row click failed: {e}",
+                    error_kind="select_option_search_click_failed",
+                    screenshot_path=shot,
+                ),
+                0,
+            )
+        shot = self._screenshot(f"step_{step.index}_select_option_search")
+        return (
+            ToolResult(
+                success=True,
+                action_taken=(
+                    f"select_option(search, label={resolved_label!r})"
+                ),
+                screenshot_path=shot,
+            ),
+            1,
         )
 
     def _do_date_select(self, step: SkillStep) -> tuple[ToolResult, int]:

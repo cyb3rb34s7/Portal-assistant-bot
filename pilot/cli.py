@@ -196,6 +196,158 @@ def annotate(
     )
 
 
+def _prompt_clarify_for_missing_params(
+    skill_path: Path,
+    params: dict,
+    *,
+    input_fn=input,
+    output=None,
+) -> dict:
+    """2026-06-02 final batch item 5: interactive clarify for missing
+    required params at CLI replay time.
+
+    Loads the skill's params metadata (label_options, accessible_name,
+    depends_on) and for each required param that isn't already in
+    ``params``, prompts the operator on stdin with a numbered choice
+    list (from label_options) plus a free-form option when
+    allow_custom_answer is set.
+
+    Resolves the operator's typed label to the underlying value via the
+    skill's enum_options / known_options when possible -- otherwise the
+    label passes through and the runner's refresh_options_after path
+    reconciles against live options (item 2).
+
+    ``input_fn`` / ``output`` injection support unit-testing without
+    sys.stdin / console state.
+    """
+    out_print = (output if output is not None else console.print)
+    # Load the skill JSON and inspect its declared params.
+    try:
+        skill_dict = json.loads(skill_path.read_text(encoding="utf-8"))
+    except Exception:
+        return params
+    declared = skill_dict.get("params") or skill_dict.get("parameters") or []
+
+    # Build ordered list, parents first (topological).
+    by_name = {p.get("name"): p for p in declared if p.get("name")}
+    ordered: list[dict] = []
+    seen: set[str] = set()
+
+    def _emit(p: dict) -> None:
+        name = p.get("name")
+        if not name or name in seen:
+            return
+        for parent in (p.get("depends_on") or []):
+            if isinstance(parent, str):
+                parent_p = by_name.get(parent)
+                if parent_p and parent not in seen:
+                    _emit(parent_p)
+        seen.add(name)
+        ordered.append(p)
+
+    for p in declared:
+        _emit(p)
+
+    resolved = dict(params)
+    for p in ordered:
+        name = p.get("name")
+        if not name or not p.get("required", True):
+            continue
+        if resolved.get(name) not in (None, "", [], {}):
+            continue
+
+        # Build the option universe. For v1 skills the universe lives
+        # under enum_options (single-select) or set_selection
+        # known_options on the matching step. For v2 schema params it
+        # lives under label_options.
+        label_options: list[str] = []
+        enum_options = p.get("enum_options") or []
+        if isinstance(enum_options, list):
+            for opt in enum_options:
+                if isinstance(opt, dict):
+                    lbl = opt.get("label") or opt.get("value")
+                    if lbl:
+                        label_options.append(str(lbl))
+        for lbl in (p.get("label_options") or []):
+            if isinstance(lbl, str) and lbl not in label_options:
+                label_options.append(lbl)
+        # 2026-06-02 final batch v1: also pull set_selection step's
+        # known_options for string_list params (Country/Region pickers
+        # capture options across the cluster).
+        if p.get("type") == "string_list" and not label_options:
+            for step in (skill_dict.get("steps") or []):
+                if step.get("action") == "set_selection":
+                    ss = step.get("set_selection") or {}
+                    if ss.get("param") == name:
+                        for opt in (ss.get("known_options") or []):
+                            if isinstance(opt, dict):
+                                lbl = opt.get("label") or opt.get("value")
+                                if lbl:
+                                    label_options.append(str(lbl))
+        # Same for select_option steps.
+        if not label_options:
+            for step in (skill_dict.get("steps") or []):
+                if step.get("action") == "select_option":
+                    binding = step.get("param_binding") or {}
+                    if binding.get("name") == name:
+                        so = step.get("select_option") or {}
+                        for opt in (so.get("known_options") or []):
+                            if isinstance(opt, dict):
+                                lbl = opt.get("label") or opt.get("value")
+                                if lbl:
+                                    label_options.append(str(lbl))
+
+        # Find human label for the question.
+        human_label = (
+            p.get("accessible_name")
+            or p.get("semantic")
+            or p.get("description")
+            or name.replace("_", " ").title()
+        )
+        import re as _re
+        human_label = _re.sub(r"[*:\s]+$", "", str(human_label)).strip()
+
+        out_print(f"\n[bold]Which {human_label}?[/bold]")
+        # Cap visible options at 15; allow custom answer beyond that.
+        cap = 15
+        allow_custom = len(label_options) > cap or len(label_options) == 0
+        visible = label_options[:cap]
+        for i, lbl in enumerate(visible, start=1):
+            out_print(f"  [{i}] {lbl}")
+        prompt_suffix = (
+            " (number, label, or type your own): "
+            if allow_custom
+            else " (number or label): "
+        )
+        try:
+            answer = input_fn(f"  >{prompt_suffix}").strip()
+        except EOFError:
+            answer = ""
+        if not answer:
+            out_print(
+                f"[red]No answer given for required param {name!r}.[/red]"
+            )
+            raise typer.Exit(code=2)
+        # Resolve number choice if possible.
+        chosen_label: str
+        if answer.isdigit() and visible:
+            idx = int(answer)
+            if 1 <= idx <= len(visible):
+                chosen_label = visible[idx - 1]
+            else:
+                chosen_label = answer
+        else:
+            chosen_label = answer
+
+        # For string_list params (set_selection), wrap in a list.
+        if p.get("type") == "string_list":
+            resolved[name] = [chosen_label]
+        else:
+            resolved[name] = chosen_label
+        out_print(f"  -> {name} = {chosen_label!r}")
+    return resolved
+
+
 @app.command("run-skill")
 def run_skill(
     skill_path: Path = typer.Argument(..., exists=True, readable=True),
@@ -219,13 +371,27 @@ def run_skill(
     ),
     cdp: str = typer.Option(DEFAULT_CDP_ENDPOINT, "--cdp"),
     sessions_dir: Path = typer.Option(Path("sessions"), "--sessions-dir"),
+    no_clarify: bool = typer.Option(
+        False,
+        "--no-clarify",
+        help=(
+            "Skip the interactive clarify prompt for missing required "
+            "params. Use for scripted runs that must fail-fast when a "
+            "param is absent."
+        ),
+    ),
 ) -> None:
     """Replay a learned skill with parameters.
 
     The portal URL comes from the skill's own ``base_url`` field —
     skills are tied to the portal they were recorded against. Override
     only when you know what you're doing (e.g. replaying a staging-env
-    recording against prod)."""
+    recording against prod).
+
+    2026-06-02 final batch item 5: when required params are missing AND
+    the skill has captured label_options / known_options, the CLI
+    prompts the operator on stdin with the available choices. Pass
+    --no-clarify to fail-fast instead (scripted runs)."""
     params: dict = {}
     if params_file and params_file.exists():
         params.update(json.loads(params_file.read_text(encoding="utf-8")))
@@ -235,6 +401,11 @@ def run_skill(
             raise typer.Exit(code=2)
         k, _, v = p.partition("=")
         params[k] = v
+
+    # 2026-06-02 final batch item 5: interactive clarify for missing
+    # required params (skip when --no-clarify is set, for scripted runs).
+    if not no_clarify:
+        params = _prompt_clarify_for_missing_params(skill_path, params)
 
     try:
         # Resolve base_url: explicit --base-url wins; otherwise read

@@ -28,6 +28,21 @@
   var INPUT_DEBOUNCE_MS = (typeof window.__cp_input_debounce_ms === "number"
     && window.__cp_input_debounce_ms > 0)
     ? window.__cp_input_debounce_ms : 400;
+  // 2026-06-02 B5: server-search inputs (placeholder="Search",
+  // ng-multiselect-dropdown's filter, mat-autocomplete with a debounced
+  // ?q= fetch) need a LONGER window than a plain form field. The real
+  // Frame TV portal's trace.jsonl recorded BOTH "cana" and "canada" as
+  // separate input_change events because the 400 ms debounce fired
+  // mid-typing. Bumping the search-input window to 600 ms produces a
+  // single trailing-edge emission with the FINAL value. Operator can
+  // override via window.__cp_search_debounce_ms; we cap at >= base.
+  var SEARCH_INPUT_DEBOUNCE_MS = (function () {
+    var override = window.__cp_search_debounce_ms;
+    if (typeof override === "number" && override > 0) {
+      return Math.max(override, INPUT_DEBOUNCE_MS);
+    }
+    return Math.max(600, INPUT_DEBOUNCE_MS);
+  })();
 
   // ---- WI-02: causality + identity + ordering ---------------------------
   //
@@ -1530,10 +1545,307 @@
     }
     var ancestorLabel = el.closest && el.closest("label");
     if (ancestorLabel) return trim(ancestorLabel.textContent);
+
+    // 2026-06-02 diagnosis: Angular Material portals use two extra
+    // labeling patterns that the WAI-ARIA cascade above misses.
+    // (B2.a) mat-label / .mat-form-field-label INSIDE the same
+    //   mat-form-field as the clicked element. Excludes the
+    //   mat-select-value-text span (which carries the CURRENT VALUE,
+    //   not the label).
+    // (B2.b) preceding-sibling <label> outside a "field container"
+    //   (mat-form-field, ng-multiselect-dropdown, .form-group,
+    //   .form-field, or a generic div that contains both the element
+    //   and a sibling <label>). Cap the walk at 4 levels so non-
+    //   Material portals don't pay for an unbounded climb.
+    // SKIP entirely for <button> / <a> elements. Per WAI-ARIA, a
+    // button's accessible name is its own innerText (handled by the
+    // textContent fallback below). The field-container heuristic was
+    // designed for inputs / mat-select / mat-checkbox and falsely
+    // claims a sibling-area <label> for buttons that sit next to
+    // section headings (e.g. <label>Source Artwork:</label>
+    // <button>Transfer Right</button> -- the button's name is
+    // "Transfer Right", not "Source Artwork:").
+    var elTagLow = (el.tagName || "").toLowerCase();
+    var isButtonish = (elTagLow === "button" || elTagLow === "a");
+    try {
+      if (!isButtonish) {
+        var matFormField = el.closest && el.closest("mat-form-field");
+        if (matFormField) {
+          var inner = matFormField.querySelector(
+            "mat-label, .mat-form-field-label"
+          );
+          if (inner && !inner.classList.contains("mat-select-value-text")) {
+            var inText = trim(inner.textContent || "");
+            if (inText) return inText;
+          }
+        }
+        var container = _findFieldContainer(el);
+        if (container) {
+          var sibLabel = _findPrecedingSiblingLabel(container, el);
+          if (sibLabel) {
+            var sibText = trim(sibLabel.textContent || "");
+            if (sibText) return sibText;
+          }
+        }
+      }
+    } catch (eLab) {
+      if (DEBUG) console.warn("[cp] extended label discovery failed", eLab);
+    }
+
     if (el.alt) return trim(el.alt);
     if (el.title) return trim(el.title);
     if (el.placeholder) return trim(el.placeholder);
     return trim(el.innerText || el.textContent || "").slice(0, 120);
+  }
+
+  // 2026-06-02 B2: walk up to a "field container" for sibling-label
+  // discovery. The container is the nearest ancestor that is one of:
+  //   - <mat-form-field>
+  //   - <ng-multiselect-dropdown>
+  //   - .form-group / .form-field
+  //   - a <div> that contains BOTH the original element AND a sibling
+  //     <label> element (the hand-authored pattern where a row is just
+  //     "<div><label>X</label> <some-input/></div>")
+  // Capped at 4 levels so non-Material pages don't pay for the walk.
+  function _findFieldContainer(el) {
+    if (!el) return null;
+    var cur = el.parentElement;
+    var depth = 0;
+    while (cur && cur.nodeType === 1 && depth < 4) {
+      var tag = (cur.tagName || "").toLowerCase();
+      if (tag === "mat-form-field" || tag === "ng-multiselect-dropdown") {
+        return cur;
+      }
+      var cls = (cur.className && typeof cur.className === "string")
+        ? cur.className : "";
+      if (/(^|\s)form-group(\s|$)/.test(cls) ||
+          /(^|\s)form-field(\s|$)/.test(cls)) {
+        return cur;
+      }
+      // Generic div with sibling <label>: the cur div contains both the
+      // original element and a <label> child that is NOT an ancestor of
+      // the original element. We prefer the outermost such container.
+      if (tag === "div") {
+        var kids = cur.children || [];
+        for (var i = 0; i < kids.length; i++) {
+          if (kids[i].tagName && kids[i].tagName.toLowerCase() === "label"
+              && !kids[i].contains(el)) {
+            return cur;
+          }
+        }
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    return null;
+  }
+
+  // 2026-06-02 B2: find a preceding-sibling <label> for a field
+  // container. Two real-world shapes to handle:
+  //   Shape A: the container is the wrapping div that holds BOTH the
+  //     label and the field as direct children
+  //     (<div><label>X</label><mat-form-field/></div>). We look INSIDE
+  //     the container for the closest direct-child <label> that is NOT
+  //     an ancestor of ``origEl``.
+  //   Shape B: the container IS the field (e.g. <mat-form-field>) and
+  //     its previousElementSibling is the <label>:
+  //     <label>X</label><mat-form-field>... So we walk
+  //     previousElementSibling up to 3 hops.
+  // origEl is the element the operator clicked -- needed for Shape A
+  // so we don't return an ancestor-of-el as the "sibling" label.
+  function _findPrecedingSiblingLabel(container, origEl) {
+    if (!container) return null;
+    // Shape A: a child <label> NOT containing origEl.
+    if (container.children) {
+      for (var i = 0; i < container.children.length; i++) {
+        var c = container.children[i];
+        if (c.tagName && c.tagName.toLowerCase() === "label"
+            && (!origEl || !c.contains(origEl))) {
+          return c;
+        }
+      }
+    }
+    // Shape B: previousElementSibling chain.
+    var prev = container.previousElementSibling;
+    var hops = 0;
+    while (prev && hops < 3) {
+      if (prev.tagName && prev.tagName.toLowerCase() === "label") return prev;
+      // Hand-authored markup sometimes wraps a label in a span. Peek in.
+      if (prev.querySelector) {
+        var nested = prev.querySelector("label");
+        if (nested && (!origEl || !nested.contains(origEl))) return nested;
+      }
+      prev = prev.previousElementSibling;
+      hops++;
+    }
+    return null;
+  }
+
+  // 2026-06-02 B1: resolve a click target up to the nearest "semantic
+  // widget root" for Angular Material / hand-authored custom widgets.
+  // The grabber's fingerprint should describe the widget the operator
+  // INTERACTED WITH, not the inner <div> that happened to receive the
+  // click. We walk up at most 6 levels looking for one of the semantic
+  // tags; on a non-Material portal the walk falls off the end and we
+  // return ``el`` unchanged, so existing behavior is preserved.
+  //
+  // Preference order (so a click inside .mat-select-trigger inside a
+  // mat-select inside a mat-form-field resolves to the mat-select, not
+  // the mat-form-field): mat-select > mat-checkbox / mat-radio-button /
+  // mat-slide-toggle > ng-multiselect-dropdown > mat-form-field.
+  var _SEMANTIC_TAGS = {
+    "mat-select": 1,
+    "mat-checkbox": 1,
+    "mat-radio-button": 1,
+    "mat-slide-toggle": 1,
+    "ng-multiselect-dropdown": 1,
+    "mat-form-field": 1,
+  };
+  var _SEMANTIC_CLASSES = [
+    "mat-select-trigger",
+    "mat-form-field-flex",
+    "mat-checkbox-layout",
+  ];
+
+  function _resolveSemanticTarget(el) {
+    if (!el || el.nodeType !== 1) return el;
+    var cur = el;
+    var depth = 0;
+    var hit = null;
+    var buttonHit = null;  // lower-priority fallback
+    var preferredOrder = ["mat-select", "mat-checkbox", "mat-radio-button",
+      "mat-slide-toggle", "ng-multiselect-dropdown", "mat-form-field"];
+    while (cur && cur.nodeType === 1 && depth < 6) {
+      var tag = (cur.tagName || "").toLowerCase();
+      if (_SEMANTIC_TAGS[tag]) {
+        if (!hit) hit = cur;
+        else {
+          // Replace ONLY when the new candidate ranks higher in
+          // preferredOrder than the existing hit -- a mat-select wins
+          // over a mat-form-field, but mat-form-field doesn't replace
+          // a mat-select we already found.
+          var newRank = preferredOrder.indexOf(tag);
+          var curHitTag = (hit.tagName || "").toLowerCase();
+          var oldRank = preferredOrder.indexOf(curHitTag);
+          if (newRank >= 0 && (oldRank < 0 || newRank < oldRank)) {
+            hit = cur;
+          }
+        }
+      } else {
+        // 2026-06-02 final batch: lift clicks on inner spans / icons /
+        // text to the containing <button>. Without this, a click on the
+        // span inside <button>Transfer Right</button> records as a
+        // tag=span fingerprint with accessible_name pulled from the
+        // nearest <label> ancestor (often a label that names a
+        // SIBLING area, not this button). At replay the L2 fallback
+        // matches the wrong element.
+        if (!buttonHit && (tag === "button" || tag === "a")) {
+          buttonHit = cur;
+        }
+        var cls = (cur.className && typeof cur.className === "string")
+          ? cur.className : "";
+        for (var i = 0; i < _SEMANTIC_CLASSES.length; i++) {
+          var pat = _SEMANTIC_CLASSES[i];
+          if (cls.split(/\s+/).indexOf(pat) >= 0) {
+            // semantic class hit -- mark cur (the div carrying the
+            // class) but keep walking to find the outer semantic root.
+            if (!hit) hit = cur;
+            break;
+          }
+        }
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    // Material widget wins over plain button; button beats raw inner span.
+    return hit || buttonHit || el;
+  }
+
+  // 2026-06-02 B3: capture a human-readable display value for the
+  // common Material widgets. Returns null for widgets that don't expose
+  // a steady-state value (buttons, links, etc.). Capped at 120 chars to
+  // bound payload size for accidental multi-line captures.
+  function _currentDisplayValue(el) {
+    if (!el || el.nodeType !== 1) return null;
+    var tag = (el.tagName || "").toLowerCase();
+    try {
+      if (tag === "mat-select") {
+        var vt = el.querySelector(".mat-select-value-text");
+        if (vt) {
+          var t = trim(vt.textContent || "");
+          if (t) return t.slice(0, 120);
+        }
+        // Fallback to the mat-select's own textContent if no value-text
+        // span exists (the picker may be empty -- return null then).
+        return null;
+      }
+      if (tag === "mat-checkbox") {
+        // aria-checked on the inner input is the source of truth; the
+        // outer mat-checkbox carries the mat-checkbox-checked class
+        // when the box is ticked.
+        var input = el.querySelector("input.mat-checkbox-input, input[type='checkbox']");
+        if (input) {
+          var ac = input.getAttribute("aria-checked");
+          if (ac === "true") return "true";
+          if (ac === "false") return "false";
+          if (input.checked !== undefined) return input.checked ? "true" : "false";
+        }
+        var cls = (el.className && typeof el.className === "string")
+          ? el.className : "";
+        if (/(^|\s)mat-checkbox-checked(\s|$)/.test(cls)) return "true";
+        return "false";
+      }
+      if (tag === "mat-radio-button" || tag === "mat-slide-toggle") {
+        var rinput = el.querySelector("input");
+        if (rinput) {
+          var ra = rinput.getAttribute("aria-checked");
+          if (ra === "true" || ra === "false") return ra;
+          if (rinput.checked !== undefined) return rinput.checked ? "true" : "false";
+        }
+        return null;
+      }
+      if (tag === "ng-multiselect-dropdown") {
+        // Selected chips first; fall back to the visible placeholder.
+        var chips = el.querySelectorAll(".selected-item");
+        if (chips && chips.length) {
+          var parts = [];
+          for (var i = 0; i < chips.length; i++) {
+            // The chip's textContent includes a trailing "x" close
+            // button glyph in the real portal; strip a trailing single
+            // "x" so we don't record "Albania x".
+            var ct = trim(chips[i].textContent || "");
+            if (ct.endsWith(" x")) ct = ct.slice(0, -2).trim();
+            else if (ct.endsWith("x") && ct.length > 1) ct = ct.slice(0, -1).trim();
+            if (ct) parts.push(ct);
+          }
+          if (parts.length) return parts.join(", ").slice(0, 120);
+        }
+        var ph = el.querySelector(".dropdown-btn");
+        if (ph) {
+          var pt = trim(ph.textContent || "");
+          if (pt) return pt.slice(0, 120);
+        }
+        return null;
+      }
+      if (tag === "mat-form-field") {
+        // A mat-form-field with no inner mat-select still has a value
+        // (an <input matinput> inside .mat-form-field-infix). Read it.
+        var inp = el.querySelector(".mat-form-field-infix input, .mat-form-field-infix textarea");
+        if (inp && inp.value != null) {
+          var iv = String(inp.value);
+          if (iv) return iv.slice(0, 120);
+        }
+        var inner2 = el.querySelector(".mat-select-value-text");
+        if (inner2) {
+          var i2 = trim(inner2.textContent || "");
+          if (i2) return i2.slice(0, 120);
+        }
+        return null;
+      }
+    } catch (eVal) {
+      if (DEBUG) console.warn("[cp] _currentDisplayValue failed", eVal);
+    }
+    return null;
   }
 
   function cssEscape(s) {
@@ -1775,6 +2087,12 @@
       step: meta.step,
       accept: meta.accept,
       multiple: meta.multiple,
+      // 2026-06-02 B3: human-readable current value of the widget. For
+      // mat-select this is the .mat-select-value-text (e.g.
+      // "18_KANTM2_8K"); for mat-checkbox the "true"/"false" boolean;
+      // for ng-multiselect-dropdown the joined chip text. null when
+      // the widget doesn't expose a steady-state value.
+      current_value: _currentDisplayValue(el),
     };
   }
 
@@ -2109,6 +2427,62 @@
     return null;
   }
 
+  // 2026-06-02 B4: collect mat-option rows from an open overlay panel
+  // associated with the given mat-select. id comes from the mat-option's
+  // own id attribute (e.g. mat-option-85); label is the option's text.
+  // Preference order for finding the panel:
+  //   1. aria-owns on the mat-select (panel id explicitly listed),
+  //   2. any cdk-overlay-pane currently in the DOM that contains
+  //      mat-option rows (the Material runtime renders panels into
+  //      .cdk-overlay-container at click time).
+  // Returns [] when no panel is open / no options exist.
+  function _collectMatSelectOptions(matSelectEl) {
+    var out = [];
+    var seen = {};
+    try {
+      var pane = null;
+      var owns = matSelectEl.getAttribute && matSelectEl.getAttribute("aria-owns");
+      if (owns) {
+        var ids = owns.split(/\s+/);
+        for (var i = 0; i < ids.length; i++) {
+          var byId = document.getElementById(ids[i]);
+          if (byId) {
+            // Either the id IS the pane, or the pane is its closest
+            // .cdk-overlay-pane ancestor / descendant.
+            if (byId.classList && byId.classList.contains("cdk-overlay-pane")) {
+              pane = byId; break;
+            }
+            var ancestorPane = byId.closest && byId.closest(".cdk-overlay-pane");
+            if (ancestorPane) { pane = ancestorPane; break; }
+            // Treat the id as the pane wrapper itself (some portals
+            // assign the id to the inner panel, not the .cdk-overlay-pane).
+            if (byId.querySelector && byId.querySelector(".mat-option")) {
+              pane = byId; break;
+            }
+          }
+        }
+      }
+      var panes = pane ? [pane]
+        : Array.prototype.slice.call(
+          document.querySelectorAll(".cdk-overlay-pane"));
+      for (var p = 0; p < panes.length; p++) {
+        var matOpts = panes[p].querySelectorAll(".mat-option");
+        for (var k = 0; k < matOpts.length; k++) {
+          var opt = matOpts[k];
+          var id = opt.id || ("mat-option-anon-" + k);
+          if (seen[id]) continue;
+          var labelText = trim(opt.textContent || "");
+          seen[id] = 1;
+          out.push({ value: id, label: labelText });
+        }
+        if (out.length) break; // first pane with options wins
+      }
+    } catch (e) {
+      if (DEBUG) console.warn("[cp] _collectMatSelectOptions failed", e);
+    }
+    return out;
+  }
+
   // Scan a multiselect's currently-rendered option rows and return
   // [{value, label}] for each. id comes from the -checkbox-X / -item-X
   // testid suffix; label is the option's accessible name / row text. The
@@ -2159,6 +2533,21 @@
     function (e) {
       var target = closestInteractable(e.target);
       if (!target) return;
+      // 2026-06-02 final-batch item 1: remember the inner-click target
+      // BEFORE lifting to the semantic widget root, so that for widgets
+      // whose outer custom element isn't clickable as a unit (notably
+      // ng-multiselect-dropdown -- the operator actually clicks the
+      // inner .dropdown-btn), the runner can re-target the inner
+      // element at replay. For plain HTML / mat-select / mat-checkbox
+      // this stays unused (those widgets accept a centroid click on
+      // the outer element fine).
+      var preResolveTarget = target;
+      // 2026-06-02 B1: lift the click target to the nearest semantic
+      // widget root for Material / hand-authored custom widgets. The
+      // resolver is a no-op on plain HTML; on a mat-select inner-div
+      // click it returns the <mat-select role=listbox> so the
+      // fingerprint captures the WIDGET, not the inner trigger div.
+      target = _resolveSemanticTarget(target);
       // Flush any pending text input debounce BEFORE the click is
       // recorded, so order is fill→click, not click→fill.
       if (pendingInputEl && pendingInputEl !== target) flushPendingInput();
@@ -2296,6 +2685,62 @@
       var clickOptionsSeen = clickMsPrefix
         ? _collectMultiselectOptions(clickMsPrefix)
         : null;
+      // 2026-06-02 B4: when the click resolves to a mat-select widget
+      // root, ALSO probe for an associated overlay panel's mat-options
+      // and emit them as options_seen so the annotator can build
+      // known_options for the planner. The panel may be the just-opened
+      // one (aria-owns set by the Material runtime), or -- on portals
+      // where aria-owns isn't wired -- ANY currently-open
+      // .cdk-overlay-pane carrying mat-option rows.
+      if ((!clickOptionsSeen || !clickOptionsSeen.length) &&
+          (target.tagName || "").toLowerCase() === "mat-select") {
+        var matOpts = _collectMatSelectOptions(target);
+        if (matOpts && matOpts.length) clickOptionsSeen = matOpts;
+      }
+      // 2026-06-02 final-batch item 1: compute inner_click_fp for
+      // ng-multiselect-dropdown. The outer custom element receives the
+      // fingerprint (so the labeled-widget root carries the
+      // accessible_name), but the actual button-shaped click target is
+      // the inner .dropdown-btn. Playwright's centroid click on the
+      // outer element sometimes lands above the button and misses; the
+      // runner uses inner_click_fp at replay when present to click the
+      // exact button-shaped descendant. Falls back to the outer
+      // fingerprint when inner_click_fp is None (legacy skills).
+      var innerClickFp = null;
+      try {
+        var rTag = (target.tagName || "").toLowerCase();
+        if (rTag === "ng-multiselect-dropdown" || rTag === "ng-select") {
+          // Look for the most button-shaped descendant the operator
+          // actually hit. Prefer the closest ancestor walk from the
+          // pre-resolve target (the operator's actual e.target).
+          var inner = null;
+          // 1. If preResolveTarget itself is the .dropdown-btn or a
+          //    descendant of it, walk up to the .dropdown-btn.
+          var probe = preResolveTarget;
+          var d2 = 0;
+          while (probe && probe !== target && d2 < 6) {
+            var cls = (probe.className && typeof probe.className === "string")
+              ? probe.className : "";
+            if (/(^|\s)(dropdown-btn|multiselect-dropdown)(\s|$)/.test(cls)) {
+              inner = probe;
+              break;
+            }
+            probe = probe.parentElement;
+            d2++;
+          }
+          // 2. Otherwise look inside the outer element for a
+          //    .dropdown-btn / .multiselect-dropdown descendant.
+          if (!inner) {
+            inner = target.querySelector(".dropdown-btn")
+              || target.querySelector(".multiselect-dropdown");
+          }
+          if (inner && inner !== target) {
+            innerClickFp = fingerprint(inner);
+          }
+        }
+      } catch (eInner) {
+        if (DEBUG) console.warn("[cp] inner_click_fp compute failed", eInner);
+      }
       var payload = _merge({
         kind: "click",
         fingerprint: fingerprint(target),
@@ -2306,6 +2751,7 @@
         target_state_before: targetStateBefore,
         options_seen: (clickOptionsSeen && clickOptionsSeen.length)
           ? clickOptionsSeen : null,
+        inner_click_fp: innerClickFp,
       }, attr);
       // WI-14: schedule the after-state snapshot on the microtask the
       // same way _emitWithStateSnapshot defers page_state_after. The
@@ -2327,7 +2773,42 @@
         } catch (e3) {
           payload.target_state_after = null;
         }
-        post(payload);
+        // 2026-06-02 B4: re-probe mat-options after the page's click
+        // handler has had a chance to mount the cdk-overlay-pane. Some
+        // Material runtimes create the panel synchronously, some defer
+        // it to a microtask, and our capture-phase listener fires
+        // BEFORE either. Re-collecting here gives the panel a chance
+        // to exist. We only overwrite if we found NEW options to avoid
+        // clobbering an already-captured set.
+        // 2026-06-02 B4: defer the mat-options probe to a setTimeout
+        // task. queueMicrotask runs at the end of the CURRENT task --
+        // which is the event-dispatch task -- and the page's bubble
+        // handler that mounts the cdk-overlay-pane may itself defer the
+        // mount to a setTimeout / animation frame. A 0-ms timeout
+        // schedules a fresh task that runs AFTER any pending bubble
+        // handler work, so the pane is reliably in the DOM by then.
+        // If options were already captured before the microtask, we
+        // post immediately; otherwise we wait and then post.
+        if (!payload.options_seen &&
+            (target.tagName || "").toLowerCase() === "mat-select") {
+          setTimeout(function () {
+            try {
+              var lateOpts = _collectMatSelectOptions(target);
+              if (DEBUG) {
+                console.log("[cp] late mat-select options probe:",
+                  lateOpts && lateOpts.length, "found");
+              }
+              if (lateOpts && lateOpts.length) {
+                payload.options_seen = lateOpts;
+              }
+            } catch (e4) {
+              if (DEBUG) console.warn("[cp] late options probe failed", e4);
+            }
+            post(payload);
+          }, 0);
+        } else {
+          post(payload);
+        }
       });
     },
     true
@@ -2411,6 +2892,36 @@
     }
   }
 
+  // 2026-06-02 B5: a "search-like" input is one whose downstream effect
+  // is a server-side fetch keyed by ?q=. Two shapes catch the universe:
+  //   (a) <input placeholder="Search"> -- the canonical Material
+  //       autocomplete / filter input;
+  //   (b) any input inside an <ng-multiselect-dropdown> (the search
+  //       row's input has placeholder="Search" too, but the cheap
+  //       ancestor test handles non-canonical variants).
+  function _isSearchLikeInput(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      var ph = el.getAttribute && el.getAttribute("placeholder");
+      if (ph && /search/i.test(ph)) return true;
+      var al = el.getAttribute && el.getAttribute("aria-label");
+      if (al && /search/i.test(al)) return true;
+      if (el.closest && el.closest("ng-multiselect-dropdown")) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  // 2026-06-02 B5: trailing-edge coalescing. Track the most recent
+  // value typed into a given element so a burst (e.g. "cana"->"canada")
+  // emits ONLY the last value. fireInput already reads el.value at
+  // emission time -- the WeakMap is here to give the operator a way to
+  // assert "the recorded value was the final one I saw" in tests + to
+  // serve as a quick "skip emit if value didn't actually change" guard
+  // on the trailing edge (covers programmatic input dispatches that
+  // re-fire 'input' with the same value).
+  var _lastInputValueFor = (typeof WeakMap === "function")
+    ? new WeakMap() : new Map();
+
   function schedulePending(el) {
     if (pendingInputEl && pendingInputEl !== el) {
       // different element — flush the old one before tracking the new
@@ -2419,13 +2930,22 @@
     }
     pendingInputEl = el;
     if (pendingInputTimer) clearTimeout(pendingInputTimer);
+    // 2026-06-02 B5: record the CURRENT value so when the trailing-edge
+    // timer fires we can dedupe (cheap guard against double-fires).
+    try { _lastInputValueFor.set(el, el.value == null ? "" : String(el.value)); } catch (e) {}
+    // 2026-06-02 B5: pick the right debounce window. Search-like inputs
+    // need the longer window because the server-search round-trip is
+    // measured in hundreds of ms, and an early-fired input_change
+    // captures a mid-typing value the operator never committed.
+    var debounceMs = _isSearchLikeInput(el)
+      ? SEARCH_INPUT_DEBOUNCE_MS : INPUT_DEBOUNCE_MS;
     pendingInputTimer = setTimeout(function () {
       if (pendingInputEl) {
         fireInput(pendingInputEl);
         pendingInputEl = null;
         pendingInputTimer = null;
       }
-    }, INPUT_DEBOUNCE_MS);
+    }, debounceMs);
   }
 
   // Only text-ish input types use the debounced input listener. Other
@@ -3269,4 +3789,25 @@
   );
 
   if (DEBUG) console.log("[cp] grabber installed on", location.href);
+
+  // 2026-06-02 test bridge. Unit tests under tests/agent/
+  // test_angular_label_capture.py load grabber.js into a jsdom Window
+  // and need access to the IIFE-private helpers (getAccessibleName,
+  // _resolveSemanticTarget, _currentDisplayValue, _collectMatSelectOptions,
+  // _isSearchLikeInput, fingerprint). Gate behind a flag so a real
+  // browser running the grabber doesn't leak these into the page global.
+  if (window.__cp_test_bridge) {
+    window.__cp_helpers = {
+      getAccessibleName: getAccessibleName,
+      resolveSemanticTarget: _resolveSemanticTarget,
+      currentDisplayValue: _currentDisplayValue,
+      collectMatSelectOptions: _collectMatSelectOptions,
+      isSearchLikeInput: _isSearchLikeInput,
+      fingerprint: fingerprint,
+      findFieldContainer: _findFieldContainer,
+      findPrecedingSiblingLabel: _findPrecedingSiblingLabel,
+      SEARCH_INPUT_DEBOUNCE_MS: SEARCH_INPUT_DEBOUNCE_MS,
+      INPUT_DEBOUNCE_MS: INPUT_DEBOUNCE_MS,
+    };
+  }
 })();
